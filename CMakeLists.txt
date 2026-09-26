@@ -129,6 +129,11 @@ option(MUE_BUILD_INSTRUMENTSSCENE_QML "Build instruments scene QML" ${MUE_BUILD_
 option(MUE_BUILD_MUSESOUNDS_MODULE "Build MuseSounds module" ON)
 option(MUE_BUILD_MUSESOUNDS_QML "Build musesounds QML" ${MUE_BUILD_MUSESOUNDS_MODULE})
 
+# audiotrack: backing/reference audio track (waveform display + synced playback).
+# Additive module, no dependency on other src/ modules, so it is safe to build first.
+option(MUE_BUILD_AUDIOTRACK_MODULE "Build audio track module" ON)
+option(MUE_BUILD_AUDIOTRACK_TESTS "Build audio track tests" ${MUE_BUILD_AUDIOTRACK_MODULE})
+
 option(MUE_BUILD_NOTATION_MODULE "Build notation module" ON)
 option(MUE_BUILD_NOTATION_TESTS "Build notation tests" ${MUE_BUILD_NOTATION_MODULE})
 

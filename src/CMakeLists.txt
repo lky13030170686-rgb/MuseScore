@@ -33,6 +33,11 @@ endif()
 
 add_subdirectory(engraving)
 
+# audiotrack depends on muse_audio_engine only, so it can sit right after engraving.
+if (MUE_BUILD_AUDIOTRACK_MODULE)
+    add_subdirectory(audiotrack)
+endif()
+
 add_subdirectory(importexport)
 
 if (MUE_BUILD_PROPERTIESPANEL_MODULE)
