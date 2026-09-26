@@ -106,7 +106,13 @@ static std::vector<NoteGroup> noteGroups {
 
 BeamMode Groups::baseBeamMode(const ChordRest* cr, const ChordRest* prev)
 {
-    if (cr->isGrace() || cr->beamMode() != BeamMode::AUTO) {
+    // Jianpu (numbered notation): the diminution lines are grouped by beat according to the time
+    // signature (音值组合法), so the 5-line "no beam" flag (BeamMode::NONE) must not suppress the
+    // grouping - otherwise every note would carry its own little line. Rests are handled in
+    // BeamLayout::createBeams(). Manual beam modes (BEGIN/MID/END) are still honoured.
+    const bool jianpuGrouping = cr->staff() && !cr->isRest() && cr->staff()->isJianpuStaff(cr->tick());
+
+    if (cr->isGrace() || (cr->beamMode() != BeamMode::AUTO && !jianpuGrouping)) {
         return cr->beamMode();
     }
     assert(cr->staff());

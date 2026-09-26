@@ -85,6 +85,7 @@ public:
     virtual muse::async::Notification notationStyleChanged() const = 0;
 
     virtual bool isTablatureStaff() const = 0;
+    virtual bool isJianpuStaff() const = 0;
 
     virtual bool isAutomationModeEnabled() const = 0;
     virtual muse::async::Notification automationModeEnabledChanged() const = 0;

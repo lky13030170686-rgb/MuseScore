@@ -101,6 +101,10 @@ public:
     int string() const { return m_string; }
     void setString(int val) { m_string = val; }
 
+    // 简谱当前输入音高组（0 = 中音组，与 pitchToJianpuOctaveGroup() 同义）
+    int jianpuOctaveGroup() const { return m_jianpuOctaveGroup; }
+    void setJianpuOctaveGroup(int val) { m_jianpuOctaveGroup = val; }
+
     StaffGroup staffGroup() const;
 
     bool rest() const { return m_rest; }
@@ -148,6 +152,7 @@ private:
 
     int m_drumNote = -1;
     int m_string = VISUAL_INVALID_STRING_INDEX; // visual string selected for input (TAB staves only)
+    int m_jianpuOctaveGroup = 0;                // current octave group for input (Jianpu staves only)
 
     NoteValList m_notes;
 

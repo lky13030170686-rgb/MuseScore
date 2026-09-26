@@ -723,6 +723,8 @@ void EditStyle::classBegin()
         { StyleId::jianpuDiminutionBeamDistance, false, jianpuDiminutionBeamDistance, jianpuDiminutionBeamDistanceReset },
         { StyleId::jianpuDiminutionBeamPlacement, false, jianpuDiminutionBeamPlacement, jianpuDiminutionBeamPlacementReset },
         { StyleId::jianpuDurationLineThickness, false, jianpuDurationLineThickness, jianpuDurationLineThicknessReset },
+        { StyleId::jianpuVoiceDistance, false, jianpuVoiceDistance, jianpuVoiceDistanceReset },
+        { StyleId::jianpuFixedDo, false, jianpuFixedDo, 0 },
     };
 
     // ====================================================

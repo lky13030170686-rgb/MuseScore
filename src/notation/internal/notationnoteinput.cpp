@@ -401,6 +401,7 @@ void NotationNoteInput::endNoteInput(bool resetState)
     if (resetState) {
         is.setTrack(muse::nidx);
         is.setString(-1);
+        is.setJianpuOctaveGroup(0);
         is.setSegment(nullptr);
         is.setNotes({});
     }
@@ -602,6 +603,22 @@ void NotationNoteInput::setInputNotes(const NoteValList& notes)
     }
 
     is.setNotes(notes);
+    notifyAboutStateChanged();
+}
+
+int NotationNoteInput::jianpuOctaveGroup() const
+{
+    return score()->inputState().jianpuOctaveGroup();
+}
+
+void NotationNoteInput::setJianpuOctaveGroup(int octaveGroup)
+{
+    InputState& is = score()->inputState();
+    if (is.jianpuOctaveGroup() == octaveGroup) {
+        return;
+    }
+
+    is.setJianpuOctaveGroup(octaveGroup);
     notifyAboutStateChanged();
 }
 

@@ -119,6 +119,15 @@ public:
     void setSymId(SymId id);
     virtual int subtype() const override;
 
+    //! Symbol the articulation is drawn with: the given symbol, unless the layout replaced it
+    //! (see jianpuSymId()).
+    SymId displaySymId() const { return ldata()->symId.has_value() ? ldata()->symId.value() : m_symId; }
+
+    //! Jianpu (numbered notation) writes the staccato with the solid wedge "\u25bc" instead of the
+    //! 5-line dot: above a digit a dot is read as an octave dot (two dots = two octaves up).
+    //! 《音乐曲谱出版规范》(2015) 3.16.3.1; GB/T 46845-2025 7.9 (通用发音符号).
+    static SymId jianpuSymId(SymId sym);
+
     void setTextType(ArticulationTextType textType);
     ArticulationTextType textType() const { return m_textType; }
     Text* text() const { return m_text; }

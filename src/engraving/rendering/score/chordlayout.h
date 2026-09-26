@@ -116,6 +116,10 @@ public:
     static void layoutDurationLines(Chord* item, LayoutContext& ctx);
     static void layoutOctaveDots(Chord* item, LayoutContext& ctx);
 
+    // Jianpu (numbered notation): vertical offset of the notation row of the voice the given
+    // element belongs to (see chordlayout.cpp). Returns 0 for non-Jianpu staves and voice 1.
+    static double jianpuVoiceOffsetY(const EngravingItem* item, const LayoutConfiguration& conf);
+
     static void crossMeasureSetup(Chord* chord, bool on, LayoutContext& ctx);
 
     static void checkStartEndSlurs(Chord* chord, LayoutContext& ctx);

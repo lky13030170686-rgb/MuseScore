@@ -28,7 +28,9 @@
 
 #include "dom/beam.h"
 #include "dom/durationline.h"
+#include "dom/factory.h"
 #include "dom/measure.h"
+#include "dom/notedot.h"
 #include "dom/staff.h"
 #include "dom/system.h"
 
@@ -191,7 +193,8 @@ void RestLayout::layoutRestForJianpu(const Rest* item, Rest::LayoutData* ldata, 
 
     // Jianpu Y origin is at the center of the number.
     // It always starts half a spatium above, aligned with the middle of the measure line.
-    const double hy = -item->spatium() * .5 * item->mag();
+    // Multi-voice (parallel voices): the rest follows the row of its own voice.
+    const double hy = -item->spatium() * .5 * item->mag() + ChordLayout::jianpuVoiceOffsetY(item, ctx.conf());
     const double hx = 0.0;
     ldata->setPos(hx, hy);
 
@@ -226,6 +229,32 @@ void RestLayout::layoutRestForJianpu(const Rest* item, Rest::LayoutData* ldata, 
         for (DurationLine* dl : item->durationLines()) {
             TLayout::layoutDurationLine(dl, ctx);
         }
+    }
+
+    // Augmentation dots: in Jianpu a dot of a half note (or longer) is expressed by the duration
+    // lines (dashes) instead, while shorter values (dotted quarter/eighth rest) are written as
+    // "0 ." - the dot after the digit. Mirrors the note handling in ChordLayout::setDotRelativeLine().
+    Rest* rest = const_cast<Rest*>(item);
+    const size_t wantedDots = lines > 0 ? 0 : static_cast<size_t>(item->dots());
+    std::vector<NoteDot*>& dots = rest->dotList();
+    while (dots.size() < wantedDots) {
+        NoteDot* dot = Factory::createNoteDot(rest);
+        dot->setOwnershipParent(rest);
+        dot->setTrack(track);
+        dot->setVisible(staffVisible);
+        dots.push_back(dot);
+    }
+    while (dots.size() > wantedDots) {
+        delete dots.back();
+        dots.pop_back();
+    }
+
+    double dotX = width + ctx.conf().styleAbsolute(Sid::dotNoteDistance) * item->magS();
+    const double dotDX = ctx.conf().styleAbsolute(Sid::dotDotDistance) * item->magS();
+    for (NoteDot* dot : dots) {
+        TLayout::layoutNoteDot(dot, dot->mutldata());
+        dot->mutldata()->setPos(PointF(dotX, 0.0));         // aligned with the center of the digit
+        dotX += dotDX;
     }
 }
 

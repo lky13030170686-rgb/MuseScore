@@ -28,6 +28,9 @@
 #include "log.h"
 #include "types/ret.h"
 
+#include <QDir>
+#include <QFile>
+
 #include "audio/common/audioutils.h"
 #include "audio/devtools/inputlag.h"
 
@@ -57,6 +60,22 @@ using namespace mu::engraving;
 using namespace mu::notation;
 using namespace mu::playback;
 using namespace mu::project;
+
+//! TEMPORARY diagnostic (Jianpu build): records the playback position bookkeeping in
+//! <home>/Documents/MuseScore4/jianpu-postrace.txt, to trace a measure number in the playback
+//! toolbar that does not match the measure number shown in the status bar.
+static void jianpuPositionTrace(const QString& line)
+{
+    static const QString path = QDir::homePath() + QStringLiteral("/Documents/MuseScore4/jianpu-postrace.txt");
+    static bool started = false;
+    QFile file(path);
+    const QIODevice::OpenMode mode = started ? QIODevice::Append : QIODevice::Truncate;
+    started = true;
+    if (file.open(mode | QIODevice::Text)) {
+        file.write(line.toUtf8());
+        file.write("\n");
+    }
+}
 
 static AudioOutputParams makeReverbOutputParams()
 {
@@ -231,15 +250,33 @@ bool PlaybackController::loopBoundariesSet() const
 void PlaybackController::seekRawTick(const midi::tick_t tick, const bool flushSound)
 {
     if (m_currentTick == tick) {
+        jianpuPositionTrace(QStringLiteral("seek skipped (same tick) tick=%1").arg(tick));
         return;
     }
 
     RetVal<midi::tick_t> playedTick = notationPlayback()->playPositionTickByRawTick(tick);
     if (!playedTick.ret) {
+        jianpuPositionTrace(QStringLiteral("seek failed tick=%1").arg(tick));
         return;
     }
 
-    seek(playedTickToSecs(playedTick.val), flushSound);
+    const secs_t secs = playedTickToSecs(playedTick.val);
+
+    // Update the position right away. The audio player reports the new position only after it has
+    // processed the seek, and while it is stopped it may keep reporting the position it had, so
+    // without this the measure/beat in the toolbar would not follow the selection.
+    m_currentTick = tick;
+    updateCurrentTempo();
+    m_currentTickChanged.notify();
+
+    jianpuPositionTrace(QStringLiteral("seek tick=%1 playedTick=%2 secs=%3").arg(tick).arg(playedTick.val).arg(QString::number(static_cast<double>(secs), 'f', 6)));
+
+    seek(secs, flushSound);
+}
+
+muse::async::Notification PlaybackController::currentTickChanged() const
+{
+    return m_currentTickChanged;
 }
 
 void PlaybackController::seek(const audio::secs_t secs, const bool flushSound)
@@ -412,18 +449,20 @@ void PlaybackController::seekElement(const notation::EngravingItem* element, boo
         return;
     }
 
-    RetVal<midi::tick_t> tick = notationPlayback()->playPositionTickByElement(element);
-    if (!tick.ret) {
-        return;
-    }
-
-    seek(playedTickToSecs(tick.val), flushSound);
+    // Go through seekRawTick(), so that the position is updated and the toolbar notified right away,
+    // and so that the element tick is mapped through the repeat list in the same way everywhere.
+    seekRawTick(element->tick().ticks(), flushSound);
 }
 
 void PlaybackController::seekBeat(int measureIndex, int beatIndex, bool flushSound)
 {
-    secs_t targetSecs = beatToSecs(measureIndex, beatIndex);
-    seek(targetSecs, flushSound);
+    if (!notationPlayback()) {
+        return;
+    }
+
+    // The measure/beat fields of the playback toolbar go through the same path as the other seeks, so
+    // that the position is updated even while the audio player is not running.
+    seekRawTick(notationPlayback()->beatToRawTick(measureIndex, beatIndex), flushSound);
 }
 
 void PlaybackController::seekRangeSelection()
@@ -592,10 +631,23 @@ void PlaybackController::onSelectionChanged()
         }
 
         addSoundFlagsIfNeed(selection->elements());
+
+        // Move the position to the selected element as well. The cursor drawn in the score follows
+        // the selection, so without this the measure/beat in the playback toolbar would keep the
+        // position of the previous playback and would not match the note that was just clicked
+        // (clicking an element seeks only while playing, see NotationViewInputController).
+        if (!isPlaying() && selection->element()) {
+            seekElement(selection->element(), false /*flushSound*/);
+        }
         return;
     }
 
     m_player->resetLoop();
+
+    jianpuPositionTrace(QStringLiteral("selection range: startTick=%1 endTick=%2 currentTick=%3")
+                        .arg(selectionRange()->startTick().ticks())
+                        .arg(selectionRange()->endTick().ticks())
+                        .arg(m_currentTick));
 
     seekRangeSelection();
     updateSoloMuteStates();
@@ -1604,7 +1656,12 @@ void PlaybackController::setupTracks()
 void PlaybackController::setupPlayer()
 {
     currentPlayer()->playbackPositionChanged().onReceive(this, [this](const audio::secs_t pos) {
+        const midi::tick_t previousTick = m_currentTick;
         m_currentTick = notationPlayback()->secToTick(pos);
+
+        jianpuPositionTrace(QStringLiteral("player pos=%1 tick=%2 (was %3) status=%4")
+                            .arg(QString::number(static_cast<double>(pos), 'f', 6)).arg(m_currentTick).arg(previousTick)
+                            .arg(static_cast<int>(currentPlayer()->playbackStatus())));
 
         updateCurrentTempo();
 
@@ -1723,7 +1780,51 @@ Notification PlaybackController::currentTempoChanged() const
 
 MeasureBeat PlaybackController::currentBeat() const
 {
-    return notationPlayback() ? notationPlayback()->beat(m_currentTick) : MeasureBeat();
+    if (!notationPlayback()) {
+        return MeasureBeat();
+    }
+
+    MeasureBeat beat = notationPlayback()->beat(m_currentTick);
+
+    // The playback model always belongs to the master score, but the measure number shown in the
+    // toolbar has to be the one printed in the notation that is displayed: a part numbers its own
+    // measures, and it can differ from the master (a part's measure list can have diverged from the
+    // master's). Then the master's number would match neither the measure the user sees on screen
+    // nor the number in the status bar, which reads the displayed score as well.
+    const Score* displayedScore = m_notation ? m_notation->score() : nullptr;
+    if (displayedScore) {
+        const MeasureBeat displayedBeat = findBeat(displayedScore, m_currentTick);
+        beat.measureNumber = displayedBeat.measureNumber;
+        beat.maxMeasureNumber = displayedBeat.maxMeasureNumber;
+    }
+
+    {
+        static int64_t lastLoggedTick = -1;
+        if (lastLoggedTick != static_cast<int64_t>(m_currentTick)) {
+            lastLoggedTick = static_cast<int64_t>(m_currentTick);
+            const Score* masterScore = m_masterNotation ? m_masterNotation->masterScore() : nullptr;
+            const Measure* measure = masterScore ? masterScore->tick2measure(Fraction::fromTicks(m_currentTick)) : nullptr;
+            const int shownBeat = static_cast<int>(beat.beat) + 1;
+            jianpuPositionTrace(QStringLiteral("currentBeat tick=%1 barIndex=%2 measureNumber=%3 measureTick=%4 measureEndTick=%5 "
+                                               "nMeasures=%6 src=%7 shownMeasure=%8 shownBeat=%9 beat=%10 beatIndex=%11 "
+                                               "maxBeat=%12 selectionStart=%13")
+                                .arg(m_currentTick)
+                                .arg(beat.measureIndex)
+                                .arg(measure ? measure->measureNumber() : -1)
+                                .arg(measure ? measure->tick().ticks() : -1)
+                                .arg(measure ? measure->endTick().ticks() : -1)
+                                .arg(masterScore ? static_cast<int>(const_cast<Score*>(masterScore)->measures()->size()) : -1)
+                                .arg(displayedScore == masterScore ? QStringLiteral("master") : QStringLiteral("other"))
+                                .arg(beat.measureNumber)
+                                .arg(shownBeat)
+                                .arg(QString::number(static_cast<double>(beat.beat), 'f', 3))
+                                .arg(static_cast<int>(beat.beat))
+                                .arg(beat.maxBeatIndex + 1)
+                                .arg(selection() && selection()->isRange() ? selectionRange()->startTick().ticks() : -1));
+        }
+    }
+
+    return beat;
 }
 
 secs_t PlaybackController::beatToSecs(int measureIndex, int beatIndex) const

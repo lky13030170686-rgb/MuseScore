@@ -83,6 +83,13 @@ static const TranslatableString Insert_X = TranslatableString("action", "Insert 
 static const TranslatableString fret_X_TAB = TranslatableString("action", "Fret %1 (TAB)");
 static const TranslatableString enter_TAB_fret_X = TranslatableString("action", "Enter TAB: fret %1");
 
+//: Jianpu (numbered) notation: scale degree, where 1 is the tonic of the current key.
+static const TranslatableString jianpu_X = TranslatableString("action", "Degree %1 (Jianpu)");
+static const TranslatableString enter_Jianpu_degree_X = TranslatableString("action", "Enter Jianpu: degree %1");
+//: Addition to the name of an action to indicate that this action only applies to Jianpu notation.
+//: '%1' is the name of the action.
+static const TranslatableString X_JIANPU = TranslatableString("action", "%1 (Jianpu)");
+
 //: Addition to the name of an action to indicate that this action only applies to tablature notation.
 //: '%1' is the name of the action.
 static const TranslatableString X_TAB = TranslatableString("action", "%1 (TAB)");
@@ -1335,6 +1342,66 @@ const UiActionList NotationUiActions::s_actions = {
              mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_TAB,
              fret_X_TAB.arg(14),
              enter_TAB_fret_X.arg(14)
+             ),
+    UiAction("jianpu-degree-1",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             jianpu_X.arg(1),
+             enter_Jianpu_degree_X.arg(1)
+             ),
+    UiAction("jianpu-degree-2",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             jianpu_X.arg(2),
+             enter_Jianpu_degree_X.arg(2)
+             ),
+    UiAction("jianpu-degree-3",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             jianpu_X.arg(3),
+             enter_Jianpu_degree_X.arg(3)
+             ),
+    UiAction("jianpu-degree-4",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             jianpu_X.arg(4),
+             enter_Jianpu_degree_X.arg(4)
+             ),
+    UiAction("jianpu-degree-5",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             jianpu_X.arg(5),
+             enter_Jianpu_degree_X.arg(5)
+             ),
+    UiAction("jianpu-degree-6",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             jianpu_X.arg(6),
+             enter_Jianpu_degree_X.arg(6)
+             ),
+    UiAction("jianpu-degree-7",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             jianpu_X.arg(7),
+             enter_Jianpu_degree_X.arg(7)
+             ),
+    UiAction("jianpu-rest",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             X_JIANPU.arg(TranslatableString("action", "Rest")),
+             X_JIANPU.arg(TranslatableString("action", "Enter rest"))
+             ),
+    UiAction("jianpu-octave-up",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             TranslatableString("action", "Octave up (Jianpu)"),
+             TranslatableString("action", "Enter Jianpu: octave up")
+             ),
+    UiAction("jianpu-octave-down",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU,
+             TranslatableString("action", "Octave down (Jianpu)"),
+             TranslatableString("action", "Enter Jianpu: octave down")
              ),
     UiAction("add-8va",
              mu::context::UiCtxProjectOpened,

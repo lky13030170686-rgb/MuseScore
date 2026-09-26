@@ -27,6 +27,7 @@
 #include "types/typesconv.h"
 
 #include "actionicon.h"
+#include "articulation.h"
 #include "barline.h"
 #include "beam.h"
 #include "breath.h"
@@ -46,6 +47,7 @@
 #include "note.h"
 #include "page.h"
 #include "part.h"
+#include "pitchspelling.h"
 #include "rehearsalmark.h"
 #include "score.h"
 #include "segment.h"
@@ -1402,5 +1404,94 @@ void ChordRest::resizeDurationLinesTo(size_t newSize)
         delete m_durationLines.back();
         m_durationLines.pop_back();
     }
+}
+
+//---------------------------------------------------------
+//   jianpuRowExtents
+//
+//   Jianpu (numbered notation): vertical extent of the notation row of this chord/rest,
+//   measured from the centre of the row (the centre of the first digit, see
+//   ChordLayout::layoutPitched()).
+//
+//   The digit stack of a chord grows downwards from there, the octave dots of the top note
+//   reach above it and the diminution lines of the whole stack are drawn under it (see
+//   BeamTremoloLayout::chordBeamAnchorY()). Articulation marks are kept out of that band, so
+//   they reserve extra room on the side they are written to.
+//   GB/T 46845-2025, 6.2.7 (octave dots), 6.3.5 (diminution lines), 3.16 (articulations).
+//---------------------------------------------------------
+
+JianpuRowExtents ChordRest::jianpuRowExtents() const
+{
+    JianpuRowExtents ext;
+
+    const Staff* st = staff();
+    if (!st || !st->isJianpuStaff(tick())) {
+        return ext;
+    }
+
+    const StaffType* staffType = st->staffTypeForElement(this);
+    const MStyle& style = st->style();
+    const double mag = st->staffMag(this);
+    const double boxH = staffType->jianpuBoxH() * mag;
+    const double dotDist = style.styleAbsolute(Sid::jianpuOctaveDotDistance) * mag;
+    const double lineDist = style.styleAbsolute(Sid::jianpuNumberVerticalDistance) * mag;
+    const double beamDist = style.styleAbsolute(Sid::jianpuDiminutionBeamDistance) * mag;
+
+    int notes = 1;
+    int dotsAbove = 0;
+    int dotsBelow = 0;
+    int articsUp = 0;
+    int articsDown = 0;
+    double articsUpH = 0.0;
+    double articsDownH = 0.0;
+
+    if (isChord()) {
+        const Chord* chord = toChord(this);
+        notes = static_cast<int>(chord->notes().size());
+
+        // The digits are stacked from the highest pitch down, so the topmost octave dots belong
+        // to the highest note and the lowest ones to the lowest note.
+        const Key jpKey = style.styleB(Sid::jianpuFixedDo) ? Key::C : st->keySigEvent(tick()).key();
+        for (const Note* note : chord->notes()) {
+            const int group = pitchToJianpuOctaveGroup(note->pitch(), note->tpc(), jpKey);
+            dotsAbove = std::max(dotsAbove, group);
+            dotsBelow = std::max(dotsBelow, -group);
+        }
+
+        // articulation marks are written outside the row, so they widen it
+        for (const Articulation* a : chord->articulations()) {
+            if (!a->visible()) {
+                continue;
+            }
+            const bool up = a->anchor() != ArticulationAnchor::AUTO
+                            ? a->anchor() == ArticulationAnchor::TOP : isUpVoice(voice());
+            // a Jianpu staccato is drawn with the solid wedge instead of the dot, see jianpuSymId()
+            double h = a->symBbox(Articulation::jianpuSymId(a->symId())).height();
+            if (h <= 0.0) {
+                h = mag;         // text articulations and symbols without a glyph
+            }
+            if (up) {
+                ++articsUp;
+                articsUpH += h;
+            } else {
+                ++articsDown;
+                articsDownH += h;
+            }
+        }
+    }
+
+    ext.above = boxH * .5 + (dotsAbove > 0 ? dotDist * (dotsAbove + 1) : 0.0);
+    ext.below = boxH * .5 + (notes - 1) * (boxH + lineDist) + 2 * dotDist;
+    const int lines = jianpuOwnDiminutionLines();
+    if (lines > 0) {
+        ext.below += beamDist * (lines + 1);
+    }
+
+    const double minDist = style.styleAbsolute(Sid::articulationMinDistance) * mag;
+    const double gap = style.styleAbsolute(Sid::propertyDistanceHead) * mag;
+    ext.articsAbove = articsUp ? articsUp * minDist + articsUpH + gap : 0.0;
+    ext.articsBelow = articsDown ? articsDown * minDist + articsDownH + gap : 0.0;
+
+    return ext;
 }
 }

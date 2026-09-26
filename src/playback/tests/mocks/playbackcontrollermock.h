@@ -100,6 +100,7 @@ public:
     MOCK_METHOD(muse::async::Notification, currentTempoChanged, (), (const, override));
 
     MOCK_METHOD(engraving::MeasureBeat, currentBeat, (), (const, override));
+    MOCK_METHOD(muse::async::Notification, currentTickChanged, (), (const, override));
     MOCK_METHOD(muse::audio::secs_t, beatToSecs, (int, int), (const, override));
 
     MOCK_METHOD(double, tempoMultiplier, (), (const, override));

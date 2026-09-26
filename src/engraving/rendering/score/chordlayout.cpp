@@ -45,6 +45,7 @@
 #include "dom/page.h"
 #include "dom/parenthesis.h"
 #include "dom/part.h"
+#include "dom/pitchspelling.h"
 #include "dom/rest.h"
 #include "dom/score.h"
 #include "dom/segment.h"
@@ -82,14 +83,162 @@ static constexpr Spatium STAFFTYPE_TAB_DEFAULTDOTDIST_X = 0.75_sp;
 
 static double jianpuBeamOffset(const Chord* chord, const LayoutContext& ctx)
 {
-    const Beam* beam = chord->beam();
-    if (!beam || ctx.conf().styleV(Sid::jianpuDiminutionBeamPlacement).value<PlacementV>() != PlacementV::BELOW) {
+    if (ctx.conf().styleV(Sid::jianpuDiminutionBeamPlacement).value<PlacementV>() != PlacementV::BELOW) {
         return 0.0;
     }
 
-    const int lines = BeamTremoloLayout::strokeCount(beam->ldata(), chord);
+    // a beamed group gets its lines from the beam, a standalone chord draws its own lines
+    const Beam* beam = chord->beam();
+    const int lines = beam ? BeamTremoloLayout::strokeCount(beam->ldata(), chord) : chord->durationType().diminutionLines();
+    if (lines == 0) {
+        return 0.0;
+    }
+
     const double distance = ctx.conf().styleAbsolute(Sid::jianpuDiminutionBeamDistance);
     return (distance * lines) * chord->magS();
+}
+
+//---------------------------------------------------------
+//   jianpuVoiceOffsetY
+//
+//   Jianpu (numbered notation) on a single staff: the voices are laid out in stacked rows
+//   ("parallel voices"). Voice 1 keeps the traditional place - the digit is centered half a
+//   spatium above the staff line - and every further voice is moved down by one voice distance.
+//
+//   GB/T 46845-2025, 5.10 (single-staff multi-voice notation, parallel voices);
+//   "音乐曲谱出版规范" (2015), 3.11.1 (parallel voice notation).
+//---------------------------------------------------------
+
+double ChordLayout::jianpuVoiceOffsetY(const EngravingItem* item, const LayoutConfiguration& conf)
+{
+    UNUSED(conf);
+
+    const Staff* staff = item->staff();
+    if (!staff || item->voice() == 0) {
+        return 0.0;
+    }
+
+    const Fraction tick = item->tick();
+    if (!staff->isJianpuStaff(tick)) {
+        return 0.0;
+    }
+
+    // The rows are offset by the content of the voices above them (chord stacks, diminution
+    // lines); see Staff::jianpuVoiceOffsetY(). Using the staff scale keeps grace notes on the
+    // row of their main note.
+    return staff->jianpuVoiceOffsetY(item->findMeasure(), item->voice(), tick);
+}
+
+//---------------------------------------------------------
+//   jianpuArticulationRow
+//
+//   Jianpu (numbered notation) writes the notes of a voice as a single row of digits, so the
+//   articulation marks of that voice have to be written outside that row: above its highest
+//   element (the octave dots of the top digit) or below its lowest one (the diminution lines
+//   drawn under the stack). Written next to the digits a mark would be taken for an octave dot.
+//   Returns the inner edges (y) the marks have to stay clear of.
+//---------------------------------------------------------
+
+static void jianpuArticulationRow(const Chord* item, const LayoutContext& ctx, double* top, double* bottom)
+{
+    const Staff* staff = item->staff();
+    const double mag = staff ? staff->staffMag(item) : 1.0;
+    const JianpuRowExtents ext = item->jianpuRowExtents();
+    // The row of a voice is centred half a spatium above the staff line (see layoutPitched()),
+    // every further voice is offset by the rows above it.
+    const double rowCenter = -item->spatium() * .5 * mag + ChordLayout::jianpuVoiceOffsetY(item, ctx.conf());
+    const double gap = ctx.conf().styleAbsolute(Sid::propertyDistanceHead) * mag;
+    *top = rowCenter - ext.above - gap;
+    *bottom = rowCenter + ext.below + gap;
+}
+
+//---------------------------------------------------------
+//   layoutJianpuArticulations
+//
+//   The voices of a Jianpu staff are stacked as rows, so the marks of a voice stay outside its
+//   own row: the upper voice writes them above the row, the lower voice below it, unless the
+//   mark is anchored explicitly. Several marks on one chord are stacked outwards, the ones laid
+//   out close to the note first (see layoutArticulations()).
+//   GB/T 46845-2025, 3.16: the articulation mark is centred above the note.
+//---------------------------------------------------------
+
+static void layoutJianpuArticulations(Chord* item, LayoutContext& ctx, bool closeToNote)
+{
+    const Staff* staff = item->staff();
+    if (!staff || !staff->isJianpuStaff(item->tick())) {
+        return;
+    }
+
+    const double mag = staff->staffMag(item);
+    const double minDist = ctx.conf().styleAbsolute(Sid::articulationMinDistance) * mag;
+    double top = 0.0;
+    double bottom = 0.0;
+    jianpuArticulationRow(item, ctx, &top, &bottom);
+    const double x = ChordLayout::centerX(item);
+
+    if (closeToNote) {
+        // the voice decides the side, since the voices are stacked in rows
+        for (Articulation* a : item->articulations()) {
+            a->setUp(a->anchor() == ArticulationAnchor::AUTO ? isUpVoice(item->voice()) : a->anchor() == ArticulationAnchor::TOP);
+            // Jianpu writes the staccato with the solid wedge "▼": above a digit a dot would be
+            // read as an octave dot (《音乐曲谱出版规范》3.16.3.1). Only the layout symbol is
+            // replaced, the score keeps its own articulation (the 5-line staves keep the dot).
+            const SymId sym = Articulation::jianpuSymId(a->symId());
+            if (sym != a->symId()) {
+                a->mutldata()->symId = sym;
+            }
+        }
+    } else {
+        // the marks laid out close to the note are already placed, so keep their room free
+        for (Articulation* a : item->articulations()) {
+            if (!a->layoutCloseToNote() || !a->visible()) {
+                continue;
+            }
+            const RectF bb = a->shape().bbox();
+            if (a->up()) {
+                top = std::min(top, a->y() + bb.top() - minDist);
+            } else {
+                bottom = std::max(bottom, a->y() + bb.bottom() + minDist);
+            }
+        }
+    }
+
+    for (Articulation* a : item->articulations()) {
+        if (a->layoutCloseToNote() != closeToNote) {
+            continue;
+        }
+        TLayout::layoutItem(a, ctx);
+        const RectF bb = a->shape().bbox();
+        if (a->up()) {
+            a->setPos(x - a->ldata()->opticalCenter(), top - bb.bottom());
+            if (a->visible()) {
+                top = a->y() + bb.top() - minDist;
+            }
+        } else {
+            a->setPos(x - a->ldata()->opticalCenter(), bottom - bb.top());
+            if (a->visible()) {
+                bottom = a->y() + bb.bottom() + minDist;
+            }
+        }
+    }
+
+    if (closeToNote) {
+        return;         // the shapes are added to the skylines once all marks are placed
+    }
+
+    for (Articulation* a : item->articulations()) {
+        if (!a->visible() || a->isOnCrossBeamSide()) {
+            continue;
+        }
+        if (a->addToSkyline() && a->segment()) {
+            a->segment()->staffShape(a->vStaffIdx()).add(a->shape().translated(a->pos() + item->pos() + item->staffOffset()));
+        }
+        Measure* meas = a->measure();
+        System* sys = meas ? meas->system() : nullptr;
+        if (sys) {
+            sys->staff(a->vStaffIdx())->skyline().add(a->shape().translated(a->systemPos() + item->staffOffset()));
+        }
+    }
 }
 
 void ChordLayout::layout(Chord* item, LayoutContext& ctx)
@@ -155,6 +304,11 @@ void ChordLayout::layoutPitched(Chord* item, LayoutContext& ctx)
     // It always starts half a spatium above, aligned with the middle of the measure line.
     double jianpuOffsetY = upnote ? -upnote->spatium() * .5 * mag_ : 0.0;
 
+    // Jianpu multi-voice (parallel voices): move the whole row of this voice down
+    if (isJianpuStaff) {
+        jianpuOffsetY += jianpuVoiceOffsetY(item, ctx.conf());
+    }
+
     // Grace notes are placed above the main notehead, so start with an offset.
     if (item->isGrace() && item->staff()) {
         // Use the staff scale (mag_) rather than the grace-note scale (item->mag()) so the
@@ -188,10 +342,8 @@ void ChordLayout::layoutPitched(Chord* item, LayoutContext& ctx)
                 jianpuOffsetY += dots.size() * dotDistance;
             }
 
-            // Add extra offset for beam if it is upnote
-            if (note == upnote) {
-                jianpuOffsetY += jianpuBeamOffset(item, ctx);
-            }
+            // The diminution lines of a chord are drawn below the whole stack (see
+            // BeamTremoloLayout::chordBeamAnchorY()), so no space is reserved inside the stack.
 
             jianpuOffsetY += ldata->bbox().height();
             jianpuOffsetY += ctx.conf().styleAbsolute(Sid::jianpuNumberVerticalDistance) * itemMag;
@@ -847,6 +999,13 @@ void ChordLayout::layoutArticulations(Chord* item, LayoutContext& ctx)
     if (item->articulations().empty()) {
         return;
     }
+
+    // Jianpu (numbered notation): the marks are placed relative to the digit row of their voice
+    if (item->staff() && item->staff()->isJianpuStaff(item->tick())) {
+        layoutJianpuArticulations(item, ctx, true);
+        return;
+    }
+
     const Staff* st = item->staff();
     const StaffType* staffType = st->staffTypeForElement(item);
     double mag            = (staffType->isSmall() ? ctx.conf().styleD(Sid::smallStaffMag) : 1.0) * staffType->userMag();
@@ -1086,6 +1245,13 @@ void ChordLayout::layoutArticulations2(Chord* item, LayoutContext& ctx, bool lay
     if (item->articulations().empty()) {
         return;
     }
+
+    // Jianpu (numbered notation): the marks are placed relative to the digit row of their voice
+    if (item->staff() && item->staff()->isJianpuStaff(item->tick())) {
+        layoutJianpuArticulations(item, ctx, false);
+        return;
+    }
+
     double headSideX = centerX(item);
     double stemSideX = headSideX;
     if (item->stem()) {
@@ -1739,7 +1905,7 @@ void ChordLayout::layoutDurationLines(Chord* item, LayoutContext& ctx)
 
     double hw = note->headWidth();
     double hx = note->pos().x() + note->bboxXShift();
-    double lengtheningY = -item->spatium() * .5;
+    double lengtheningY = -item->spatium() * .5 + jianpuVoiceOffsetY(item, ctx.conf());
     for (int i = 0; i < lines; ++i) {
         DurationLine* dl = item->durationLines()[i];
         dl->setOwnershipParent(item);
@@ -1775,21 +1941,25 @@ void ChordLayout::layoutOctaveDots(Chord* item, LayoutContext& ctx)
 
     const StaffType* st = staff->staffTypeForElement(item);
     double height = st->jianpuBoxH() * item->magS();
-    int baseOctave = 3; // Default base octave for Jianpu is C3
+    // 中音组基准：「中音 1」= 主音落在小字一组（octave 4）的实例
+    // 依据 GB/T 46845—2025 6.2.7 /《音乐曲谱出版规范》(2015) 3.6.3
+    // 固定调（Sid::jianpuFixedDo）时基准音改为 C（绝对音高读法）
+    const Key jpKey = ctx.conf().styleB(Sid::jianpuFixedDo) ? Key::C : staff->keySigEvent(tick).key();
+    const int baseOctave = 4;
 
     for (Note* note : item->notes()) {
         int dots = 0;
         double offsetY = 0;
         double distance = ctx.conf().styleAbsolute(Sid::jianpuOctaveDotDistance) * item->magS();
-        int octave = note->octave();
+        int octave = baseOctave + pitchToJianpuOctaveGroup(note->pitch(), note->tpc(), jpKey);
         if (octave > baseOctave) {
             dots = octave - baseOctave;
             offsetY = -(height * .5 + dots * distance);
         } else if (octave < baseOctave) {
             dots = baseOctave - octave;
             offsetY = height * .5 + distance;
-            if (note == item->upNote()) {
-                // The octave dot should be under the jianpu beam
+            if (note == item->downNote()) {
+                // The octave dot should be under the jianpu beam, which is drawn below the stack
                 offsetY += jianpuBeamOffset(item, ctx);
             }
         } else {
@@ -2070,6 +2240,14 @@ void ChordLayout::calculateChordOffsets(Segment* segment, staff_idx_t staffIdx, 
     const Staff* staff = ctx.dom().staff(staffIdx);
     double sp = staff->spatium(tick);
     const bool isTab = staff->isTabStaff(segment->tick());
+
+    // Jianpu (numbered notation) lays the voices out in stacked rows, so notes of different voices
+    // can never collide horizontally - and they must stay vertically aligned on the beat
+    // (GB/T 46845-2025 5.11; "音乐曲谱出版规范" 3.26.2.1). Without this, a unison or a second
+    // between voices would shift one voice's digits sideways.
+    if (staff->isJianpuStaff(tick)) {
+        return;
+    }
 
     Note* bottomUpNote = posInfo.upStemNotes.front();
     Note* topDownNote  = posInfo.downStemNotes.back();

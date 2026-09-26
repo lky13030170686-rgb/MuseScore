@@ -115,6 +115,7 @@
 #include "dom/part.h"
 #include "dom/pedal.h"
 #include "dom/pickscrape.h"
+#include "dom/pitchspelling.h" // IWYU pragma: keep
 #include "dom/playtechannotation.h"
 
 #include "dom/rasgueado.h"
@@ -538,6 +539,15 @@ void TLayout::layoutAccidental(const Accidental* item, Accidental::LayoutData* l
     // don't show accidentals for tab or slash notation
     if (item->onTabStaff() || (item->note() && item->note()->fixed())) {
         ldata->setIsSkipDraw(true);
+        return;
+    }
+
+    // Jianpu (numbered notation): the accidental is written as part of the digit ("#4", "b7"),
+    // so the 5-line accidental glyph is neither drawn nor given any space.
+    if (item->staff() && item->staff()->isJianpuStaff(item->tick())) {
+        ldata->setIsSkipDraw(true);
+        ldata->setBbox(RectF());
+        ldata->setShape(Shape());
         return;
     }
     ldata->setIsSkipDraw(false);
@@ -1006,7 +1016,7 @@ void TLayout::fillArticulationShape(const Articulation* item, Articulation::Layo
 {
     LAYOUT_CALL_ITEM(item);
 
-    SymId sym = item->symId();
+    SymId sym = item->displaySymId();
     if (sym == SymId::articAccentAbove || sym == SymId::articAccentBelow) {
         RectF symBbox = item->symBbox(sym);
         double width = symBbox.width();
@@ -3527,6 +3537,44 @@ static void keySigAddLayout(const KeySig* item, const LayoutConfiguration& conf,
     ldata->keySymbols.push_back(ks);
 }
 
+//---------------------------------------------------------
+//   jianpuDigitText
+//
+//   Jianpu (numbered notation): the accidentals written in front of a digit use the real
+//   musical signs "♭" (U+266D) and "♯" (U+266F) instead of the ASCII letters "b" and "#",
+//   which read like text next to a number.
+//   tpc2Function() itself keeps its ASCII output - chord symbols and MusicXML export use it too.
+//---------------------------------------------------------
+
+static String jianpuDigitText(const String& function)
+{
+    String s = function;
+    s.replace(u'b', u'\u266d');
+    s.replace(u'#', u'\u266f');
+    return s;
+}
+
+//---------------------------------------------------------
+//   jianpuKeyText
+//
+//   Jianpu (numbered notation) writes the key as "1=X" where X is the tonic of the key
+//   (movable do), e.g. "1=D" or "1=bB" - instead of a 5-line key signature.
+//   Minor keys use their relative major, which is what the la-based reading of Jianpu assumes.
+//   GB/T 46845-2025, 调号 (key signature).
+//---------------------------------------------------------
+
+static String jianpuKeyText(Key key)
+{
+    // 15 keys, ordered by the circle of fifths: Cb Gb Db Ab Eb Bb F | C | G D A E B F# C#
+    static const char* names[] = { "Cb", "Gb", "Db", "Ab", "Eb", "Bb", "F", "C", "G", "D", "A", "E", "B", "F#", "C#" };
+
+    const int fifths = int(key);
+    if (fifths < -7 || fifths > 7) {
+        return String();
+    }
+    return String(u"1=%1").arg(String::fromAscii(names[fifths + 7]));
+}
+
 void TLayout::layoutKeySig(const KeySig* item, KeySig::LayoutData* ldata, const LayoutConfiguration& conf)
 {
     LAYOUT_CALL_ITEM(item);
@@ -3544,6 +3592,28 @@ void TLayout::layoutKeySig(const KeySig* item, KeySig::LayoutData* ldata, const 
     const StaffType* stVisibility = staff ? staff->staffType(item->tick()) : nullptr;
     if (stVisibility && !stVisibility->genKeysig()) {
         return;
+    }
+
+    // Jianpu (numbered notation): draw "1=X" instead of a 5-line key signature. The text takes the
+    // place and the width of the key signature, so it is laid out here (and drawn in TDraw).
+    if (staff && staff->isJianpuStaff(item->tick()) && !item->isCustom() && !item->isAtonal()) {
+        // 固定调模式下数字以 C 为「1」，调号文本随之显示 1=C
+        const Key key = conf.styleB(Sid::jianpuFixedDo) ? Key::C : item->key();
+        const String text = jianpuKeyText(key);
+        if (!text.isEmpty()) {
+            const StaffType* jp = staff->staffTypeForElement(item);
+            muse::draw::Font font(jp->jianpuFont());
+            font.setPointSizeF(font.pointSizeF() * item->magS());
+            muse::draw::FontMetrics fm(font);
+
+            const double h = jp->jianpuBoxH() * item->magS();
+            const double w = fm.width(text);
+            // the Jianpu digit row is centered half a spatium above the staff line
+            ldata->jianpuText = text;
+            ldata->setBbox(RectF(0.0, -item->spatium() * .5 - h * .5, w, h));
+            ldata->setShape(Shape(ldata->bbox(), item));
+            return;
+        }
     }
 
     const StaffType* st = item->staffType();
@@ -4217,10 +4287,11 @@ void TLayout::layoutNote(const Note* item, Note::LayoutData* ldata)
         const Staff* st = item->staff();
         const StaffType* jianpu = st->staffTypeForElement(item);
 
+        // 首调：以调号主音为「1」；固定调（Sid::jianpuFixedDo）：一律以 C 为「1」，
+        // 于是变音记号随音级一起写出（如 D 大调里的 F♯ 记作 ♯4）。
         KeySigEvent ks = st->keySigEvent(item->chord()->tick());
-        String accName, stepName;
-        tpc2Function(item->tpc(), ks.key(), accName, stepName);
-        const_cast<Note*>(item)->setJianpuDigit(String(u"%1").arg(stepName));
+        const Key readingKey = item->style().styleB(Sid::jianpuFixedDo) ? Key::C : ks.key();
+        const_cast<Note*>(item)->setJianpuDigit(jianpuDigitText(tpc2Function(item->tpc(), readingKey)));
 
         double width = item->headWidth();
         double height = jianpu->jianpuBoxH() * item->magS();
@@ -4872,17 +4943,16 @@ void TLayout::layoutShadowNote(ShadowNote* item, LayoutContext& ctx)
                 int tpc = nval.tpc(concertPitch);
 
                 if (tpc != Tpc::TPC_INVALID) {
-                    String accName, stepName;
                     KeySigEvent ks = staff->keySigEvent(item->tick());
-                    tpc2Function(tpc, ks.key(), accName, stepName);
-                    item->setJianpuDigit(String(u"%1").arg(stepName));
+                    // 与 Note 的简谱数字取法一致（首调 / 固定调）
+                    const Key readingKey = ctx.conf().styleB(Sid::jianpuFixedDo) ? Key::C : ks.key();
+                    item->setJianpuDigit(jianpuDigitText(tpc2Function(tpc, readingKey)));
 
-                    Interval transpose = item->part()->instrument(item->tick())->transpose();
-                    int alteration = static_cast<int>(tpc2alter(tpc));
-                    int epitch = nval.pitch - transpose.chromatic;
-                    int octave = (epitch - alteration) / 12 - 1; // See Note::octave
-                    int baseOctave = 3; // Default base octave for Jianpu is C3
-                    dots = baseOctave - octave;
+                    // 与已打补丁的 chordlayout.cpp 保持一致的简谱八度点语义：
+                    // pitchToJianpuOctaveGroup() 以「中音 1」为基准，>0 为高音点、<0 为低音点。
+                    // 注意 tdraw.cpp 绘制 ShadowNote 时以负值画在数字上方、正值画在下方，
+                    // 故取反后再交给 ShadowNote::setJianpuOctaveDots()。
+                    dots = -pitchToJianpuOctaveGroup(nval.pitch, tpc, readingKey);
                 }
             }
         }
@@ -4909,6 +4979,10 @@ void TLayout::layoutShadowNote(ShadowNote* item, LayoutContext& ctx)
         if (!up) {
             jianpuBbox.setY(jianpuBbox.y() - extraHeight); // Jianpu is above the head note
         }
+
+        // Jianpu multi-voice (parallel voices): the preview follows the row of the voice being entered
+        jianpuBbox.setY(jianpuBbox.y() + ChordLayout::jianpuVoiceOffsetY(item, ctx.conf()));
+
         newBbox |= jianpuBbox;
     }
 

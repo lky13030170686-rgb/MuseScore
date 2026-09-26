@@ -70,6 +70,10 @@ public:
     virtual void setInputNotes(const engraving::NoteValList& notes) = 0;
     virtual void moveInputNotes(bool up, engraving::UpDownMode mode) = 0;
 
+    // Used on Jianpu staves: current input octave group (0 = middle group)
+    virtual int jianpuOctaveGroup() const = 0;
+    virtual void setJianpuOctaveGroup(int octaveGroup) = 0;
+
     virtual void setRestMode(bool rest) = 0;
     virtual void setAccidental(engraving::AccidentalType accidentalType) = 0;
     virtual void setArticulation(engraving::SymId articulationSymbolId) = 0;

@@ -518,6 +518,20 @@ inline static const muse::rcommand::Command ENTER_FRET_14_COMMAND("command://not
 
 inline static const muse::rcommand::Command ENTER_REST_TAB_COMMAND("command://notation/enter-rest-tab");
 
+// Jianpu commands
+inline static const muse::rcommand::Command ENTER_JIANPU_DEGREE_1_COMMAND("command://notation/enter-jianpu-degree-1");
+inline static const muse::rcommand::Command ENTER_JIANPU_DEGREE_2_COMMAND("command://notation/enter-jianpu-degree-2");
+inline static const muse::rcommand::Command ENTER_JIANPU_DEGREE_3_COMMAND("command://notation/enter-jianpu-degree-3");
+inline static const muse::rcommand::Command ENTER_JIANPU_DEGREE_4_COMMAND("command://notation/enter-jianpu-degree-4");
+inline static const muse::rcommand::Command ENTER_JIANPU_DEGREE_5_COMMAND("command://notation/enter-jianpu-degree-5");
+inline static const muse::rcommand::Command ENTER_JIANPU_DEGREE_6_COMMAND("command://notation/enter-jianpu-degree-6");
+inline static const muse::rcommand::Command ENTER_JIANPU_DEGREE_7_COMMAND("command://notation/enter-jianpu-degree-7");
+
+inline static const muse::rcommand::Command ENTER_REST_JIANPU_COMMAND("command://notation/enter-rest-jianpu");
+
+inline static const muse::rcommand::Command JIANPU_OCTAVE_UP_COMMAND("command://notation/jianpu-octave-up");
+inline static const muse::rcommand::Command JIANPU_OCTAVE_DOWN_COMMAND("command://notation/jianpu-octave-down");
+
 inline static const muse::rcommand::Command ADD_STANDARD_BEND_COMMAND("command://notation/add-standard-bend");
 inline static const muse::rcommand::Command ADD_PRE_BEND_COMMAND("command://notation/add-pre-bend");
 inline static const muse::rcommand::Command ADD_GRACE_NOTE_BEND_COMMAND("command://notation/add-grace-note-bend");

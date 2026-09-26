@@ -248,6 +248,11 @@ mu::engraving::MeasureBeat PlaybackControllerStub::currentBeat() const
     return {};
 }
 
+muse::async::Notification PlaybackControllerStub::currentTickChanged() const
+{
+    return {};
+}
+
 muse::audio::secs_t PlaybackControllerStub::beatToSecs(int, int) const
 {
     return 0;

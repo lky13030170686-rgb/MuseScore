@@ -52,6 +52,7 @@
 #include "../dom/note.h"
 #include "../dom/noteval.h"
 #include "../dom/part.h"
+#include "../dom/pitchspelling.h"
 #include "../dom/range.h"
 #include "../dom/rest.h"
 #include "../dom/score.h"
@@ -1320,6 +1321,50 @@ void NoteInput::addFret(Transaction& tx, Score* score, int fret)
     pos.fret      = fret;
     pos.beyondScore = is.beyondScore();
     putNote(tx, score, pos, false);
+}
+
+//---------------------------------------------------------
+//   addJianpuDegree
+///   insert note with given Jianpu scale degree (1..7) in the current octave group
+///   of the current key (Jianpu staves only)
+//---------------------------------------------------------
+
+void NoteInput::addJianpuDegree(Transaction& tx, Score* score, int degree)
+{
+    InputState& is = score->inputState();
+    if (is.track() == muse::nidx) { // invalid state
+        return;
+    }
+    if (!is.segment()) {
+        LOGD("cannot enter notes here (no chord rest at current position)");
+        return;
+    }
+
+    Staff* staff = is.staff();
+    if (!staff || !staff->isJianpuStaff(is.tick())) {
+        return;                                   // 仅在简谱谱表上生效
+    }
+
+    // 调号取法与渲染层一致（chordlayout.cpp 用 staff->keySigEvent(tick).key()）；
+    // 固定调模式（Sid::jianpuFixedDo）下数字一律以 C 为「1」，输入与显示保持一致。
+    const Key key = score->style().styleB(Sid::jianpuFixedDo) ? Key::C : staff->key(is.tick());
+
+    int pitch = 0;
+    int tpc = 0;
+    if (!jianpuDegreeToPitch(degree, is.jianpuOctaveGroup(), key, pitch, tpc)) {
+        return;                                   // 超出音域，忽略
+    }
+
+    NoteVal nval;
+    nval.pitch = pitch;
+    nval.tpc1  = tpc;                             // 本切片只保证无移调乐器（tpc1 == tpc2）
+    nval.tpc2  = tpc;
+
+    is.setRest(false);
+    is.setAccidentalType(AccidentalType::NONE);
+
+    // 复用既有的“插入音高 + 前进”路径（BY_NOTE_NAME 模式），见 addPitch() 上方实现
+    addPitch(tx, score, nval, /* addFlag */ false, /* externalInputState */ nullptr);
 }
 
 //---------------------------------------------------------

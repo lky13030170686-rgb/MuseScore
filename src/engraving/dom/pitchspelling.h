@@ -92,6 +92,26 @@ extern int tpc2alterByKey(int tpc, Key);
 extern int pitch2absStepByKey(int pitch, int tpc, Key, int& alter);
 extern int absStep2pitchByKey(int step, Key);
 extern int tpc2degree(int tpc, Key key);
+
+//---------------------------------------------------------
+//   pitchToJianpuOctaveGroup
+//    简谱音高组：以「中音 1」（主音落在小字一组的那个实例）为基准，
+//    按自然音级坐标差计算相对音高组。
+//    >0 需画 n 个高音点；<0 需画 |n| 个低音点；0 = 中音组。
+//    依据：GB/T 46845—2025《音乐曲谱出版 简谱 通用规范》6.2.7
+//          《音乐曲谱出版规范》(2015) 3.6.3
+//---------------------------------------------------------
+extern int pitchToJianpuOctaveGroup(int pitch, int tpc, Key key);
+
+//---------------------------------------------------------
+//   jianpuDegreeToPitch
+//    简谱「音级 + 音高组 + 调号」→ 音高与 TPC（pitchToJianpuOctaveGroup 的反函数）。
+//    degree: 1..7（1 = 主音，与 tpc2degree() 的 0..6 相差 1）
+//    octaveGroup: 与 pitchToJianpuOctaveGroup() 同义（0 = 中音组）
+//    成功返回 true；越界（超出 MIDI 音域）返回 false，不静默平移八度。
+//---------------------------------------------------------
+extern bool jianpuDegreeToPitch(int degree, int octaveGroup, Key key, int& pitchOut, int& tpcOut);
+
 extern int tpcInterval(int startTpc, int interval, int alter);
 extern int step2pitchInterval(int step, int alter);
 extern String tpc2Function(int tpc, Key key);

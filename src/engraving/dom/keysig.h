@@ -95,6 +95,9 @@ public:
 
     struct LayoutData : public EngravingItem::LayoutData {
         std::vector<KeySym> keySymbols;
+        // Jianpu (numbered notation): the key is drawn as text ("1=X") instead of a 5-line key
+        // signature. Empty for regular staves.
+        String jianpuText;
     };
     DECLARE_LAYOUTDATA_METHODS(KeySig)
 

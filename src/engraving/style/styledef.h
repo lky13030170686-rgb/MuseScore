@@ -2294,6 +2294,8 @@ enum class Sid : short {
     jianpuDiminutionBeamDistance,
     jianpuDiminutionBeamPlacement,
     jianpuDurationLineThickness,
+    jianpuVoiceDistance,
+    jianpuFixedDo,
     STYLES
 };
 

@@ -1394,6 +1394,10 @@ struct SettingsCompat {
 struct MeasureBeat {
     int measureIndex = 0;
     int maxMeasureIndex = 0;
+    // The number as it is printed in the score (e.g. 0 for an anacrusis measure), which can
+    // differ from measureIndex + 1 when the time signature map and the measure list disagree.
+    int measureNumber = 1;
+    int maxMeasureNumber = 1;
     float beat = 0.f;
     int maxBeatIndex = 0;
 };

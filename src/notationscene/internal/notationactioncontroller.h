@@ -114,6 +114,7 @@ public:
     muse::async::Notification notationStyleChanged() const override;
 
     bool isTablatureStaff() const override;
+    bool isJianpuStaff() const override;
 
     bool isAutomationModeEnabled() const override;
     muse::async::Notification automationModeEnabledChanged() const override;
@@ -175,6 +176,8 @@ private:
     void addSlur();
     void addHammerOnPullOff();
     void addFret(int num);
+    void addJianpuDegree(int degree);
+    void changeJianpuOctave(int delta);
 
     void insertClef(mu::engraving::ClefType type);
 

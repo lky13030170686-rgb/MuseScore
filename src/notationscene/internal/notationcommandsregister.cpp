@@ -61,6 +61,11 @@ static const TranslatableString X_TAB = TranslatableString("action", "%1 (TAB)")
 static const TranslatableString fret_X_TAB = TranslatableString("action", "Fret %1 (TAB)");
 static const TranslatableString enter_TAB_fret_X = TranslatableString("action", "Enter TAB: fret %1");
 
+//: Jianpu (numbered) notation: scale degree, where 1 is the tonic of the current key.
+static const TranslatableString jianpu_X = TranslatableString("action", "Degree %1 (Jianpu)");
+static const TranslatableString enter_Jianpu_degree_X = TranslatableString("action", "Enter Jianpu: degree %1");
+static const TranslatableString X_JIANPU = TranslatableString("action", "%1 (Jianpu)");
+
 static const std::vector<CommandInfo> s_commandInfos = {
     // copy, cut, paste, delete, cancel
     CommandInfo{
@@ -2728,6 +2733,77 @@ static const std::vector<CommandInfo> s_commandInfos = {
         ENTER_REST_TAB_COMMAND,
         X_TAB.arg(TranslatableString("action", "Rest")),
         X_TAB.arg(TranslatableString("action", "Enter rest")),
+        InputSchema(),
+        Decoration()
+    },
+
+    CommandInfo {
+        ENTER_JIANPU_DEGREE_1_COMMAND,
+        jianpu_X.arg(1),
+        enter_Jianpu_degree_X.arg(1),
+        InputSchema(),
+        Decoration()
+    },
+    CommandInfo {
+        ENTER_JIANPU_DEGREE_2_COMMAND,
+        jianpu_X.arg(2),
+        enter_Jianpu_degree_X.arg(2),
+        InputSchema(),
+        Decoration()
+    },
+    CommandInfo {
+        ENTER_JIANPU_DEGREE_3_COMMAND,
+        jianpu_X.arg(3),
+        enter_Jianpu_degree_X.arg(3),
+        InputSchema(),
+        Decoration()
+    },
+    CommandInfo {
+        ENTER_JIANPU_DEGREE_4_COMMAND,
+        jianpu_X.arg(4),
+        enter_Jianpu_degree_X.arg(4),
+        InputSchema(),
+        Decoration()
+    },
+    CommandInfo {
+        ENTER_JIANPU_DEGREE_5_COMMAND,
+        jianpu_X.arg(5),
+        enter_Jianpu_degree_X.arg(5),
+        InputSchema(),
+        Decoration()
+    },
+    CommandInfo {
+        ENTER_JIANPU_DEGREE_6_COMMAND,
+        jianpu_X.arg(6),
+        enter_Jianpu_degree_X.arg(6),
+        InputSchema(),
+        Decoration()
+    },
+    CommandInfo {
+        ENTER_JIANPU_DEGREE_7_COMMAND,
+        jianpu_X.arg(7),
+        enter_Jianpu_degree_X.arg(7),
+        InputSchema(),
+        Decoration()
+    },
+    CommandInfo {
+        ENTER_REST_JIANPU_COMMAND,
+        X_JIANPU.arg(TranslatableString("action", "Rest")),
+        X_JIANPU.arg(TranslatableString("action", "Enter rest")),
+        InputSchema(),
+        Decoration()
+    },
+    CommandInfo {
+        JIANPU_OCTAVE_UP_COMMAND,
+        TranslatableString("action", "Octave up (Jianpu)"),
+        TranslatableString("action", "Enter Jianpu: octave up"),
+        InputSchema(),
+        Decoration()
+    },
+    CommandInfo {
+        JIANPU_OCTAVE_DOWN_COMMAND,
+        TranslatableString("action", "Octave down (Jianpu)"),
+        TranslatableString("action", "Enter Jianpu: octave down"),
         InputSchema(),
         Decoration()
     },

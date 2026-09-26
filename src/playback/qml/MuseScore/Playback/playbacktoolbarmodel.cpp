@@ -87,6 +87,13 @@ void PlaybackToolBarModel::setupConnections()
         updatePlayPosition(secs);
     });
 
+    // The position can also change without the audio player reporting a new position (e.g. when the
+    // user selects a measure while playback is stopped), and then the measure/beat shown here would
+    // keep the previous position.
+    playbackController()->currentTickChanged().onNotify(this, [this]() {
+        emit playPositionChanged();
+    });
+
     playbackController()->totalPlayTimeChanged().onNotify(this, [this]() {
         emit maxPlayTimeChanged();
         secs_t pos = globalContext()->playbackState()->playbackPosition();
@@ -267,13 +274,21 @@ void PlaybackToolBarModel::rewindToBeat(const MeasureBeat& beat)
 
 int PlaybackToolBarModel::measureNumber() const
 {
-    return measureBeat().measureIndex + 1;
+    return measureBeat().measureNumber;
 }
 
 void PlaybackToolBarModel::setMeasureNumber(int measureNumber)
 {
-    int measureIndex = measureNumber - 1;
     MeasureBeat measureBeat = this->measureBeat();
+    // measureNumber is the number printed in the score, so convert it back to the bar index of the
+    // time signature map using the current position as the reference.
+    int measureIndex = measureBeat.measureIndex + (measureNumber - measureBeat.measureNumber);
+
+    if (measureIndex < 0) {
+        measureIndex = 0;
+    } else if (measureIndex > measureBeat.maxMeasureIndex) {
+        measureIndex = measureBeat.maxMeasureIndex;
+    }
 
     if (measureIndex == measureBeat.measureIndex) {
         return;
@@ -285,7 +300,7 @@ void PlaybackToolBarModel::setMeasureNumber(int measureNumber)
 
 int PlaybackToolBarModel::maxMeasureNumber() const
 {
-    return measureBeat().maxMeasureIndex + 1;
+    return measureBeat().maxMeasureNumber;
 }
 
 int PlaybackToolBarModel::beatNumber() const

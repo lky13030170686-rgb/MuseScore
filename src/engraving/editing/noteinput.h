@@ -91,6 +91,7 @@ public:
     static void addPitch(Transaction& tx, Score* score, const NoteInputParams& params, bool addFlag, bool insert);
     static void addPitch(Transaction& tx, Score* score, int step, bool addFlag, bool insert);
     static void addFret(Transaction& tx, Score* score, int fret);
+    static void addJianpuDegree(Transaction& tx, Score* score, int degree);
 
     static void setDuration(Transaction& tx, Score* score, DurationType duration);
     static void toggleRest(Transaction& tx, Score* score);

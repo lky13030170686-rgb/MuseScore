@@ -224,6 +224,34 @@ static size_t nextVisibleSpannedStaff(const BarLine* bl)
 }
 
 //---------------------------------------------------------
+//   jianpuExtraDepth
+//
+//   Jianpu (numbered notation) can carry several voices on a single staff, laid out in
+//   stacked rows: the first voice keeps the traditional place, every further voice is
+//   moved down by at least one voice distance and by as much as needed to clear the content
+//   of the voices above (see Staff::jianpuVoiceOffsetY()).
+//   This returns the extra depth (below the staff) the voice rows take, so that the barline
+//   can span all of them (GB/T 46845-2025, 5.10 single-staff multi-voice notation).
+//
+//   Staff::jianpuVoiceRowsDepth() already takes the maximum over the whole system: otherwise
+//   the barlines would end at different heights from measure to measure.
+//---------------------------------------------------------
+
+static double jianpuExtraDepth(const Measure* measure, staff_idx_t staffIdx, const Fraction& tick)
+{
+    const Score* score = measure->score();
+    const Staff* staff = score ? score->staff(staffIdx) : nullptr;
+    if (!staff || !staff->isJianpuStaff(tick)) {
+        return 0.0;
+    }
+
+    // the standard 1-line barline already covers 1.5 sp below the first voice's row center
+    const double covered = 1.5 * staff->spatium(tick);
+    const double depth = staff->jianpuVoiceRowsDepth(measure, tick);
+    return depth > covered ? depth - covered : 0.0;
+}
+
+//---------------------------------------------------------
 //   calcY
 //---------------------------------------------------------
 
@@ -272,6 +300,11 @@ void BarLine::calcY()
     double y1 = offset + from * lineDistance * .5 - lineWidth;
     double y2 = offset + (staffType1->lines() * 2 - 2 + to) * lineDistance * .5 + lineWidth;
 
+    if (!spanStaff) {
+        // Jianpu: the barline has to span all the voice rows of this staff
+        y2 += jianpuExtraDepth(measure, staffIdx1, tick);
+    }
+
     if (spanStaff) {
         // we need spatium and line distance of bottom staff
         // as it may be scalled diferently
@@ -287,6 +320,9 @@ void BarLine::calcY()
         if (staffType2->lines() <= 1) {
             y2 += BARLINE_SPAN_1LINESTAFF_FROM * lineDistance2 * 0.5;
         }
+
+        // Jianpu: reach down to the lowest voice row of the bottom staff
+        y2 += jianpuExtraDepth(measure, staffIdx2, tick);
     }
 
     // if stafftype change in next measure, check new staff positions

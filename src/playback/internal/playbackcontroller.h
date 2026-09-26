@@ -129,6 +129,7 @@ public:
     muse::async::Notification currentTempoChanged() const override;
 
     engraving::MeasureBeat currentBeat() const override;
+    muse::async::Notification currentTickChanged() const override;
     muse::audio::secs_t beatToSecs(int measureIndex, int beatIndex) const override;
 
     double tempoMultiplier() const override;
@@ -245,6 +246,7 @@ private:
     muse::async::Channel<bool> m_loopEnabledChanged;
     muse::async::Notification m_totalPlayTimeChanged;
     muse::async::Notification m_currentTempoChanged;
+    muse::async::Notification m_currentTickChanged;
 
     muse::midi::tick_t m_currentTick = 0;
     notation::Tempo m_currentTempo;

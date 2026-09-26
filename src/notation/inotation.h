@@ -32,6 +32,10 @@
 
 class QString;
 
+namespace mu::engraving {
+class Score;
+}
+
 namespace mu::project {
 class INotationProject;
 }
@@ -43,6 +47,10 @@ public:
     virtual ~INotation() = default;
 
     virtual const muse::modularity::ContextPtr& iocContext() const = 0;
+
+    /// The score this notation displays: the master score for the master notation, and the excerpt
+    /// score for a part notation.
+    virtual mu::engraving::Score* score() const = 0;
 
     virtual project::INotationProject* project() const = 0;
     virtual IMasterNotationPtr masterNotation() const = 0;

@@ -4106,6 +4106,8 @@ void TRead::read(StaffType* t, XmlReader& e, ReadContext& ctx)
             t->setGenTimesig(e.readInt());
         } else if (tag == "noteheadScheme") {
             t->setNoteHeadScheme(TConv::fromXml(e.readAsciiText(), NoteHeadScheme::HEAD_NORMAL));
+        } else if (tag == "jianpuTextStyle") {
+            t->setJianpuTextStyle(TextStyleType(TConv::fromXml(e.readAsciiText(), TextStyleType::JIANPU_NUMBER)));
         } else if (tag == "keysig") {
             t->setGenKeysig(e.readInt());
         } else if (tag == "ledgerlines") {

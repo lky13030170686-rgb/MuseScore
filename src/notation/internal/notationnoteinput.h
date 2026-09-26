@@ -83,6 +83,10 @@ public:
     void setInputNotes(const NoteValList& notes) override;
     void moveInputNotes(bool up, PitchMode mode) override;
 
+    // Used on Jianpu staves
+    int jianpuOctaveGroup() const override;
+    void setJianpuOctaveGroup(int octaveGroup) override;
+
     void setRestMode(bool rest) override;
     void setAccidental(AccidentalType accidentalType) override;
     void setArticulation(SymbolId articulationSymbolId) override;

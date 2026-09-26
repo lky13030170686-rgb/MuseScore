@@ -1415,7 +1415,9 @@ double BeamTremoloLayout::chordBeamAnchorY(const BeamBase::LayoutData* ldata, co
 
     const Chord* chord = toChord(cr);
     if (chord->isJianpuStaff()) {
-        return chord->upNote()->pagePos().y();
+        // Jianpu: the digits of a chord are stacked downwards from the row center, so the
+        // diminution lines belong below the whole stack - not below its top digit.
+        return chord->downNote()->pagePos().y();
     }
 
     Note* note = cr->up() ? chord->downNote() : chord->upNote();

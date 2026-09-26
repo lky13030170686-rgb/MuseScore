@@ -30,6 +30,9 @@
 #include <cmath>
 #include <map>
 
+#include <QDir>
+#include <QFile>
+
 #include "async/channel.h"
 #include "containers.h"
 
@@ -126,6 +129,22 @@ using namespace mu::engraving;
 
 namespace mu::engraving {
 std::set<Score*> Score::validScores;
+
+//! TEMPORARY diagnostic (Jianpu build): records the selection bookkeeping in
+//! <home>/Documents/MuseScore4/jianpu-seltrace.txt, to trace a click that selects far more measures
+//! than the one that was clicked.
+static void jianpuSelectionTrace(const QString& line)
+{
+    static const QString path = QDir::homePath() + QStringLiteral("/Documents/MuseScore4/jianpu-seltrace.txt");
+    static bool started = false;
+    QFile file(path);
+    const QIODevice::OpenMode mode = started ? QIODevice::Append : QIODevice::Truncate;
+    started = true;
+    if (file.open(mode | QIODevice::Text)) {
+        file.write(line.toUtf8());
+        file.write("\n");
+    }
+}
 
 bool noSeq           = false;
 bool noMidi          = false;
@@ -2702,6 +2721,17 @@ void Score::select(const std::vector<EngravingItem*>& items, SelectType type, st
 
 void Score::doSelect(EngravingItem* e, SelectType type, staff_idx_t staffIdx)
 {
+    jianpuSelectionTrace(QStringLiteral("doSelect element=%1 type=%2 staffIdx=%3 elementTick=%4 stateBefore=%5 "
+                                        "isRangeBefore=%6 tickStartBefore=%7 tickEndBefore=%8")
+                         .arg(e ? e->typeName() : "null")
+                         .arg(static_cast<int>(type))
+                         .arg(staffIdx == muse::nidx ? -1 : static_cast<int>(staffIdx))
+                         .arg(e ? e->tick().ticks() : -1)
+                         .arg(static_cast<int>(m_selection.state()))
+                         .arg(m_selection.isRange())
+                         .arg(m_selection.isRange() ? m_selection.tickStart().ticks() : -1)
+                         .arg(m_selection.isRange() ? m_selection.tickEnd().ticks() : -1));
+
     if (MScore::debugMode) {
         LOGD("select element <%s> type %d(state %d) staff %zu",
              e ? e->typeName() : "", int(type), int(selection().state()), e ? e->staffIdx() : -1);
@@ -2892,8 +2922,38 @@ void Score::selectRange(EngravingItem* e, staff_idx_t staffIdx)
         Measure* m = toMeasure(e)->coveringMMRestOrThis();
         Segment* startSegment = m->first(SegmentType::ChordRest);
         Segment* endSegment = m->last();
+
+        // Keep the selection inside the measure that was clicked. A damaged score can own a segment
+        // that lies beyond the end of its measure (e.g. the first measure holding a segment at a tick
+        // far away), and then selecting the measure would select every measure up to that segment.
+        if (endSegment && endSegment->rtick() > m->ticks()) {
+            endSegment = nullptr;
+            for (Segment* s = m->first(); s && s->measure() == m; s = s->next()) {
+                if (s->rtick() <= m->ticks()) {
+                    endSegment = s;
+                }
+            }
+        }
+
         Fraction tick = m->tick();
         Fraction etick = tick + m->ticks();
+
+        jianpuSelectionTrace(QStringLiteral("selectRange measure: clickedTick=%1 clickedMMRest=%2 mTick=%3 mTicks=%4 "
+                                            "mMMRest=%5 mMMRestCount=%6 covering=%7 nSegments=%8 firstSeg=%9 lastSeg=%10 "
+                                            "state=%11 isRange=%12 isSingle=%13")
+                             .arg(toMeasure(e)->tick().ticks())
+                             .arg(toMeasure(e)->isMMRest())
+                             .arg(m->tick().ticks())
+                             .arg(m->ticks().ticks())
+                             .arg(m->isMMRest())
+                             .arg(m->mmRestCount())
+                             .arg(m != toMeasure(e))
+                             .arg(m->segments().size())
+                             .arg(m->first() ? m->first()->tick().ticks() : -1)
+                             .arg(m->last() ? m->last()->tick().ticks() : -1)
+                             .arg(static_cast<int>(m_selection.state()))
+                             .arg(m_selection.isRange())
+                             .arg(m_selection.isSingle()));
 
         if (m_selection.isRange()) {
             // Extend existing range selection
@@ -2908,6 +2968,17 @@ void Score::selectRange(EngravingItem* e, staff_idx_t staffIdx)
 
         m_selection.updateSelectedElements();
         m_selection.setActiveTrack(staffIdx * VOICES);
+
+        jianpuSelectionTrace(QStringLiteral("selectRange result: state=%1 isRange=%2 tickStart=%3 tickEnd=%4 "
+                                            "startSegTick=%5 endSegTick=%6 staffStart=%7 staffEnd=%8")
+                             .arg(static_cast<int>(m_selection.state()))
+                             .arg(m_selection.isRange())
+                             .arg(m_selection.tickStart().ticks())
+                             .arg(m_selection.tickEnd().ticks())
+                             .arg(startSegment ? startSegment->tick().ticks() : -1)
+                             .arg(endSegment ? endSegment->tick().ticks() : -1)
+                             .arg(static_cast<int>(m_selection.staffStart()))
+                             .arg(static_cast<int>(m_selection.staffEnd())));
         return;
     }
 
@@ -4834,6 +4905,31 @@ bool Score::autoLayoutEnabled() const
 //    do a complete (re-) layout
 //---------------------------------------------------------
 
+//! TEMPORARY diagnostic: report a first measure that owns a segment beyond its own length.
+static void jianpuCheckFirstMeasureSegments(Score* score)
+{
+    Measure* m = score->firstMeasure();
+    if (!m) {
+        return;
+    }
+
+    for (Segment* s = m->first(); s && s->measure() == m; s = s->next()) {
+        if (s->rtick() > m->ticks()) {
+            jianpuSelectionTrace(QStringLiteral("layout anomaly: nMeasures=%1 nStaves=%2 firstMeasureTick=%3 "
+                                                "mTicks=%4 nSegments=%5 bogusSegType=%6 bogusSegRTick=%7 bogusSegTick=%8")
+                                 .arg(static_cast<int>(score->measures()->size()))
+                                 .arg(static_cast<int>(score->nstaves()))
+                                 .arg(m->tick().ticks())
+                                 .arg(m->ticks().ticks())
+                                 .arg(m->segments().size())
+                                 .arg(static_cast<int>(s->segmentType()))
+                                 .arg(s->rtick().ticks())
+                                 .arg(s->tick().ticks()));
+            break;
+        }
+    }
+}
+
 void Score::doLayout()
 {
     TRACEFUNC;
@@ -4878,6 +4974,8 @@ void Score::doLayoutRange(const Fraction& st, const Fraction& et)
         m_resetCrossBeams = false;
         resetCrossBeams();
     }
+
+    jianpuCheckFirstMeasureSegments(this);
 }
 
 void Score::createPaddingTable()

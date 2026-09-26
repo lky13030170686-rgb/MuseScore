@@ -263,6 +263,19 @@ static const std::vector<Command> TAB_COMMANDS = {
     GOTO_STRING_BELOW_COMMAND
 };
 
+static const std::vector<Command> JIANPU_COMMANDS = {
+    ENTER_JIANPU_DEGREE_1_COMMAND,
+    ENTER_JIANPU_DEGREE_2_COMMAND,
+    ENTER_JIANPU_DEGREE_3_COMMAND,
+    ENTER_JIANPU_DEGREE_4_COMMAND,
+    ENTER_JIANPU_DEGREE_5_COMMAND,
+    ENTER_JIANPU_DEGREE_6_COMMAND,
+    ENTER_JIANPU_DEGREE_7_COMMAND,
+    ENTER_REST_JIANPU_COMMAND,
+    JIANPU_OCTAVE_UP_COMMAND,
+    JIANPU_OCTAVE_DOWN_COMMAND
+};
+
 static const std::vector<Command> DEBUG_COMMANDS = {
     SHOW_ELEMENT_BOUNDING_RECTS_COMMAND,
     COLOR_ELEMENT_SHAPES_COMMAND,
@@ -309,6 +322,7 @@ void NotationCommandsState::init()
         updateCommandStates(commands(MOVE_SELECTION_COMMANDS));
         updateCommandStates(LAYOUT_BREAK_COMMANDS);
         updateCommandStates(TAB_COMMANDS);
+        updateCommandStates(JIANPU_COMMANDS);
     });
 
     controller()->stackChanged().onNotify(this, [this]() {
@@ -337,6 +351,7 @@ void NotationCommandsState::init()
         updateCommandStates(commands(VOICE_COMMANDS));
         updateCommandStates(NOTE_COMMANDS);
         updateCommandStates(NOTE_OR_REST_SELECTED_COMMANDS);
+        updateCommandStates(JIANPU_COMMANDS);
     });
 
     controller()->scoreConfigChanged().onReceive(this, [this](ScoreConfigType configType) {
@@ -485,6 +500,10 @@ CommandState NotationCommandsState::doCommandState(const Command& command) const
 
     if (muse::contains(TAB_COMMANDS, command)) {
         return CommandState(controller()->isTablatureStaff(), false);
+    }
+
+    if (muse::contains(JIANPU_COMMANDS, command)) {
+        return CommandState(controller()->isJianpuStaff(), false);
     }
 
     if (command == TOGGLE_AUTOMATION_COMMAND) {

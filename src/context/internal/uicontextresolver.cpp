@@ -31,6 +31,8 @@
 #include "notation/inotationnoteinput.h" // IWYU pragma: keep
 #include "notation/inotationselection.h" // IWYU pragma: keep
 
+#include "engraving/dom/staff.h" // IWYU pragma: keep
+
 #include "shortcutcontext.h"
 
 #include "muse_framework_config.h"
@@ -240,6 +242,22 @@ bool UiContextResolver::isShortcutContextAllowed(const std::string& scContext) c
         }
         auto noteInput = notation->interaction()->noteInput();
         return noteInput->isNoteInputMode() && noteInput->state().staffGroup() == mu::engraving::StaffGroup::TAB;
+    } else if (CTX_NOTATION_NOTE_INPUT_STAFF_JIANPU == scContext) {
+        if (!matchWithCurrent(context::UiCtxProjectFocused)) {
+            return false;
+        }
+        auto notation = globalContext()->currentNotation();
+        if (!notation) {
+            return false;
+        }
+        auto noteInput = notation->interaction()->noteInput();
+        if (!noteInput->isNoteInputMode()) {
+            return false;
+        }
+        // 简谱的 StaffGroup 是 STANDARD，只能按谱表类型判断
+        const mu::engraving::InputState& inputState = noteInput->state();
+        const mu::engraving::Staff* staff = inputState.staff();
+        return staff && staff->isJianpuStaff(inputState.tick());
     } else if (CTX_NOTATION_TEXT_EDITING == scContext) {
         if (!matchWithCurrent(context::UiCtxProjectFocused)) {
             return false;

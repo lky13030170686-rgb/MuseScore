@@ -95,6 +95,7 @@ public:
     muse::async::Notification currentTempoChanged() const override;
 
     engraving::MeasureBeat currentBeat() const override;
+    muse::async::Notification currentTickChanged() const override;
     muse::audio::secs_t beatToSecs(int measureIndex, int beatIndex) const override;
 
     double tempoMultiplier() const override;

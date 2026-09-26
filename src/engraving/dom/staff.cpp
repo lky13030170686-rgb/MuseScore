@@ -1695,6 +1695,117 @@ bool Staff::isJianpuStaff(const Fraction& tick) const
 }
 
 //---------------------------------------------------------
+//   jianpuMeasureRowExtents
+//
+//   Jianpu (numbered notation): for every voice, how far its notation row reaches above and
+//   below the row centre in this measure - the stacked chord digits with their octave dots plus
+//   the diminution lines below them, and the articulation marks written outside the row.
+//---------------------------------------------------------
+
+static void jianpuMeasureRowExtents(const Staff* staff, const Measure* measure, JianpuRowExtents extents[VOICES])
+{
+    for (voice_idx_t voice = 0; voice < VOICES; ++voice) {
+        const track_idx_t track = staff->idx() * VOICES + voice;
+        for (const Segment* s = measure->first(SegmentType::ChordRest); s; s = s->next(SegmentType::ChordRest)) {
+            const ChordRest* cr = toChordRest(s->element(track));
+            if (!cr) {
+                continue;
+            }
+            const JianpuRowExtents ext = cr->jianpuRowExtents();
+            extents[voice].above = std::max(extents[voice].above, ext.reservedAbove());
+            extents[voice].below = std::max(extents[voice].below, ext.reservedBelow());
+        }
+    }
+}
+
+//---------------------------------------------------------
+//   jianpuVoiceRowExtents
+//
+//   As above, but the maximum over the whole system: the rows are offset from each other by
+//   these extents, and they must stay level from measure to measure.
+//---------------------------------------------------------
+
+static void jianpuVoiceRowExtents(const Staff* staff, const Measure* measure, const Fraction& tick, JianpuRowExtents extents[VOICES])
+{
+    for (int i = 0; i < VOICES; ++i) {
+        extents[i] = JianpuRowExtents();
+    }
+
+    const System* system = measure->system();
+    const Measure* first = measure;
+    if (system) {
+        while (first->prevMeasure() && first->prevMeasure()->system() == system) {
+            first = first->prevMeasure();
+        }
+    }
+
+    for (const Measure* m = first; m && (!system || m->system() == system); m = m->nextMeasure()) {
+        jianpuMeasureRowExtents(staff, m, extents);
+    }
+}
+
+//---------------------------------------------------------
+//   jianpuVoiceOffsetY
+//
+//   Jianpu (numbered notation): vertical offset of the notation row of the given voice.
+//   Voice 1 keeps the traditional place; every further voice is moved down by at least the
+//   voice distance, and by as much as needed to clear the content (chord stacks, diminution
+//   lines, articulation marks) of the voice above and to leave room for its own marks.
+//---------------------------------------------------------
+
+double Staff::jianpuVoiceOffsetY(const Measure* measure, voice_idx_t voice, const Fraction& tick) const
+{
+    if (!measure || voice == 0 || !isJianpuStaff(tick)) {
+        return 0.0;
+    }
+
+    JianpuRowExtents extents[VOICES];
+    jianpuVoiceRowExtents(this, measure, tick, extents);
+
+    const double mag = staffMag(tick);
+    const double sep = style().styleAbsolute(Sid::jianpuVoiceDistance) * mag;
+    const double gap = style().styleAbsolute(Sid::jianpuNumberVerticalDistance) * mag;
+
+    double offset = 0.0;
+    for (voice_idx_t v = 0; v < voice; ++v) {
+        offset = std::max(double(v + 1) * sep, offset + extents[v].below + gap + extents[v + 1].above);
+    }
+    return offset;
+}
+
+//---------------------------------------------------------
+//   jianpuVoiceRowsDepth
+//
+//   Jianpu (numbered notation): how far the voice rows reach below the staff line, i.e. the
+//   bottom of the lowest voice that has content. Used to size the barline.
+//---------------------------------------------------------
+
+double Staff::jianpuVoiceRowsDepth(const Measure* measure, const Fraction& tick) const
+{
+    if (!measure || !isJianpuStaff(tick)) {
+        return 0.0;
+    }
+
+    JianpuRowExtents extents[VOICES];
+    jianpuVoiceRowExtents(this, measure, tick, extents);
+
+    const double mag = staffMag(tick);
+    const double sep = style().styleAbsolute(Sid::jianpuVoiceDistance) * mag;
+    const double gap = style().styleAbsolute(Sid::jianpuNumberVerticalDistance) * mag;
+
+    double offset = 0.0;
+    double depth = 0.0;
+    for (voice_idx_t v = 0; v < VOICES; ++v) {
+        if (extents[v].above <= 0.0 && extents[v].below <= 0.0) {
+            continue;
+        }
+        depth = std::max(depth, offset + extents[v].below);
+        offset = std::max(double(v + 1) * sep, offset + extents[v].below + gap + (v + 1 < VOICES ? extents[v + 1].above : 0.0));
+    }
+    return depth;
+}
+
+//---------------------------------------------------------
 //   lines
 //---------------------------------------------------------
 

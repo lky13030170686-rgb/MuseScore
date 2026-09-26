@@ -1725,16 +1725,30 @@ MeasureBeat findBeat(const Score* score, int tick)
         return measureBeat;
     }
 
+    // The measure number is taken from the measure list of the score that is being displayed
+    // instead of from the time signature map, so that it always agrees with the number printed on
+    // the measure the user sees and with the status bar (which reads Measure::measureNumber() as
+    // well). The two can differ: parts can have measures the master does not have, and a corrupt or
+    // irregular measure can make the time signature map contain more bars than there are measures.
+    const Score* mapScore = score;
+
     int ticks = 0;
     int beatIndex = 0;
-    score->sigmap()->tickValues(tick, &measureBeat.measureIndex, &beatIndex, &ticks);
+    mapScore->sigmap()->tickValues(tick, &measureBeat.measureIndex, &beatIndex, &ticks);
 
-    const TimeSigFrac timeSig = score->sigmap()->timesig(Fraction::fromTicks(tick)).timesig();
+    const TimeSigFrac timeSig = mapScore->sigmap()->timesig(Fraction::fromTicks(tick)).timesig();
     const int ticksB = ticks_beat(timeSig.denominator());
 
     measureBeat.beat = beatIndex + ticks / static_cast<float>(ticksB);
-    measureBeat.maxMeasureIndex = const_cast<Score*>(score)->measures()->size() - 1;
+    measureBeat.maxMeasureIndex = const_cast<Score*>(mapScore)->measures()->size() - 1;
     measureBeat.maxBeatIndex = timeSig.numerator() - 1;
+
+    const Measure* lastMeasure = mapScore->lastMeasure();
+    measureBeat.maxMeasureNumber = lastMeasure ? lastMeasure->measureNumber() + 1 : measureBeat.maxMeasureIndex + 1;
+
+    const Measure* measure = mapScore->tick2measure(Fraction::fromTicks(tick));
+    // A tick past the last measure has no measure, so fall back to the last printed number.
+    measureBeat.measureNumber = measure ? measure->measureNumber() + 1 : measureBeat.maxMeasureNumber;
 
     return measureBeat;
 }

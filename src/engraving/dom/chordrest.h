@@ -51,6 +51,28 @@ class Transaction;
 enum class SegmentType;
 
 //-------------------------------------------------------------------
+//   JianpuRowExtents
+//    Jianpu (numbered notation) writes the notes of one voice as a single row of digits, so
+//    everything belonging to a chord/rest has to be measured from the centre of that row
+//    (the centre of its first digit):
+//    - above/below: the row content, i.e. the digit stack with its octave dots, and the
+//      diminution lines drawn under the stack;
+//    - articsAbove/articsBelow: the articulation marks of the row, which are written outside
+//      the row - a mark next to the digits would be taken for an octave dot.
+//    GB/T 46845-2025, 6.2.7 (octave dots), 6.3.5 (diminution lines), 3.16 (articulations).
+//-------------------------------------------------------------------
+
+struct JianpuRowExtents {
+    double above = 0.0;
+    double below = 0.0;
+    double articsAbove = 0.0;
+    double articsBelow = 0.0;
+
+    double reservedAbove() const { return above + articsAbove; }
+    double reservedBelow() const { return below + articsBelow; }
+};
+
+//-------------------------------------------------------------------
 //   ChordRest
 //    Virtual base class. Chords and rests can be part of a beam
 //-------------------------------------------------------------------
@@ -83,6 +105,14 @@ public:
 
     virtual Beam* beam() const final;
     int beams() const { return m_durationType.hooks(); }
+
+    // Jianpu (numbered notation): the diminution (duration) lines of a beamed group are drawn by
+    // the beam itself, so a chord/rest draws its own lines only when it is not part of a beam.
+    // Without this, standalone short notes/rests (BeamMode::NONE) lose their duration lines.
+    int jianpuOwnDiminutionLines() const { return beam() ? 0 : durationType().diminutionLines(); }
+
+    // Jianpu: vertical extent of the notation row of this chord/rest (see JianpuRowExtents).
+    JianpuRowExtents jianpuRowExtents() const;
     virtual double upPos()   const = 0;
     virtual double downPos() const = 0;
 

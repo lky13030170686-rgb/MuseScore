@@ -171,6 +171,10 @@ public:
     bool isDrumStaff(const Fraction&) const;
     bool isJianpuStaff(const Fraction&) const;
 
+    // Jianpu (numbered notation) multi-voice helpers (see the implementation for details)
+    double jianpuVoiceOffsetY(const Measure* measure, voice_idx_t voice, const Fraction& tick) const;
+    double jianpuVoiceRowsDepth(const Measure* measure, const Fraction& tick) const;
+
     int lines(const Fraction&) const;
     void setLines(const Fraction&, int lines);
     double lineDistance(const Fraction&) const;

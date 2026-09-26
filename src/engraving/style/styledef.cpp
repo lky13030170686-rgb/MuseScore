@@ -2276,6 +2276,9 @@ const std::array<StyleDef::StyleValue, size_t(Sid::STYLES)> StyleDef::styleValue
     styleDef(jianpuDiminutionBeamDistance,               0.3_sp),
     styleDef(jianpuDiminutionBeamPlacement,              PlacementV::BELOW),
     styleDef(jianpuDurationLineThickness,                0.1_sp),
+    styleDef(jianpuVoiceDistance,                        2.5_sp),
+    // 固定调：数字一律以 C 为「1」（绝对音高读法），而不是以调号主音为「1」
+    styleDef(jianpuFixedDo,                              false),
 } };
 
 #undef styleDef

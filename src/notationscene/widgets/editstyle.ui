@@ -13175,6 +13175,52 @@ followed by dashes</string>
              </property>
             </widget>
            </item>
+           <item row="7" column="0">
+            <widget class="QLabel" name="label_jianpu_VoiceDistance">
+             <property name="text">
+              <string>Voice distance:</string>
+             </property>
+             <property name="buddy">
+              <cstring>jianpuVoiceDistance</cstring>
+             </property>
+            </widget>
+           </item>
+           <item row="7" column="1">
+            <widget class="QDoubleSpinBox" name="jianpuVoiceDistance">
+             <property name="keyboardTracking">
+              <bool>false</bool>
+             </property>
+             <property name="suffix">
+              <string>sp</string>
+             </property>
+             <property name="maximum">
+              <double>9.000000000000000</double>
+             </property>
+             <property name="singleStep">
+              <double>0.010000000000000</double>
+             </property>
+            </widget>
+           </item>
+           <item row="7" column="2">
+            <widget class="QToolButton" name="jianpuVoiceDistanceReset">
+             <property name="toolTip">
+              <string>Reset to default</string>
+             </property>
+             <property name="accessibleName">
+              <string>Reset 'Voice distance' value</string>
+             </property>
+             <property name="text">
+              <string notr="true"/>
+             </property>
+            </widget>
+           </item>
+           <item row="8" column="0" colspan="3">
+            <widget class="QCheckBox" name="jianpuFixedDo">
+             <property name="text">
+              <string>Fixed do: read the numbers from C (1=C) instead of from the key</string>
+             </property>
+            </widget>
+           </item>
            <item row="0" column="3">
             <spacer name="horizontalSpacer_jianpu">
              <property name="orientation">
@@ -14517,6 +14563,8 @@ followed by dashes</string>
   <tabstop>jianpuDiminutionBeamDistance</tabstop>
   <tabstop>jianpuDiminutionBeamPlacement</tabstop>
   <tabstop>jianpuDurationLineThickness</tabstop>
+  <tabstop>jianpuVoiceDistance</tabstop>
+  <tabstop>jianpuFixedDo</tabstop>
  </tabstops>
  <resources/>
  <connections/>

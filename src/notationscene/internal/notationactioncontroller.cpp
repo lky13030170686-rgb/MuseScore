@@ -34,6 +34,7 @@
 #include "engraving/dom/chord.h"
 #include "engraving/dom/text.h"
 #include "engraving/dom/sig.h"
+#include "engraving/dom/staff.h" // IWYU pragma: keep
 #include "engraving/editing/noteinput.h"
 
 #include "notation/imasternotation.h"
@@ -615,6 +616,18 @@ void NotationActionController::init()
 
     registerCommand(ENTER_REST_TAB_COMMAND, &Interaction::putRestToSelection);
 
+    // Jianpu
+    registerCommand(ENTER_JIANPU_DEGREE_1_COMMAND, [this]() { addJianpuDegree(1); });
+    registerCommand(ENTER_JIANPU_DEGREE_2_COMMAND, [this]() { addJianpuDegree(2); });
+    registerCommand(ENTER_JIANPU_DEGREE_3_COMMAND, [this]() { addJianpuDegree(3); });
+    registerCommand(ENTER_JIANPU_DEGREE_4_COMMAND, [this]() { addJianpuDegree(4); });
+    registerCommand(ENTER_JIANPU_DEGREE_5_COMMAND, [this]() { addJianpuDegree(5); });
+    registerCommand(ENTER_JIANPU_DEGREE_6_COMMAND, [this]() { addJianpuDegree(6); });
+    registerCommand(ENTER_JIANPU_DEGREE_7_COMMAND, [this]() { addJianpuDegree(7); });
+    registerCommand(ENTER_REST_JIANPU_COMMAND, &Interaction::putRestToSelection);
+    registerCommand(JIANPU_OCTAVE_UP_COMMAND, [this]() { changeJianpuOctave(1); });
+    registerCommand(JIANPU_OCTAVE_DOWN_COMMAND, [this]() { changeJianpuOctave(-1); });
+
     registerCommand(ADD_STANDARD_BEND_COMMAND, [this]() { addGuitarBend(GuitarBendType::BEND); });
     registerCommand(ADD_PRE_BEND_COMMAND, [this]() { addGuitarBend(GuitarBendType::PRE_BEND); });
     registerCommand(ADD_GRACE_NOTE_BEND_COMMAND, [this]() { addGuitarBend(GuitarBendType::GRACE_NOTE_BEND); });
@@ -1046,6 +1059,16 @@ void NotationActionController::init()
             { "fret-12", ENTER_FRET_12_COMMAND, {} },
             { "fret-13", ENTER_FRET_13_COMMAND, {} },
             { "fret-14", ENTER_FRET_14_COMMAND, {} },
+            { "jianpu-degree-1", ENTER_JIANPU_DEGREE_1_COMMAND, {} },
+            { "jianpu-degree-2", ENTER_JIANPU_DEGREE_2_COMMAND, {} },
+            { "jianpu-degree-3", ENTER_JIANPU_DEGREE_3_COMMAND, {} },
+            { "jianpu-degree-4", ENTER_JIANPU_DEGREE_4_COMMAND, {} },
+            { "jianpu-degree-5", ENTER_JIANPU_DEGREE_5_COMMAND, {} },
+            { "jianpu-degree-6", ENTER_JIANPU_DEGREE_6_COMMAND, {} },
+            { "jianpu-degree-7", ENTER_JIANPU_DEGREE_7_COMMAND, {} },
+            { "jianpu-rest", ENTER_REST_JIANPU_COMMAND, {} },
+            { "jianpu-octave-up", JIANPU_OCTAVE_UP_COMMAND, {} },
+            { "jianpu-octave-down", JIANPU_OCTAVE_DOWN_COMMAND, {} },
             { "standard-bend", ADD_STANDARD_BEND_COMMAND, {} },
             { "pre-bend", ADD_PRE_BEND_COMMAND, {} },
             { "grace-note-bend", ADD_GRACE_NOTE_BEND_COMMAND, {} },
@@ -2096,6 +2119,10 @@ muse::Ret NotationActionController::moveWithRet(MoveDirection direction, bool qu
             }
             interaction->moveSelectionDeprecated(direction, MoveSelectionType::String);
             return muse::make_ok();
+        } else if (noteInput->isNoteInputMode() && isJianpuStaff()) {
+            // 简谱：↑/↓ 改当前输入八度组（兜底，默认快捷键绑的是 jianpu-octave-*）
+            changeJianpuOctave(direction == MoveDirection::Up ? 1 : -1);
+            return muse::make_ok();
         } else if (interaction->selection()->isNone() && !state.beyondScore()) {
             interaction->select(SelectionTarget::FirstItem);
         } else {
@@ -2381,6 +2408,43 @@ void NotationActionController::addFret(int num)
 
     interaction->addFret(num);
     seekAndPlaySelectedElement(currentNotationScore()->playChord());
+}
+
+void NotationActionController::addJianpuDegree(int degree)
+{
+    INotationInteractionPtr interaction = currentNotationInteraction();
+    if (!interaction) {
+        return;
+    }
+
+    startNoteInput();
+    interaction->addJianpuDegree(degree);
+    seekAndPlaySelectedElement(currentNotationScore()->playChord());
+}
+
+void NotationActionController::changeJianpuOctave(int delta)
+{
+    INotationInteractionPtr interaction = currentNotationInteraction();
+    if (!interaction) {
+        return;
+    }
+
+    INotationNoteInputPtr noteInput = interaction->noteInput();
+    if (!noteInput || !noteInput->isNoteInputMode()) {
+        return;
+    }
+
+    // 与 jianpuDegreeToPitch() 的越界保护配套，限制在 ±2 个音高组
+    static constexpr int JIANPU_MIN_OCTAVE_GROUP = -2;
+    static constexpr int JIANPU_MAX_OCTAVE_GROUP = 2;
+
+    int next = noteInput->jianpuOctaveGroup() + delta;
+    if (next < JIANPU_MIN_OCTAVE_GROUP) {
+        next = JIANPU_MIN_OCTAVE_GROUP;
+    } else if (next > JIANPU_MAX_OCTAVE_GROUP) {
+        next = JIANPU_MAX_OCTAVE_GROUP;
+    }
+    noteInput->setJianpuOctaveGroup(next);
 }
 
 void NotationActionController::insertClef(mu::engraving::ClefType type)
@@ -3182,6 +3246,23 @@ bool NotationActionController::isNotationPage() const
 bool NotationActionController::isTablatureStaff() const
 {
     return isNotEditingElement() && currentNotationScore()->inputState().staffGroup() == mu::engraving::StaffGroup::TAB;
+}
+
+bool NotationActionController::isJianpuStaff() const
+{
+    if (!isNotEditingElement()) {
+        return false;
+    }
+
+    mu::engraving::Score* score = currentNotationScore();
+    if (!score) {
+        return false;
+    }
+
+    // 简谱的 StaffGroup 是 STANDARD，只能按谱表类型判断
+    const mu::engraving::InputState& is = score->inputState();
+    const mu::engraving::Staff* staff = is.staff();
+    return staff && staff->isJianpuStaff(is.tick());
 }
 
 bool NotationActionController::isAutomationModeEnabled() const

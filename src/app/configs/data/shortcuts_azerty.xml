@@ -1142,6 +1142,63 @@
   <SC>
     <key>fret-14</key>
     </SC>
+<!-- Jianpu specific shortcuts -->
+  <SC>
+    <key>jianpu-degree-1</key>
+    <seq>1</seq>
+    <seq>&amp;</seq> <!-- AZERTY for 1 -->
+    <seq>Num+1</seq>
+    </SC>
+  <SC>
+    <key>jianpu-degree-2</key>
+    <seq>2</seq>
+    <seq>É</seq> <!-- AZERTY for 2 -->
+    <seq>Num+2</seq>
+    </SC>
+  <SC>
+    <key>jianpu-degree-3</key>
+    <seq>3</seq>
+    <seq>&quot;</seq> <!-- AZERTY for 3 -->
+    <seq>Num+3</seq>
+    </SC>
+  <SC>
+    <key>jianpu-degree-4</key>
+    <seq>4</seq>
+    <seq>'</seq> <!-- AZERTY for 4 -->
+    <seq>Num+4</seq>
+    </SC>
+  <SC>
+    <key>jianpu-degree-5</key>
+    <seq>5</seq>
+    <seq>(</seq> <!-- AZERTY for 5 -->
+    <seq>Num+5</seq>
+    </SC>
+  <SC>
+    <key>jianpu-degree-6</key>
+    <seq>6</seq>
+    <seq>-</seq> <!-- AZERTY for 6 -->
+    <seq>Num+6</seq>
+    </SC>
+  <SC>
+    <key>jianpu-degree-7</key>
+    <seq>7</seq>
+    <seq>È</seq> <!-- AZERTY for 7 -->
+    <seq>Num+7</seq>
+    </SC>
+  <SC>
+    <key>jianpu-rest</key>
+    <seq>0</seq>
+    <seq>À</seq> <!-- AZERTY for 0 -->
+    <seq>Num+0</seq>
+    </SC>
+  <SC>
+    <key>jianpu-octave-up</key>
+    <seq>Up</seq>
+    </SC>
+  <SC>
+    <key>jianpu-octave-down</key>
+    <seq>Down</seq>
+    </SC>
 <!-- HARMONY / FIGURED BASS specific shortcuts -->
   <SC>
     <key>advance-longa</key>

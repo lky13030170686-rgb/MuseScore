@@ -5981,6 +5981,15 @@ void NotationInteraction::addFret(int fretIndex)
     notifyAboutNotationChanged();
 }
 
+void NotationInteraction::addJianpuDegree(int degree)
+{
+    transaction(TranslatableString("undoableAction", "Enter Jianpu scale degree %1").arg(degree), [&](auto& tx) {
+        NoteInput::addJianpuDegree(tx, score(), degree);
+    });
+
+    notifyAboutNotationChanged();
+}
+
 void NotationInteraction::changeSelectedElementsVoice(voice_idx_t voiceIndex)
 {
     if (selection()->isNone()) {

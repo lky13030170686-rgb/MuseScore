@@ -94,6 +94,7 @@ public:
 
     NoteDot* dot(int n);
     const std::vector<NoteDot*>& dotList() const;
+    std::vector<NoteDot*>& dotList() { return m_dots; }
     int dotLine() const { return m_dotline; }
     void setDotLine(int l) { m_dotline = l; }
 

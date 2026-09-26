@@ -129,6 +129,25 @@ int Articulation::subtype() const
 }
 
 //---------------------------------------------------------
+//   jianpuSymId
+//
+//   Jianpu (numbered notation): the articulation marks are written above the digits, where a
+//   dot is already the octave dot, so the staccato is written with the solid wedge "▼".
+//   《音乐曲谱出版规范》(2015) 3.16.3.1 (断音：顶尖向下的实心三角形，居中记在音符的正上方);
+//   GB/T 46845-2025 7.9 (通用发音符号).
+//---------------------------------------------------------
+
+SymId Articulation::jianpuSymId(SymId sym)
+{
+    switch (sym) {
+    case SymId::articStaccatoAbove: return SymId::articStaccatissimoAbove;
+    case SymId::articStaccatoBelow: return SymId::articStaccatissimoBelow;
+    default:
+        return sym;
+    }
+}
+
+//---------------------------------------------------------
 //   setUp
 //---------------------------------------------------------
 

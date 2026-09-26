@@ -129,6 +129,9 @@ public:
     virtual muse::async::Notification currentTempoChanged() const = 0;
 
     virtual engraving::MeasureBeat currentBeat() const = 0;
+    /// Notified whenever the playback position (tick) is changed, also when the audio player is not
+    /// running and therefore does not report a new position on its own.
+    virtual muse::async::Notification currentTickChanged() const = 0;
     virtual muse::audio::secs_t beatToSecs(int measureIndex, int beatIndex) const = 0;
 
     virtual double tempoMultiplier() const = 0;

@@ -21,6 +21,7 @@
  */
 #include "tdraw.h"
 
+
 #include "defer.h"
 
 #include "draw/fontmetrics.h"
@@ -604,7 +605,7 @@ void TDraw::draw(const Articulation* item, Painter* painter, const PaintOptions&
     painter->setPen(item->curColor(opt));
 
     if (item->textType() == ArticulationTextType::NO_TEXT) {
-        item->drawSymbol(item->symId(), painter);
+        item->drawSymbol(item->displaySymId(), painter);
     } else {
         drawTextBase(item->text(), painter, opt);
     }
@@ -2135,6 +2136,19 @@ void TDraw::draw(const KeySig* item, Painter* painter, const PaintOptions& opt)
     const KeySig::LayoutData* ldata = item->ldata();
 
     painter->setPen(item->curColor(opt));
+
+    // Jianpu (numbered notation): the key is written as text ("1=X"), laid out in layoutKeySig()
+    if (!ldata->jianpuText.isEmpty()) {
+        const StaffType* jp = item->staff() ? item->staff()->staffTypeForElement(item) : nullptr;
+        if (jp) {
+            Font f(jp->jianpuFont());
+            f.setPointSizeF(f.pointSizeF() * item->magS());
+            painter->setFont(f);
+            painter->drawText(PointF(ldata->bbox().x(), ldata->bbox().bottom()), ldata->jianpuText);
+        }
+        return;
+    }
+
     double _spatium = item->spatium();
     double step = _spatium * (item->staff() ? item->staff()->staffTypeForElement(item)->lineDistance().val() * 0.5 : 0.5);
     int lines = item->staff() ? item->staff()->staffTypeForElement(item)->lines() : 5;
@@ -2352,6 +2366,50 @@ void TDraw::draw(const MMRestRange* item, Painter* painter, const PaintOptions& 
     drawTextBase(item, painter, opt);
 }
 
+//---------------------------------------------------------
+//   drawJianpuDiminutionLines
+//
+//   Jianpu (numbered notation): the diminution (duration) lines of a beamed group are drawn by
+//   the beam itself, so a chord/rest that is not beamed has to draw its own lines under (or over)
+//   the digit. Without this, standalone short notes and rests (BeamMode::NONE) lose the lines that
+//   carry their duration.
+//   GB/T 46845-2025, 6.3.5 / 6.3.13 (diminution lines and their grouping)
+//---------------------------------------------------------
+
+static void drawJianpuDiminutionLines(const mu::engraving::ChordRest* item, const muse::RectF& digitBox, int dotsAbove,
+                                      muse::draw::Painter* painter, const mu::engraving::rendering::PaintOptions& opt)
+{
+    const int lines = item->jianpuOwnDiminutionLines();
+    if (lines <= 0 || digitBox.width() <= 0.0 || digitBox.height() <= 0.0) {
+        return;
+    }
+
+    const bool beamAbove = item->style().styleV(Sid::jianpuDiminutionBeamPlacement).value<PlacementV>() == PlacementV::ABOVE;
+    const double mag = item->magS();
+    const double distance = item->style().styleAbsolute(Sid::jianpuDiminutionBeamDistance) * mag;
+    const double thickness = item->style().styleAbsolute(Sid::jianpuDiminutionBeamThickness) * mag;
+    const double dotDistance = item->style().styleAbsolute(Sid::jianpuOctaveDotDistance) * mag;
+
+    // Jianpu Y origin is at the center of the number
+    const double centerY = digitBox.y() + digitBox.height() * .5;
+    const double x1 = digitBox.x();
+    const double x2 = digitBox.x() + digitBox.width();
+
+    // the lines are stacked outside of the octave dots (same order as a beam would be placed)
+    const double stack = digitBox.height() * .5 + (beamAbove ? dotsAbove * dotDistance : 0.0);
+
+    painter->save();
+    Pen pen(item->curColor(opt));
+    pen.setWidthF(thickness);
+    painter->setPen(pen);
+    for (int i = 0; i < lines; ++i) {
+        const double dy = stack + distance * (i + 1);
+        const double y = beamAbove ? centerY - dy : centerY + dy;
+        painter->drawLine(LineF(x1, y, x2, y));
+    }
+    painter->restore();
+}
+
 void TDraw::draw(const Note* item, Painter* painter, const PaintOptions& opt)
 {
     TRACE_DRAW_ITEM;
@@ -2406,6 +2464,20 @@ void TDraw::draw(const Note* item, Painter* painter, const PaintOptions& opt)
         const double startPosX = ldata->bbox().x() + (bw - fw) * .5;
         const double startPosY = ldata->bbox().bottom();
         painter->drawText(PointF(startPosX, startPosY), item->jianpuDigit());
+
+        // duration lines of a chord that is not beamed: drawn once, below the whole digit stack
+        const Chord* chord = item->chord();
+        if (chord && chord->upNote() == item) {
+            const Note* bottomNote = chord->downNote();
+            const RectF& box = bottomNote ? bottomNote->ldata()->bbox() : ldata->bbox();
+            int dotsAbove = 0;
+            for (const OctaveDot* dot : item->octaveDots()) {
+                if (dot->above()) {
+                    ++dotsAbove;
+                }
+            }
+            drawJianpuDiminutionLines(chord, box, dotsAbove, painter, opt);
+        }
     } else {
         // skip drawing, if second note of a cross-measure value
         if (item->chord() && item->chord()->crossMeasure() == CrossMeasure::SECOND) {
@@ -2634,6 +2706,9 @@ void TDraw::draw(const Rest* item, Painter* painter, const PaintOptions& opt)
         painter->setPen(item->curColor(opt));
         double startPosX = ldata->bbox().x();
         painter->drawText(PointF(startPosX, height * .5), String(u"0"));
+
+        // duration lines of a rest that is not beamed
+        drawJianpuDiminutionLines(item, ldata->bbox(), 0, painter, opt);
         return;
     }
 

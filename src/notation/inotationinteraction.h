@@ -242,6 +242,7 @@ public:
     virtual void swapVoices(voice_idx_t voiceIndex1, voice_idx_t voiceIndex2) = 0;
     virtual void addIntervalToSelectedNotes(int interval) = 0;
     virtual void addFret(int fretIndex) = 0;
+    virtual void addJianpuDegree(int degree) = 0;
     virtual void changeSelectedElementsVoice(voice_idx_t voiceIndex) = 0;
     virtual void changeSelectedElementsVoiceAssignment(VoiceAssignment voiceAssignment) = 0;
     virtual void addAnchoredLineToSelectedNotes() = 0;

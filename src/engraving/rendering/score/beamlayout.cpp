@@ -735,8 +735,14 @@ void BeamLayout::createBeams(LayoutContext& ctx, Measure* measure)
             }
 
             bm = Groups::actualBeamMode(cr, prev, &beatSubdivision);
-            if (cr->isRest() && bm == BeamMode::NONE && cr->isJianpuStaff()) {
-                // Jianpu rest can be beamed
+            if (cr->isRest() && cr->isJianpuStaff() && cr->durationType().type() > DurationType::V_QUARTER) {
+                // Jianpu (numbered notation): a rest shorter than a quarter takes part in the
+                // grouping of its beat just like a note does - the group's diminution lines run
+                // over it, and they are the lines that carry its own duration. The beam mode
+                // stored in the score is meaningless for it (the 5-line original may well have
+                // "no beam" or a stray "begin"), and a rest that stays out of the group loses its
+                // lines completely.
+                // GB/T 46845-2025, 6.4 (rests carry the same diminution lines as notes).
                 bm = BeamMode::AUTO;
             }
 
@@ -1017,7 +1023,10 @@ void BeamLayout::createBeamSegments(Beam* item, const LayoutContext& ctx, const 
             }
             if ((level < chordRest->beams() && !breakBeam) || skipRest) {
                 endCr = chordRest;
-                if (!startCr || (startCr->isRest() && startCr != item->elements().front())) {
+                // Jianpu (numbered notation): the "beam" is the diminution line of the group,
+                // which runs over rests too, so a segment may start (and end) on a rest.
+                if (!startCr
+                    || (!item->isJianpuStaff() && startCr->isRest() && startCr != item->elements().front())) {
                     startCr = chordRest;
                 }
             } else if (level >= chordRest->beams() && chordRest->isRest() && !breakBeam) {
@@ -1026,7 +1035,8 @@ void BeamLayout::createBeamSegments(Beam* item, const LayoutContext& ctx, const 
                 continue;
             } else {
                 size_t beamletIndex = static_cast<size_t>(i) - 1;
-                if (lastChordIndex < item->elements().size() && (chordRest->isRest() || (endCr && endCr->isRest()))) {
+                if (!item->isJianpuStaff()
+                    && lastChordIndex < item->elements().size() && (chordRest->isRest() || (endCr && endCr->isRest()))) {
                     // we broke the beam on this chordrest, but the last cr of the beam segment can't end on a rest
                     // so it ends on lastChord
                     ChordRest* lastCr = toChordRest(item->elements()[lastChordIndex]);

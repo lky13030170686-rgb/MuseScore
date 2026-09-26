@@ -486,6 +486,62 @@ int tpc2degree(int tpc, Key key)
     Char stepName = tpc2stepName(tpc);
     return (names.indexOf(stepName) - names.indexOf(scale) + 28) % 7;
 }
+    //---------------------------------------------------------
+    //   pitchToJianpuOctaveGroup
+    ///  简谱音高组（决定画几个高/低音点）。
+    ///  「中音 1」= 主音落在小字一组（Note::octave() == 4）的那个实例；
+    ///  相对音高组 = floor((本音绝对音级 - 中音 1 绝对音级) / 7)。
+    ///  必须用自然音级坐标而非 note->octave() 直接相减，才能正确处理
+    ///  例如 D 大调里 C#4（低音 7）与 C#5（中音 7）这类跨八度音级。
+    //---------------------------------------------------------
+
+    int pitchToJianpuOctaveGroup(int pitch, int tpc, Key key)
+    {
+        const int refTpc = 14 + int(key);                        // 关系大调主音（「1」）
+        const int refAbsStep = 5 * STEP_DELTA_OCTAVE + tpc2step(refTpc);
+        int alter = 0;
+        const int absStep = pitch2absStepByKey(pitch, tpc, key, alter);
+        const int diff = absStep - refAbsStep;
+        if (diff >= 0) {
+            return diff / STEP_DELTA_OCTAVE;
+        }
+        return -((-diff + STEP_DELTA_OCTAVE - 1) / STEP_DELTA_OCTAVE);   // floor 除法
+    }
+
+//---------------------------------------------------------
+//   jianpuDegreeToPitch
+///  简谱「音级 + 音高组 + 调号」→ 音高与 TPC。
+///  与 pitchToJianpuOctaveGroup() 同域（反函数），保证「输入的音级/八度」
+///  与「渲染时的八度点」严格一致。
+//---------------------------------------------------------
+
+bool jianpuDegreeToPitch(int degree, int octaveGroup, Key key, int& pitchOut, int& tpcOut)
+{
+    if (degree < 1 || degree > 7) {
+        return false;
+    }
+
+    const int tonicTpc  = key2Tpc(key);                        // = 14 + int(key)
+    const int tonicStep = tpc2step(tonicTpc);                  // 0..6
+    const int middle1   = 5 * STEP_DELTA_OCTAVE + tonicStep;   // 「中音 1」的绝对音级
+    const int absStep   = middle1 + octaveGroup * STEP_DELTA_OCTAVE + (degree - 1);
+
+    // absStep2pitchByKey() 会把越界音级平移一个八度，这里先自行判范围
+    if (absStep < MIN_STEP || absStep > MAX_STEP) {
+        return false;
+    }
+
+    const int pitch = absStep2pitchByKey(absStep, key);
+    if (!pitchIsValid(pitch)) {
+        return false;
+    }
+
+    const int step = ((absStep % STEP_DELTA_OCTAVE) + STEP_DELTA_OCTAVE) % STEP_DELTA_OCTAVE;
+
+    pitchOut = pitch;
+    tpcOut   = step2tpcByKey(step, key);
+    return true;
+}
 
 //---------------------------------------------------------
 //   tpcInterval
