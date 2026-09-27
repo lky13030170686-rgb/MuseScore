@@ -1,6 +1,9 @@
 [submodule "muse_framework"]
 	path = muse
-	url = https://github.com/musescore/muse_framework.git
+	# Our fork: the audiotrack work (branch audiotrack-engine) lives here, since we have
+	# no push access to musescore/muse_framework. "upstream" remote points at the official
+	# repo for reference. See F:\DSH\Musescore_LKY\音频轨\notes\第一轮实现笔记.md
+	url = https://github.com/lky13030170686-rgb/muse_framework.git
 [submodule "muse_deps"]
 	path = muse_deps
 	url = https://github.com/musescore/muse_deps.git
