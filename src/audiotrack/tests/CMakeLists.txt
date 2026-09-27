@@ -28,6 +28,7 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/waveformrenderer_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/waveformrenderer_output_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/audiowaveformprovider_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/audiowaveformservice_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/waveformlayout_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/waveformlane_output_tests.cpp
 

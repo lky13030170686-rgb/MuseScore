@@ -38,10 +38,13 @@
 #include "engraving/dom/masterscore.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/measurebase.h"
+#include "engraving/dom/part.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/stafflines.h"
+#include "engraving/dom/system.h"
 #include "engraving/dom/iaudiowaveformprovider.h"
+#include "engraving/style/styledef.h"
 
 #include "modularity/ioc.h"
 
@@ -184,6 +187,39 @@ TEST_F(AudioTrackLayoutTests, WaveformStaffTypeSurvivesScoreRead)
     }
 
     EXPECT_TRUE(found) << "no staff with StaffTypes::WAVEFORM after reading the score";
+
+    delete score;
+}
+
+// A lane that lays out correctly still shows nothing unless it is actually painted, and
+// StaffLines::collectForDrawing() gates painting on the staff being shown. Without this the
+// waveform could be laid out perfectly and the user would still see an empty gap, which is
+// the hardest kind of failure to diagnose from the code alone.
+TEST_F(AudioTrackLayoutTests, WaveformLaneIsEligibleForDrawing)
+{
+    auto provider = std::make_shared<FakeWaveformProvider>();
+    ScopedProvider scoped(provider);
+
+    MasterScore* score = ScoreRW::readScore(u"data/audiotrack/waveform-staff.mscx");
+    ASSERT_TRUE(score);
+
+    score->doLayout();
+
+    StaffLines* lane = firstWaveformLane(score);
+    ASSERT_TRUE(lane);
+
+    // Staff::show() is part->show() && visible(); a part that defaults to hidden would make
+    // the whole feature invisible in the GUI.
+    EXPECT_TRUE(lane->staff()->show()) << "the waveform staff is not shown";
+    EXPECT_TRUE(lane->score()->staff(lane->staffIdx())->show());
+
+    const Part* part = lane->staff()->part();
+    ASSERT_TRUE(part);
+    EXPECT_TRUE(part->show())
+        << "the audio part is hidden, so its lane would never be painted";
+
+    EXPECT_TRUE(lane->collectForDrawing())
+        << "StaffLines::collectForDrawing() is false: engraving will skip the lane entirely";
 
     delete score;
 }
@@ -402,6 +438,51 @@ TEST_F(AudioTrackLayoutTests, RealAudioReachesTheLane)
 
     EXPECT_GT(silent, 0u) << "a click track produced no silent columns";
     EXPECT_GT(lines.size() - silent, 0u) << "no audible columns were drawn";
+
+    delete score;
+}
+
+// The objective is a lane that scrolls with the system, so it has to survive the score's
+// "hide empty staves" style. The lane holds no notes, which makes it look empty to the
+// system layout, and the default global setting is off -- so this only breaks for users who
+// turn that option on.
+//
+// This drives the lane through the same code the app uses (SystemLayout::hideEmptyStaves
+// via doLayout) but only asserts that turning the style on does not remove the lane from
+// the systems that were showing it. It does not reproduce the "normal staff plus empty
+// lane" arrangement, because building a printable second part inside a unit test needs more
+// of the score machinery than is reasonable here; that arrangement is covered by hand in
+// the GUI acceptance steps.
+TEST_F(AudioTrackLayoutTests, LaneSurvivesHideEmptyStaves)
+{
+    auto provider = std::make_shared<FakeWaveformProvider>();
+    ScopedProvider scoped(provider);
+
+    MasterScore* score = ScoreRW::readScore(u"data/audiotrack/waveform-staff.mscx");
+    ASSERT_TRUE(score);
+
+    // Baseline: which music systems show the lane with the default style.
+    score->doLayout();
+    size_t shownByDefault = 0;
+    for (System* system : score->systems()) {
+        if (!system->staves().empty() && system->staff(0)->show()) {
+            ++shownByDefault;
+        }
+    }
+    ASSERT_GT(shownByDefault, 0u) << "the lane is not shown even with hide-empty-staves off";
+
+    score->style().set(Sid::hideEmptyStaves, true);
+    score->doLayout();
+
+    size_t shownWithStyle = 0;
+    for (System* system : score->systems()) {
+        if (!system->staves().empty() && system->staff(0)->show()) {
+            ++shownWithStyle;
+        }
+    }
+
+    EXPECT_EQ(shownWithStyle, shownByDefault)
+        << "turning on hide-empty-staves removed the waveform lane from systems that showed it";
 
     delete score;
 }
