@@ -18,12 +18,18 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-muse_create_module(audiotrack)
+# ALIAS so src/app/CMakeLists.txt can pick it up via add_to_link_if_exists(muse::audiotrack),
+# and so the target name is namespaced like the other modules.
+muse_create_module(audiotrack ALIAS muse::audiotrack)
 
 target_sources(audiotrack PRIVATE
     audiotracktypes.h
+    audiotrackmodule.cpp
+    audiotrackmodule.h
     audiofilereader.cpp
     audiofilereader.h
+    audiofilesourceprovider.cpp
+    audiofilesourceprovider.h
     audiotracksource.cpp
     audiotracksource.h
     waveformcache.cpp

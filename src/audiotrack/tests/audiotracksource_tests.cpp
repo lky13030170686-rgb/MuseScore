@@ -118,14 +118,44 @@ TEST(AudioTrackSourceTests, SeekChangesPositionAndAudioContent)
     src.process(atStart.data(), 1024);
 
     src.seekTo(TimePosition::fromTime(secs_t(4.0), 44100));
-    EXPECT_NEAR(src.positionSeconds(), 4.0, 0.01);
 
+    // NOTE: seeks are DEFERRED. seekTo() only publishes a target; the audio thread applies
+    // it at the top of the next process(). That deferral is what makes the source
+    // thread-safe (the audio thread is the sole writer of playback state), so the position
+    // must NOT have moved yet — asserting otherwise would be asserting the old race.
     std::vector<float> atFour(1024 * 2, 0.f);
     src.process(atFour.data(), 1024);
+
+    // After consuming one block we are at the seek target plus that block.
+    EXPECT_NEAR(src.positionSeconds(), 4.0 + 1024.0 / 44100.0, 0.01);
 
     // A sweep is a different waveform at 0 s and 4 s, so the blocks must differ.
     EXPECT_NE(atStart, atFour);
     EXPECT_GT(peak(atFour), 0.05f) << "seeking into the middle must still yield audio";
+}
+
+TEST(AudioTrackSourceTests, DeferredSeekIsAppliedExactlyOnce)
+{
+    // Guards the thread-safety contract: a published seek must be consumed by the very
+    // next process() call and must not be re-applied afterwards (re-applying would snap
+    // playback back and make audio stutter on every block).
+    AudioTrackSource src;
+    ASSERT_TRUE(src.load(testFile(SWEEP)));
+    setSpec(src, 44100, 2);
+
+    src.seekTo(TimePosition::fromTime(secs_t(2.0), 44100));
+    std::vector<float> first(512 * 2, 0.f);
+    src.process(first.data(), 512);
+
+    const double afterFirst = src.positionSeconds();
+    ASSERT_NEAR(afterFirst, 2.0 + 512.0 / 44100.0, 0.01);
+
+    // A second block must simply continue; it must not jump back to 2.0 s again.
+    std::vector<float> second(512 * 2, 0.f);
+    src.process(second.data(), 512);
+
+    EXPECT_NEAR(src.positionSeconds(), afterFirst + 512.0 / 44100.0, 0.01)
+        << "seek was re-applied on a later block";
 }
 
 TEST(AudioTrackSourceTests, SeeksLandOnTheExactRequestedSample)

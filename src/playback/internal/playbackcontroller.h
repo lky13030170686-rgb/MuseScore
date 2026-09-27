@@ -29,6 +29,7 @@
 #include "async/asyncable.h"
 #include "actions/actiontypes.h"
 #include "context/iglobalcontext.h"
+#include "io/path.h"
 #include "engraving/types/types.h"
 #include "notation/inotationautomation.h"
 #include "notation/inotationconfiguration.h"
@@ -204,16 +205,27 @@ private:
 
     project::IProjectAudioSettingsPtr audioSettings() const;
 
+    using TrackAddFinished = std::function<void ()>;
+
     void resetPlayback();
     void setupPlayback();
     void subscribeOnAudioParamsChanges();
     void setupTracks();
     void setupPlayer();
 
+    //! Adds a backing/reference audio track (the Sound_track path).
+    //! The file is decoded by the audiotrack module via the engine's file-source hook.
+    //! \param onFinished called once the add attempt settles (success or failure).
+    void addAudioTrack(const muse::io::path_t& filePath, const TrackAddFinished& onFinished);
+
+    //! TEMPORARY bootstrap for verification: if MUSE_AUDIOTRACK_FILE is set, adds that
+    //! file as an audio track once playback is set up. Lets the feature be exercised
+    //! end-to-end (including offline WAV export) before a UI exists.
+    //! Remove this once the score-level data model + UI land.
+    void setupAudioTracksFromEnv();
+
     void updateSoloMuteStates();
     void updateAuxMuteStates();
-
-    using TrackAddFinished = std::function<void ()>;
 
     void addTrack(const engraving::InstrumentTrackId& instrumentTrackId, const TrackAddFinished& onFinished);
     void doAddTrack(const engraving::InstrumentTrackId& instrumentTrackId, const std::string& title, const TrackAddFinished& onFinished);
@@ -259,6 +271,8 @@ private:
     muse::async::Asyncable m_seqAsyncReceiver; //! HACK - see PlaybackController::setupTracks
 
     InstrumentTrackIdMap m_instrumentTrackIdMap;
+    //! Engine track ids of the backing audio tracks we added (Sound_track path).
+    std::vector<muse::audio::TrackId> m_audioTrackIds;
     AuxTrackIdMap m_auxTrackIdMap;
 
     std::unordered_map<engraving::InstrumentTrackId, muse::audio::ControlParams> m_automatedControlParamsCache;

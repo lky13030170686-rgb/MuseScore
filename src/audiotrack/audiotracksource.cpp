@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 
 #include "log.h"
 
@@ -53,6 +54,16 @@ bool AudioTrackSource::load(const muse::String& path)
     m_cacheFrames = 0;
     m_cachedChannels = 0;
 
+    {
+        std::lock_guard<std::mutex> lock(m_seekMutex);
+        m_pendingSeekSeconds = 0.0;
+        m_hasPendingSeek = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_posMutex);
+        m_publishedSeconds = 0.0;
+    }
+
     // Default to the file's own rate/channels until the engine tells us otherwise.
     m_outSampleRate = m_reader.info().sampleRate;
     m_outChannels = m_reader.info().channels;
@@ -71,6 +82,16 @@ void AudioTrackSource::unload()
     m_cacheStartFrame = 0;
     m_readerFramePos = 0;
     m_readPos = 0.0;
+
+    {
+        std::lock_guard<std::mutex> lock(m_seekMutex);
+        m_pendingSeekSeconds = 0.0;
+        m_hasPendingSeek = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_posMutex);
+        m_publishedSeconds = 0.0;
+    }
 }
 
 bool AudioTrackSource::isValid() const
@@ -93,8 +114,28 @@ unsigned int AudioTrackSource::audioChannelsCount() const
 
 void AudioTrackSource::setPositionSeconds(double seconds)
 {
+    // Called from the engine thread. Do NOT touch playback state here: the audio thread
+    // owns it. Publish the target and let process() apply it.
+    std::lock_guard<std::mutex> lock(m_seekMutex);
+    m_pendingSeekSeconds = seconds;
+    m_hasPendingSeek = true;
+}
+
+bool AudioTrackSource::applyPendingSeek()
+{
+    // Audio thread only.
+    double seconds = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(m_seekMutex);
+        if (!m_hasPendingSeek) {
+            return false;
+        }
+        seconds = m_pendingSeekSeconds;
+        m_hasPendingSeek = false;
+    }
+
     if (!m_reader.isOpen()) {
-        return;
+        return false;
     }
 
     const double fileRate = static_cast<double>(m_reader.info().sampleRate);
@@ -110,14 +151,19 @@ void AudioTrackSource::setPositionSeconds(double seconds)
     m_lastFrame.clear();
 
     m_reader.seekToFrame(frame);
+
+    {
+        std::lock_guard<std::mutex> lock(m_posMutex);
+        m_publishedSeconds = static_cast<double>(frame) / fileRate;
+    }
+
+    return true;
 }
 
 double AudioTrackSource::positionSeconds() const
 {
-    if (!m_reader.isOpen()) {
-        return 0.0;
-    }
-    return m_readPos / static_cast<double>(m_reader.info().sampleRate);
+    std::lock_guard<std::mutex> lock(m_posMutex);
+    return m_publishedSeconds;
 }
 
 void AudioTrackSource::seekTo(const TimePosition& position)
@@ -214,6 +260,11 @@ samples_t AudioTrackSource::process(float* buffer, samples_t samplesPerChannel)
         return samplesPerChannel;
     }
 
+    // Apply any seek requested from the engine thread. This is the ONLY place playback
+    // state is repositioned, which is what makes the source thread-safe: the audio thread
+    // is the sole writer of m_readPos/m_cache/m_lastFrame/the reader cursor.
+    applyPendingSeek();
+
     // The engine resamples nothing for us (see the class comment), so this ratio is what
     // keeps us in step with the score.
     m_ratio = static_cast<double>(m_reader.info().sampleRate) / static_cast<double>(m_outSampleRate);
@@ -287,6 +338,12 @@ samples_t AudioTrackSource::process(float* buffer, samples_t samplesPerChannel)
 
     m_readPos = readPos;
     m_cacheStartFrame = startPos;
+
+    // Publish the advanced position for cross-thread readers (position()/positionSeconds()).
+    {
+        std::lock_guard<std::mutex> lock(m_posMutex);
+        m_publishedSeconds = m_readPos / static_cast<double>(m_reader.info().sampleRate);
+    }
 
     return samplesPerChannel;
 }

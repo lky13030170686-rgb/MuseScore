@@ -28,6 +28,8 @@
 #include "log.h"
 #include "types/ret.h"
 
+#include <cstdlib>
+
 #include <QDir>
 #include <QFile>
 
@@ -1536,8 +1538,47 @@ void PlaybackController::setupPlayback()
     setupTracks();
     setupPlayer();
 
+    // Backing audio tracks ride on top of the instrument tracks. Added after setupTracks()
+    // so the mixer already exists and the export path (saveSoundTrack) will include them.
+    setupAudioTracksFromEnv();
+
     m_isPlaybackInited = true;
     m_playbackInited.send(m_isPlaybackInited);
+}
+
+void PlaybackController::addAudioTrack(const muse::io::path_t& filePath, const TrackAddFinished& onFinished)
+{
+    const std::string path = filePath.toStdString();
+    const std::string name = muse::io::filename(filePath).toStdString();
+    // The engine opens the file itself (it cannot be handed a decoder object across the
+    // RPC boundary), so only the path travels. Errors come back as a rejected promise.
+    playback()->addTrack(name, path, TrackParams {})
+    .onResolve(this, [this, path, onFinished](const TrackId trackId, const TrackParams&) {
+        LOGI() << "audio track added, trackId: " << trackId << ", file: " << path;
+        m_audioTrackIds.push_back(trackId);
+        if (onFinished) {
+            onFinished();
+        }
+    })
+    .onReject(this, [path, onFinished](int code, const std::string& msg) {
+        LOGE() << "failed to add audio track for file: " << path
+               << ", code: " << code << ", error: " << msg;
+        if (onFinished) {
+            onFinished();
+        }
+    });
+}
+
+void PlaybackController::setupAudioTracksFromEnv()
+{
+    // TEMPORARY (verification scaffold). See the header for why this exists.
+    const char* file = std::getenv("MUSE_AUDIOTRACK_FILE");
+    if (!file || !*file) {
+        return;
+    }
+
+    LOGI() << "MUSE_AUDIOTRACK_FILE set, adding audio track: " << file;
+    addAudioTrack(muse::io::path_t(file), nullptr);
 }
 
 void PlaybackController::subscribeOnAudioParamsChanges()

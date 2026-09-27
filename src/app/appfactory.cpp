@@ -24,6 +24,8 @@
 #include "framework/stubs/audio/audiostubmodule.h"
 #endif
 
+#include "audiotrack/audiotrackmodule.h"
+
 #ifdef MUSE_MODULE_AUDIOPLUGINS
 #include "framework/audioplugins/audiopluginsmodule.h"
 #endif
@@ -320,6 +322,9 @@ std::shared_ptr<muse::IApplication> AppFactory::newGuiApp(const std::shared_ptr<
     app->addModule(new muse::rcommand::RCommandModule());
     app->addModule(new muse::rcontrol::RControlModule());
     app->addModule(new muse::audio::AudioModule());
+    // audiotrack registers the audio-file decoder hook the engine needs for Sound_tracks
+    // (backing/reference audio). Must be added so the engine can resolve it.
+    app->addModule(new muse::audiotrack::AudioTrackModule());
 #ifdef MUSE_MODULE_AUDIOPLUGINS
     app->addModule(new muse::audioplugins::AudioPluginsModule());
 #endif
@@ -466,6 +471,10 @@ static void addConsoleModules(std::shared_ptr<MuseScoreConsoleApp> app)
     app->addModule(new muse::rcommand::RCommandModule());
     app->addModule(new muse::rcontrol::RControlModule());
     app->addModule(new muse::audio::AudioModule());
+    // audiotrack registers the audio-file decoder hook the engine needs for Sound_tracks.
+    // Also needed on the console path: audio export (-o out.wav) mixes through the same
+    // engine, so a backing track must be resolvable there too.
+    app->addModule(new muse::audiotrack::AudioTrackModule());
 #ifdef MUSE_MODULE_AUDIOPLUGINS
     app->addModule(new muse::audioplugins::AudioPluginsModule());
 #endif
