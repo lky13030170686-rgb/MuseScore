@@ -1567,13 +1567,24 @@ void PlaybackController::addAudioTrack(const muse::io::path_t& filePath, const A
 
 Ret PlaybackController::importAudioTrack()
 {
-    if (!m_isPlaybackInited) {
-        return make_ret(Ret::Code::InternalError, std::string("playback not initialized"));
+    LOGI() << "audiotrack: import requested, opening file dialog";
+
+    const muse::io::path_t path = interactive()->selectOpeningFileSync(
+        muse::trc("playback", "Import audio"), "", audioFileFilter());
+
+    if (path.empty()) {
+        LOGI() << "audiotrack: import cancelled by user";
+        return muse::make_ret(Ret::Code::Cancel);   // user cancelled; not an error
     }
 
+    return addAudioTrackFromPath(path);
+}
+
+std::vector<std::string> PlaybackController::audioFileFilter()
+{
     // Only formats the audiotrack module can actually decode. libsndfile in this build has
     // ENABLE_MPEG=OFF, so MP3 is deliberately absent rather than offered and then failing.
-    const std::vector<std::string> filter = {
+    return {
         muse::trc("playback", "Audio files") + " (*.wav *.wave *.flac *.ogg *.oga *.opus *.aiff *.aif *.w64 *.caf)",
         muse::trc("playback", "WAV") + " (*.wav *.wave)",
         muse::trc("playback", "FLAC") + " (*.flac)",
@@ -1581,12 +1592,16 @@ Ret PlaybackController::importAudioTrack()
         muse::trc("playback", "Opus") + " (*.opus)",
         muse::trc("playback", "All") + " (*)"
     };
+}
 
-    const muse::io::path_t path = interactive()->selectOpeningFileSync(
-        muse::trc("playback", "Import audio"), "", filter);
+Ret PlaybackController::addAudioTrackFromPath(const muse::io::path_t& path)
+{
+    if (!m_isPlaybackInited) {
+        return make_ret(Ret::Code::InternalError, std::string("playback not initialized"));
+    }
 
     if (path.empty()) {
-        return muse::make_ret(Ret::Code::Cancel);   // user cancelled; not an error
+        return muse::make_ret(Ret::Code::Cancel);
     }
 
     LOGI() << "audio track import requested: " << path;

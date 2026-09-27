@@ -228,6 +228,14 @@ private:
     //! The file is decoded by the audiotrack module via the engine's file-source hook.
     void addAudioTrack(const muse::io::path_t& filePath, const AudioTrackAddFinished& onFinished);
 
+    //! Adds an audio track from an already-known path, without prompting. Split out from
+    //! importAudioTrack() so the add path can be driven directly (tests, drag&drop,
+    //! recent-files) without a modal dialog in the way.
+    muse::Ret addAudioTrackFromPath(const muse::io::path_t& path);
+
+    //! File-dialog filter for the audio formats we can actually decode.
+    static std::vector<std::string> audioFileFilter();
+
     void updateSoloMuteStates();
     void updateAuxMuteStates();
 
