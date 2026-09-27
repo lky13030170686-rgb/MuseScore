@@ -32,6 +32,9 @@ target_sources(audiotrack PRIVATE
     audiofilesourceprovider.h
     audiowaveformprovider.cpp
     audiowaveformprovider.h
+    audiowaveformservice.cpp
+    audiowaveformservice.h
+    iaudiowaveformservice.h
     audiotracksource.cpp
     audiotracksource.h
     waveformcache.cpp

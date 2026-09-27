@@ -39,6 +39,7 @@
 #include "audio/main/iplayback.h"
 #include "audio/common/audiotypes.h"
 #include "interactive/iinteractive.h"
+#include "audiotrack/iaudiowaveformservice.h"
 #include "tours/itoursservice.h"
 
 #include "drumsetloader.h"
@@ -59,6 +60,9 @@ class PlaybackController : public IPlaybackController, public muse::async::Async
     muse::ContextInject<muse::tours::IToursService> tours = { this };
     //! Used to prompt for the audio file to import as a backing track.
     muse::ContextInject<muse::IInteractive> interactive = { this };
+    //! Prepares the waveform for a backing track so a waveform staff can draw it.
+    //! Optional: absent in builds without the audiotrack module.
+    muse::GlobalInject<muse::audiotrack::IAudioWaveformService> audioWaveformService;
 
 public:
     PlaybackController(const muse::modularity::ContextPtr& iocCtx);
@@ -232,6 +236,10 @@ private:
     //! importAudioTrack() so the add path can be driven directly (tests, drag&drop,
     //! recent-files) without a modal dialog in the way.
     muse::Ret addAudioTrackFromPath(const muse::io::path_t& path);
+
+    //! Called (on a worker thread) when a prepared waveform becomes available; marshals to
+    //! the main thread and asks the score to lay out again so the waveform staff updates.
+    void onWaveformChanged();
 
     //! File-dialog filter for the audio formats we can actually decode.
     static std::vector<std::string> audioFileFilter();

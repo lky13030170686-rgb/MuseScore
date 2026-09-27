@@ -54,6 +54,11 @@ void AudioTrackModule::registerExports()
     // export is how a waveform staff gets its peaks. Without it, a waveform lane lays out
     // empty (no crash) because TLayout treats a missing provider as "no audio loaded".
     globalIoc()->registerExport<mu::engraving::IAudioWaveformProvider>(mname, m_waveformProvider);
+
+    // Lets the playback layer say "prepare the waveform for this file" without knowing
+    // anything about decoding or cache levels.
+    m_waveformService = std::make_shared<AudioWaveformService>(m_waveformProvider);
+    globalIoc()->registerExport<IAudioWaveformService>(mname, m_waveformService);
 }
 
 std::shared_ptr<AudioWaveformProvider> AudioTrackModule::waveformProvider() const

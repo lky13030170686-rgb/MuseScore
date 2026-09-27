@@ -30,6 +30,10 @@
 
 #include <QDir>
 #include <QFile>
+// qApp + QMetaObject::invokeMethod: marshalling the waveform-ready notification from the
+// decode worker thread back onto the main thread.
+#include <QCoreApplication>
+#include <QMetaObject>
 
 #include "audio/common/audioutils.h"
 #include "audio/devtools/inputlag.h"
@@ -1552,6 +1556,18 @@ void PlaybackController::addAudioTrack(const muse::io::path_t& filePath, const A
         LOGI() << "audio track added, trackId: " << trackId << ", file: " << path;
         m_audioTrackIds.push_back(trackId);
         m_audioTrackAdded.send(trackId);
+
+        // Kick off waveform preparation. This is asynchronous on purpose: decoding a
+        // multi-minute file takes hundreds of milliseconds and must not block the UI.
+        // When it finishes, the score is asked to lay out again so the waveform staff
+        // appears (or updates).
+        if (audioWaveformService()) {
+            audioWaveformService()->waveformChanged().onNotify(this, [this]() {
+                onWaveformChanged();
+            });
+            audioWaveformService()->loadWaveform(muse::io::path_t(path));
+        }
+
         if (onFinished) {
             onFinished(true);
         }
@@ -1592,6 +1608,26 @@ std::vector<std::string> PlaybackController::audioFileFilter()
         muse::trc("playback", "Opus") + " (*.opus)",
         muse::trc("playback", "All") + " (*)"
     };
+}
+
+void PlaybackController::onWaveformChanged()
+{
+    // The notification arrives on the worker thread that finished decoding; score layout
+    // and painting must happen on the main thread, so hop over before touching anything.
+    QMetaObject::invokeMethod(qApp, [this]() {
+        // currentMasterNotation() hands back a shared_ptr, not a raw pointer.
+        const notation::IMasterNotationPtr notation = globalContext()->currentMasterNotation();
+        engraving::MasterScore* score = notation ? notation->masterScore() : nullptr;
+        if (!score) {
+            return;
+        }
+
+        // Force a re-layout so the waveform staff picks up the new peaks. Scoped to this
+        // score: other open scores are unaffected.
+        LOGI() << "audiotrack: waveform ready, relayouting score";
+        score->setLayoutAll();
+        score->update();
+    }, Qt::QueuedConnection);
 }
 
 Ret PlaybackController::addAudioTrackFromPath(const muse::io::path_t& path)

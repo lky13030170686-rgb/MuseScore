@@ -52,6 +52,11 @@ target_sources(playback PRIVATE
     internal/knownaudiopluginsconfigurator.h
 )
 
+# audiotrack provides the waveform service used when a backing audio track is added
+# (see IAudioWaveformService). Listed after audiotrack in src/CMakeLists.txt, so the
+# target already exists here.
+target_link_libraries(playback PRIVATE audiotrack)
+
 if (MUE_BUILD_PLAYBACK_TESTS)
     add_subdirectory(tests)
 endif()
