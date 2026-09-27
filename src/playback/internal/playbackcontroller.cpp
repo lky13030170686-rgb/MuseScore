@@ -1557,6 +1557,10 @@ void PlaybackController::addAudioTrack(const muse::io::path_t& filePath, const A
         m_audioTrackIds.push_back(trackId);
         m_audioTrackAdded.send(trackId);
 
+        // Create the waveform lane first, so the re-layout triggered when the peaks are
+        // ready already has somewhere to draw them.
+        ensureAudioWaveformStaff();
+
         // Kick off waveform preparation. This is asynchronous on purpose: decoding a
         // multi-minute file takes hundreds of milliseconds and must not block the UI.
         // When it finishes, the score is asked to lay out again so the waveform staff
@@ -1608,6 +1612,28 @@ std::vector<std::string> PlaybackController::audioFileFilter()
         muse::trc("playback", "Opus") + " (*.opus)",
         muse::trc("playback", "All") + " (*)"
     };
+}
+
+void PlaybackController::ensureAudioWaveformStaff()
+{
+    const notation::INotationPartsPtr parts = masterNotationParts();
+    if (!parts) {
+        return;
+    }
+
+    // One lane per score: importing a second file replaces the audio, it does not stack
+    // lanes. (Multiple simultaneous backing tracks would need a per-track lane mapping,
+    // which the first version deliberately does not attempt.)
+    if (parts->hasAudioWaveformStaff()) {
+        return;
+    }
+
+    const muse::ID partId = parts->appendAudioWaveformStaff();
+    if (partId.isValid()) {
+        LOGI() << "audiotrack: waveform staff created";
+    } else {
+        LOGE() << "audiotrack: failed to create waveform staff";
+    }
 }
 
 void PlaybackController::onWaveformChanged()

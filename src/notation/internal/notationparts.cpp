@@ -746,8 +746,70 @@ void NotationParts::insertPart(Part* part, size_t index)
     notifyAboutPartAdded(part);
 }
 
-void NotationParts::replacePart(const ID& partId, Part* newPart)
+ID NotationParts::appendAudioWaveformStaff()
 {
+    TRACEFUNC;
+
+    engraving::Score* const s = score();
+    IF_ASSERT_FAILED(s) {
+        return muse::ID();
+    }
+
+    const StaffType* waveformType = StaffType::preset(StaffTypes::WAVEFORM);
+    IF_ASSERT_FAILED(waveformType) {
+        return muse::ID();
+    }
+
+    startEdit(TranslatableString("undoableAction", "Add audio track"));
+
+    // A backing track is not an instrument, so it gets a Part with a minimal Instrument
+    // rather than one resolved from an InstrumentTemplate. Without an instrument the part
+    // has no name and the mixer/parts machinery has nothing to key on.
+    Part* part = new Part(s);
+    Instrument instrument;
+    instrument.setId(u"audiotrack.waveform");
+    // qtrc (not trc): the set*Name / setTrackName APIs take muse::String, while trc
+    // yields a std::string and does not convert implicitly.
+    instrument.setTrackName(muse::qtrc("notation", "Audio track"));
+    part->setInstrument(instrument);
+    part->setLongName(muse::qtrc("notation", "Audio track"));
+    part->setShortName(muse::qtrc("notation", "Audio"));
+
+    doInsertPart(part, muse::nidx);
+
+    // Create the lane's staff with the WAVEFORM staff type. initFromStaffType() is the
+    // direct route: it avoids fabricating an InstrumentTemplate, which is what the normal
+    // add-instrument path needs and what a non-instrument lane does not have.
+    Staff* staff = engraving::Factory::createStaff(part);
+    doAppendStaff(staff, part, /*createRests*/ false);
+    staff->initFromStaffType(waveformType);
+
+    apply();
+
+    notifyAboutPartAdded(part);
+
+    LOGI() << "audiotrack: added waveform staff, partId: " << part->id().toStdString();
+    return part->id();
+}
+
+bool NotationParts::hasAudioWaveformStaff() const
+{
+    const engraving::Score* s = score();
+    if (!s) {
+        return false;
+    }
+
+    for (const Part* part : s->parts()) {
+        for (const Staff* staff : part->staves()) {
+            if (staff && staff->staffType(Fraction(0, 1))->isWaveformStaff()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void NotationParts::replacePart(const ID& partId, Part* newPart){
     TRACEFUNC;
 
     Part* part = partModifiable(partId);

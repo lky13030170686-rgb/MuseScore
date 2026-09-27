@@ -241,6 +241,10 @@ private:
     //! the main thread and asks the score to lay out again so the waveform staff updates.
     void onWaveformChanged();
 
+    //! Adds the audio waveform lane to the score if it is not there yet. Must run on the
+    //! main thread: it edits the score through the undo stack.
+    void ensureAudioWaveformStaff();
+
     //! File-dialog filter for the audio formats we can actually decode.
     static std::vector<std::string> audioFileFilter();
 

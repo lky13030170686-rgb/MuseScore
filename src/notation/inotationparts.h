@@ -85,6 +85,18 @@ public:
 
     virtual void insertPart(Part* part, size_t index) = 0;
 
+    //! Appends a backing/reference audio track lane: a new part whose single staff uses
+    //! the WAVEFORM staff type, so the audio waveform is drawn in its own lane under the
+    //! score and scrolls with the system.
+    //!
+    //! Returns the id of the created part, or an invalid id on failure. Idempotent in the
+    //! sense that calling it repeatedly adds one lane each time; callers that want a single
+    //! lane should check hasAudioWaveformStaff() first.
+    virtual muse::ID appendAudioWaveformStaff() = 0;
+
+    //! Whether the score already has an audio waveform lane.
+    virtual bool hasAudioWaveformStaff() const = 0;
+
     virtual void replacePart(const muse::ID& partId, Part* newPart) = 0;
     virtual void replaceInstrument(const InstrumentKey& instrumentKey, const Instrument& newInstrument,
                                    const StaffType* newStaffType = nullptr) = 0;

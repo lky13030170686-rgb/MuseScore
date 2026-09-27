@@ -80,6 +80,10 @@ public:
 
     void insertPart(Part* part, size_t index) override;
 
+    //! Adds a backing audio track lane (a WAVEFORM-type staff). See INotationParts.
+    muse::ID appendAudioWaveformStaff() override;
+    bool hasAudioWaveformStaff() const override;
+
     void replacePart(const muse::ID& partId, Part* newPart) override;
     void replaceInstrument(const InstrumentKey& instrumentKey, const Instrument& newInstrument,
                            const StaffType* newStaffType = nullptr) override;
