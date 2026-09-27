@@ -29,6 +29,8 @@
 #include "engraving/types/types.h"
 #include "playback/playbacktypes.h"
 #include "notation/inotationsolomutestate.h"
+#include "io/path.h"
+#include "types/number.h"
 
 namespace mu::project {
 using AudioInputParams = muse::audio::AudioInputParams;
@@ -76,12 +78,49 @@ struct AudioOutputParams {
     }
 };
 
+//! A backing/reference audio track: the audio file that plays along with the score.
+//!
+//! Stored with the project so reopening restores the track. It lives here (rather than in
+//! the audiotrack module) because this is the project's on-disk model, and the project
+//! module must not depend on the feature modules that consume it.
+struct AudioTrackParams {
+    //! Absolute path to the audio file on disk. Empty means "no audio track".
+    muse::io::path_t filePath;
+    //! Display name shown in the score; defaults to the file's base name.
+    muse::String name;
+    //! Offset between the score start and the audio start, in ticks. Positive means the
+    //! audio starts later than the first measure. Alignment is a later step; the field
+    //! exists now so saved projects need no format change when it lands.
+    int tickOffset = 0;
+    //! Linear gain, 1.0 = unchanged.
+    float gain = 1.0f;
+    bool muted = false;
+
+    bool isValid() const { return !filePath.empty(); }
+
+    bool operator ==(const AudioTrackParams& other) const
+    {
+        return filePath == other.filePath
+               && name == other.name
+               && tickOffset == other.tickOffset
+               && muse::is_equal(gain, other.gain)
+               && muted == other.muted;
+    }
+    bool operator !=(const AudioTrackParams& other) const { return !(*this == other); }
+};
+
 class IProjectAudioSettings
 {
 public:
     using SoloMuteState = notation::INotationSoloMuteState::SoloMuteState;
 
     virtual ~IProjectAudioSettings() = default;
+
+    //! The project's backing audio track. Invalid when the project has none.
+    virtual const AudioTrackParams& audioTrackParams() const = 0;
+    virtual void setAudioTrackParams(const AudioTrackParams& params) = 0;
+    virtual void clearAudioTrackParams() = 0;
+    virtual muse::async::Notification audioTrackParamsChanged() const = 0;
 
     virtual const AudioOutputParams& masterAudioOutputParams() const = 0;
     virtual void setMasterAudioOutputParams(const AudioOutputParams& params) = 0;

@@ -28,12 +28,26 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/waveformrenderer_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/waveformrenderer_output_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/audiowaveformprovider_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/waveformlayout_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/waveformlane_output_tests.cpp
+
+    # waveformlayout_tests.cpp reads a real score. ScoreRW is the engraving suite's score
+    # loader and lives in its test tree rather than in the engraving library, so it is
+    # compiled straight into this target.
+    ${CMAKE_CURRENT_LIST_DIR}/../../engraving/tests/utils/scorerw.cpp
 )
 
 set(MODULE_TEST_LINK
     audiotrack
     muse_audio_engine
     muse::draw
+    engraving
+)
+
+# waveformlayout_tests.cpp drives a real score through the engraving layout, so it needs the
+# engraving suite's configuration mock to satisfy IEngravingConfiguration.
+set(MODULE_TEST_INCLUDE
+    ${CMAKE_CURRENT_LIST_DIR}/../../engraving/tests
 )
 
 set(MODULE_TEST_DATA_ROOT ${CMAKE_CURRENT_LIST_DIR})

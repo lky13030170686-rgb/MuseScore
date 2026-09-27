@@ -27,6 +27,8 @@
 #include "modularity/ioc.h"
 #include "log.h"
 #include "types/ret.h"
+#include "io/fileinfo.h"
+#include "io/path.h"
 
 #include <QDir>
 #include <QFile>
@@ -1540,6 +1542,10 @@ void PlaybackController::setupPlayback()
     setupTracks();
     setupPlayer();
 
+    // Re-add the backing audio track recorded in the project, if any. Done after
+    // setupTracks() so the mixer exists; the waveform lane and its peaks follow.
+    restoreAudioTrack();
+
     m_isPlaybackInited = true;
     m_playbackInited.send(m_isPlaybackInited);
 }
@@ -1560,6 +1566,9 @@ void PlaybackController::addAudioTrack(const muse::io::path_t& filePath, const A
         // Create the waveform lane first, so the re-layout triggered when the peaks are
         // ready already has somewhere to draw them.
         ensureAudioWaveformStaff();
+
+        // Remember the file in the project, so reopening the score restores this track.
+        rememberAudioTrack(muse::io::path_t(path));
 
         // Kick off waveform preparation. This is asynchronous on purpose: decoding a
         // multi-minute file takes hundreds of milliseconds and must not block the UI.
@@ -1612,6 +1621,48 @@ std::vector<std::string> PlaybackController::audioFileFilter()
         muse::trc("playback", "Opus") + " (*.opus)",
         muse::trc("playback", "All") + " (*)"
     };
+}
+
+void PlaybackController::rememberAudioTrack(const muse::io::path_t& filePath)
+{
+    if (!audioSettings()) {
+        return;
+    }
+
+    project::AudioTrackParams params;
+    params.filePath = filePath;
+    // io::filename() yields a path_t; the params field is a muse::String.
+    params.name = muse::io::filename(filePath).toString();
+    audioSettings()->setAudioTrackParams(params);
+
+    LOGI() << "audiotrack: remembered audio track in project: " << filePath;
+}
+
+void PlaybackController::restoreAudioTrack()
+{
+    if (!audioSettings()) {
+        return;
+    }
+
+    const project::AudioTrackParams params = audioSettings()->audioTrackParams();
+    if (!params.isValid()) {
+        return;
+    }
+
+    // The file may have moved or been deleted since the project was saved. Check before
+    // trying to load it, so a missing file produces one clear warning instead of a decode
+    // failure whose message is harder to act on.
+    if (!muse::io::FileInfo::exists(params.filePath)) {
+        LOGW() << "audiotrack: saved audio file is missing, skipping: " << params.filePath;
+        return;
+    }
+
+    LOGI() << "audiotrack: restoring audio track from project: " << params.filePath;
+
+    // Re-add the engine track and re-decode the waveform. addAudioTrack() also re-creates
+    // the waveform lane if it is missing, which is what makes a reopened project show its
+    // waveform without the user importing anything again.
+    addAudioTrack(params.filePath, nullptr);
 }
 
 void PlaybackController::ensureAudioWaveformStaff()

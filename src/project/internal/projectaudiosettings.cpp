@@ -250,6 +250,32 @@ muse::async::Notification ProjectAudioSettings::settingsChanged() const
     return m_settingsChanged;
 }
 
+const AudioTrackParams& ProjectAudioSettings::audioTrackParams() const
+{
+    return m_audioTrackParams;
+}
+
+void ProjectAudioSettings::setAudioTrackParams(const AudioTrackParams& params)
+{
+    if (m_audioTrackParams == params) {
+        return;
+    }
+
+    m_audioTrackParams = params;
+    m_audioTrackParamsChanged.notify();
+    m_settingsChanged.notify();
+}
+
+void ProjectAudioSettings::clearAudioTrackParams()
+{
+    setAudioTrackParams(AudioTrackParams {});
+}
+
+muse::async::Notification ProjectAudioSettings::audioTrackParamsChanged() const
+{
+    return m_audioTrackParamsChanged;
+}
+
 Ret ProjectAudioSettings::read(const engraving::MscReader& reader)
 {
     ByteArray json = reader.readAudioSettingsJsonFile();
@@ -299,6 +325,17 @@ Ret ProjectAudioSettings::read(const engraving::MscReader& reader)
         m_activeSoundProfileName = playbackConfig()->museSoundsProfileName();
     }
 
+    // Backing audio track. Absent in projects saved before the feature existed, which is
+    // why this is read defensively rather than assumed present.
+    const QJsonObject audioTrackObj = rootObj.value("audioTrack").toObject();
+    AudioTrackParams audioTrack;
+    audioTrack.filePath = audioTrackObj.value("filePath").toString();
+    audioTrack.name = audioTrackObj.value("name").toString();
+    audioTrack.tickOffset = audioTrackObj.value("tickOffset").toInt(0);
+    audioTrack.gain = static_cast<float>(audioTrackObj.value("gain").toDouble(1.0));
+    audioTrack.muted = audioTrackObj.value("muted").toBool(false);
+    m_audioTrackParams = audioTrack.isValid() ? audioTrack : AudioTrackParams {};
+
     return make_ret(Ret::Code::Ok);
 }
 
@@ -321,6 +358,18 @@ Ret ProjectAudioSettings::write(engraving::MscWriter& writer, notation::INotatio
 
     rootObj["tracks"] = tracksArray;
     rootObj["activeSoundProfile"] = m_activeSoundProfileName.toQString();
+
+    // Only written when there actually is a backing track, so projects without one keep
+    // the same file content as before this feature existed.
+    if (m_audioTrackParams.isValid()) {
+        QJsonObject audioTrackObj;
+        audioTrackObj["filePath"] = m_audioTrackParams.filePath.toQString();
+        audioTrackObj["name"] = m_audioTrackParams.name.toQString();
+        audioTrackObj["tickOffset"] = m_audioTrackParams.tickOffset;
+        audioTrackObj["gain"] = static_cast<double>(m_audioTrackParams.gain);
+        audioTrackObj["muted"] = m_audioTrackParams.muted;
+        rootObj["audioTrack"] = audioTrackObj;
+    }
 
     QByteArray json = QJsonDocument(rootObj).toJson();
     writer.writeAudioSettingsJsonFile(ByteArray::fromQByteArrayNoCopy(json));

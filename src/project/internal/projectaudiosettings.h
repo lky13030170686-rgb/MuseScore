@@ -65,6 +65,12 @@ public:
     const playback::SoundProfileName& activeSoundProfile() const override;
     void setActiveSoundProfile(const playback::SoundProfileName& profileName) override;
 
+    //! Backing/reference audio track (the audio waveform lane's audio file).
+    const AudioTrackParams& audioTrackParams() const override;
+    void setAudioTrackParams(const AudioTrackParams& params) override;
+    void clearAudioTrackParams() override;
+    muse::async::Notification audioTrackParamsChanged() const override;
+
     muse::async::Notification settingsChanged() const override;
 
     muse::Ret read(const engraving::MscReader& reader);
@@ -121,6 +127,10 @@ private:
     muse::async::Channel<engraving::InstrumentTrackId> m_trackInputParamsChanged;
 
     mu::playback::SoundProfileName m_activeSoundProfileName;
+
+    //! Backing audio track. Invalid (empty filePath) when the project has none.
+    AudioTrackParams m_audioTrackParams;
+    muse::async::Notification m_audioTrackParamsChanged;
 };
 
 using ProjectAudioSettingsPtr = std::shared_ptr<ProjectAudioSettings>;

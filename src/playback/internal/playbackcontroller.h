@@ -245,6 +245,13 @@ private:
     //! main thread: it edits the score through the undo stack.
     void ensureAudioWaveformStaff();
 
+    //! Records the audio file in the project settings so saving keeps it.
+    void rememberAudioTrack(const muse::io::path_t& filePath);
+
+    //! Re-adds the backing audio track recorded in the project (if any). Called after a
+    //! project is opened, so a saved project shows its waveform without re-importing.
+    void restoreAudioTrack();
+
     //! File-dialog filter for the audio formats we can actually decode.
     static std::vector<std::string> audioFileFilter();
 

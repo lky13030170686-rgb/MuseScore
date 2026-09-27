@@ -5459,9 +5459,18 @@ void TLayout::layoutWaveformLane(StaffLines* item, LayoutContext& ctx, double x1
     std::vector<LineF> ll;
 
     const Measure* measure = item->measure();
-    if (!measure || w <= 0.0 || laneHeight <= 0.0) {
+    if (!measure || w <= 0.0) {
         item->setLines(ll);
         return;
+    }
+
+    // laneHeight comes from the staff type as (lines - 1) * spatium * lineDistance. A score
+    // saved with a line count of 0 or 1 (or any future preset change that lowers it) would
+    // yield 0 or a negative height, and dropping the waveform over that is both silent and
+    // invisible to the user. Fall back to the 4-spatium lane the WAVEFORM preset defines
+    // instead, so the audio is always drawn.
+    if (laneHeight <= 0.0) {
+        laneHeight = 4.0 * item->spatium();
     }
 
     const IAudioWaveformProvider* provider = item->waveformProvider();
