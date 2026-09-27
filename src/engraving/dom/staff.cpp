@@ -1695,6 +1695,15 @@ bool Staff::isJianpuStaff(const Fraction& tick) const
 }
 
 //---------------------------------------------------------
+//   isWaveformStaff
+//---------------------------------------------------------
+
+bool Staff::isWaveformStaff(const Fraction& tick) const
+{
+    return staffType(tick)->type() == StaffTypes::WAVEFORM;
+}
+
+//---------------------------------------------------------
 //   jianpuMeasureRowExtents
 //
 //   Jianpu (numbered notation): for every voice, how far its notation row reaches above and

@@ -994,6 +994,16 @@ void StaffType::initStaffTypes(const Color& defaultColor)
 //                       group,              staff type,                    lin stpOff  dist clef   bars stmless time  key    ledger invis     color
         StaffType(StaffGroup::STANDARD,   StaffTypes::STANDARD,             5, 0,     1,   true,  true, false, true, true, true, false,  defaultColor),
         StaffType(StaffGroup::STANDARD,   StaffTypes::JIANPU,               0, 0,     1,   true,  true, false, true, true, true, false,  defaultColor),
+        // Audio-track waveform lane: a content lane that carries no musical notation, so
+        // no clef / key / time signature. Grouped under STANDARD because it is not
+        // percussion and not tablature; isWaveformStaff() is what distinguishes it.
+        //
+        // NOTE the line count: staffHeight() is (lines - 1) * spatium * lineDistance, so
+        // lines must be >= 2 or the staff gets a zero/negative height and the system
+        // spacing maths breaks. 3 lines at distance 2 gives a 4-spatium lane, which is a
+        // sensible waveform height. The lines themselves are not drawn for this staff type
+        // (the renderer substitutes the waveform), they only size the lane.
+        StaffType(StaffGroup::STANDARD,   StaffTypes::WAVEFORM,             3, 0,     2,   false, true, false, false, false, false, false, defaultColor),
         StaffType(StaffGroup::PERCUSSION, StaffTypes::PERC_1LINE,           1, 0,     1,   true,  true, false, true, false, true, false,  defaultColor),
         StaffType(StaffGroup::PERCUSSION, StaffTypes::PERC_2LINE,           2, 0,     1,   true,  true, false, true, false, true, false,  defaultColor),
         StaffType(StaffGroup::PERCUSSION, StaffTypes::PERC_3LINE,           3, 0,     1,   true,  true, false, true, false, true, false,  defaultColor),

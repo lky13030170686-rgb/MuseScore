@@ -329,6 +329,8 @@ public:
     static void layoutSpanner(Spanner* item, LayoutContext& ctx);
     static void layoutStaffLines(StaffLines* item, LayoutContext& ctx);
     static void layoutForWidth(StaffLines* item, double w, LayoutContext& ctx);
+    //! Fills an audio-track lane's lines with the waveform over one measure.
+    static void layoutWaveformLane(StaffLines* item, LayoutContext& ctx, double x1, double w, double laneHeight);
     static void layoutStaffState(const StaffState* item, StaffState::LayoutData* ldata);
     static void layoutStaffText(const StaffText* item, StaffText::LayoutData* ldata);
     static void layoutStaveSharingLabel(const StaveSharingLabel* item, StaveSharingLabel::LayoutData* ldata);

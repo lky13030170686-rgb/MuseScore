@@ -30,10 +30,14 @@ target_sources(audiotrack PRIVATE
     audiofilereader.h
     audiofilesourceprovider.cpp
     audiofilesourceprovider.h
+    audiowaveformprovider.cpp
+    audiowaveformprovider.h
     audiotracksource.cpp
     audiotracksource.h
     waveformcache.cpp
     waveformcache.h
+    waveformrenderer.cpp
+    waveformrenderer.h
 )
 
 # libsndfile: already a project dependency (muse_deps/prebuilt.lock, all platforms).
@@ -43,9 +47,15 @@ target_sources(audiotrack PRIVATE
 # find_package would fail. Just link the target.
 #
 # NOTE: ENABLE_MPEG=OFF in the official recipe, so WAV/FLAC/OGG work but MP3 does not.
+#
+# muse::draw is needed by waveformrenderer (it emits muse::draw::LineF / draws through
+# muse::draw::Painter). Linking it here keeps the module self-contained rather than making
+# every consumer of the waveform renderer pull draw in as well.
 target_link_libraries(audiotrack PRIVATE
     SndFile::sndfile
     muse_audio_engine
+    muse::draw
+    engraving
 )
 
 if (MUE_BUILD_AUDIOTRACK_TESTS)

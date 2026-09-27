@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "engravingitem.h"
+#include "iaudiowaveformprovider.h"
 
 namespace mu::engraving {
 //-------------------------------------------------------------------
@@ -38,6 +39,11 @@ class StaffLines final : public EngravingItem
 {
     OBJECT_ALLOCATOR(engraving, StaffLines)
     DECLARE_CLASSOF(ElementType::STAFF_LINES)
+
+    //! Optional: registered by the audio track module. When present and a waveform staff
+    //! is being laid out, the lane is filled with the audio waveform instead of staff
+    //! lines. Absent (as in unit-test or stub builds) the lane simply stays empty.
+    muse::GlobalInject<IAudioWaveformProvider> audioWaveformProvider;
 
 public:
 
@@ -59,6 +65,11 @@ public:
     Shape hitShape() const override;
 
     bool collectForDrawing() const override;
+
+    //! The waveform source, or nullptr when the audio track module is not loaded.
+    //! GlobalInject::operator() yields a shared_ptr; hand out the raw pointer because the
+    //! provider is owned by the IoC registry for the lifetime of the app.
+    IAudioWaveformProvider* waveformProvider() const { return audioWaveformProvider().get(); }
 
 private:
     friend class Factory;

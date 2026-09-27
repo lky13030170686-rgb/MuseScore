@@ -1227,8 +1227,12 @@ enum class StaffGroup : unsigned char {
 constexpr int STAFF_GROUP_MAX = int(StaffGroup::TAB) + 1; // out of enum to avoid compiler complains about not handled switch cases
 
 // keep in sync with the _presets initialization in StaffType::initStaffTypes() and _defaultPreset for legacy scores
+//! ⚠️ The order of this enum MUST match the order of StaffType::m_presets: preset() and
+//! getDefaultPreset() index that vector with these values directly. Only the xmlName
+//! string (not the numeric value) is written to files, so inserting a value is safe for
+//! existing scores as long as the two orders stay in step.
 enum class StaffTypes : signed char {
-    STANDARD, JIANPU,
+    STANDARD, JIANPU, WAVEFORM,
     PERC_1LINE, PERC_2LINE, PERC_3LINE, PERC_5LINE,
     TAB_6SIMPLE, TAB_6COMMON, TAB_6FULL,
     TAB_4SIMPLE, TAB_4COMMON, TAB_4FULL,

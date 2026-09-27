@@ -196,6 +196,10 @@ using namespace mu::engraving::rendering::score;
 
 #define LAYOUT_CALL_ITEM(item) LAYOUT_CALL() << LAYOUT_ITEM_INFO(item);
 
+//! Audio-track waveform lane: fraction of the lane's half-height the trace may use, so
+//! the waveform does not touch the lane edges.
+static constexpr double WAVEFORM_LANE_AMPLITUDE = 0.42;
+
 void TLayout::layoutItem(EngravingItem* item, LayoutContext& ctx)
 {
     //DO_ASSERT(!ctx.conf().isPaletteMode());
@@ -5423,11 +5427,93 @@ void TLayout::layoutForWidth(StaffLines* item, double w, LayoutContext& ctx)
     double y  = item->pos().y();
     ldata->setBbox(x1, -item->lw() * .5 + y, w, (_lines - 1) * dist + item->lw());
 
+    // Audio-track waveform lane: no staff lines. Instead the vertical space of this lane
+    // is filled with the waveform of the loaded audio, mapped through the score's own
+    // tempo timeline so the picture stays locked to the measures.
+    if (s && s->isWaveformStaff(item->measure()->tick())) {
+        layoutWaveformLane(item, ctx, x1, w, (_lines - 1) * dist);
+        return;
+    }
+
     std::vector<LineF> ll;
     for (int i = 0; i < _lines; ++i) {
         ll.push_back(LineF(x1, y, x2, y));
         y += dist;
     }
+    item->setLines(ll);
+}
+
+//---------------------------------------------------------
+//   layoutWaveformLane
+//
+//   Builds the vertical lines for an audio-track lane over one measure.
+//
+//   Time mapping uses Score::utick2utime(), i.e. the score's tempo timeline, rather than a
+//   second BPM calculation here. That matters: with a tempo change or a ritardando the
+//   waveform has to stretch exactly like the playhead does, otherwise the picture and the
+//   playback cursor drift apart (the research report calls this out explicitly).
+//---------------------------------------------------------
+
+void TLayout::layoutWaveformLane(StaffLines* item, LayoutContext& ctx, double x1, double w, double laneHeight)
+{
+    std::vector<LineF> ll;
+
+    const Measure* measure = item->measure();
+    if (!measure || w <= 0.0 || laneHeight <= 0.0) {
+        item->setLines(ll);
+        return;
+    }
+
+    const IAudioWaveformProvider* provider = item->waveformProvider();
+    if (!provider || !provider->hasWaveform()) {
+        item->setLines(ll);
+        return;
+    }
+
+    // Time window covered by this measure, in seconds, via the score's tempo timeline.
+    const Score* score = measure->score();
+    if (!score) {
+        item->setLines(ll);
+        return;
+    }
+
+    const double fromSec = score->utick2utime(measure->tick().ticks());
+    const double toSec = score->utick2utime((measure->tick() + measure->ticks()).ticks());
+    if (!(toSec > fromSec)) {
+        item->setLines(ll);
+        return;
+    }
+
+    // One line per pixel column, matching what the waveform renderer would produce.
+    const int64_t columns = std::max<int64_t>(1, static_cast<int64_t>(std::floor(w)));
+    std::vector<AudioWaveformPeak> peaks;
+    provider->waveformPeaks(fromSec, toSec, columns, peaks);
+    if (peaks.empty()) {
+        item->setLines(ll);
+        return;
+    }
+
+    // The lane sits between two of the staff-type's nominal lines; centre on that span.
+    const double top = item->pos().y();
+    const double halfHeight = laneHeight * 0.5 * WAVEFORM_LANE_AMPLITUDE;
+    const double centreY = top + laneHeight * 0.5;
+
+    ll.reserve(peaks.size());
+    for (size_t i = 0; i < peaks.size(); ++i) {
+        const double cx = x1 + static_cast<double>(i) + 0.5;
+
+        // Peaks are -1..1; map to the lane, louder = taller.
+        const double yMax = centreY - static_cast<double>(peaks[i].max) * halfHeight;
+        const double yMin = centreY - static_cast<double>(peaks[i].min) * halfHeight;
+
+        if (std::abs(yMin - yMax) < 0.5) {
+            // Silent slice: keep a hairline so the lane reads as continuous.
+            ll.emplace_back(PointF(cx, centreY - 0.25), PointF(cx, centreY + 0.25));
+        } else {
+            ll.emplace_back(PointF(cx, yMax), PointF(cx, yMin));
+        }
+    }
+
     item->setLines(ll);
 }
 

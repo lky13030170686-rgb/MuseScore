@@ -24,6 +24,7 @@
 #include "modularity/ioc.h"
 
 #include "audiofilesourceprovider.h"
+#include "audiowaveformprovider.h"
 
 using namespace muse;
 using namespace muse::audiotrack;
@@ -39,6 +40,7 @@ std::string AudioTrackModule::moduleName() const
 void AudioTrackModule::registerExports()
 {
     m_provider = std::make_shared<AudioFileSourceProvider>();
+    m_waveformProvider = std::make_shared<AudioWaveformProvider>();
 
     // Registered as the engine's file-source hook. Note this is a GLOBAL export: the
     // audio engine lives in a separate thread/context and resolves it globally.
@@ -46,6 +48,17 @@ void AudioTrackModule::registerExports()
     // Err::InvalidAudioFilePath (345) and the engine logs "no IAudioFileSourceProvider
     // registered" — which is the first thing to check when a backing track stays silent.
     globalIoc()->registerExport<audio::engine::IAudioFileSourceProvider>(mname, m_provider);
+
+    // Registered as the engraving layer's waveform hook. engraving sits below src/ in the
+    // dependency graph, so it cannot reach AudioWaveformProvider directly; this global
+    // export is how a waveform staff gets its peaks. Without it, a waveform lane lays out
+    // empty (no crash) because TLayout treats a missing provider as "no audio loaded".
+    globalIoc()->registerExport<mu::engraving::IAudioWaveformProvider>(mname, m_waveformProvider);
+}
+
+std::shared_ptr<AudioWaveformProvider> AudioTrackModule::waveformProvider() const
+{
+    return m_waveformProvider;
 }
 
 void AudioTrackModule::onInit(const IApplication::RunMode&)

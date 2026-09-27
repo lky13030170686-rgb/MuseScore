@@ -25,11 +25,14 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/audiofilereader_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/audiotracksource_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/waveformcache_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/waveformrenderer_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/waveformrenderer_output_tests.cpp
 )
 
 set(MODULE_TEST_LINK
     audiotrack
     muse_audio_engine
+    muse::draw
 )
 
 set(MODULE_TEST_DATA_ROOT ${CMAKE_CURRENT_LIST_DIR})

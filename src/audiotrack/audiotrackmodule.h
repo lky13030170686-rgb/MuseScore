@@ -26,14 +26,16 @@
 
 #include "modularity/imodulesetup.h"
 #include "audio/engine/iaudiofilesourceprovider.h"
+#include "audiofilesourceprovider.h"
+#include "audiowaveformprovider.h"
 
 namespace muse::audiotrack {
-//! Registers the audio-file decoding capability with the audio engine.
+//! Registers the audio-file decoding capability with the audio engine, and the waveform
+//! peak source with the engraving layer.
 //!
-//! The engine (muse submodule) cannot create file-backed sources itself — it must not
-//! depend on src/. This module supplies the bridge: it registers an
-//! engine::IAudioFileSourceProvider, which is what makes
-//! `IPlayback::addTrack(name, filePath, params)` able to produce sound.
+//! Two hooks, because two layers need this data and neither may depend on src/audiotrack:
+//!   - engine::IAudioFileSourceProvider -> makes an audio track audible
+//!   - engraving::IAudioWaveformProvider -> makes the waveform staff drawable
 class AudioTrackModule : public muse::modularity::IModuleSetup
 {
 public:
@@ -41,7 +43,12 @@ public:
     void registerExports() override;
     void onInit(const muse::IApplication::RunMode& mode) override;
 
+    //! The waveform provider this module registered, so the audio track code can install
+    //! a peak cache into it. Null before registerExports() runs.
+    std::shared_ptr<AudioWaveformProvider> waveformProvider() const;
+
 private:
     std::shared_ptr<muse::audio::engine::IAudioFileSourceProvider> m_provider;
+    std::shared_ptr<AudioWaveformProvider> m_waveformProvider;
 };
 } // namespace muse::audiotrack

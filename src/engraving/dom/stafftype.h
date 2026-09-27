@@ -292,6 +292,12 @@ public:
     bool isTabStaff() const { return m_group == StaffGroup::TAB; }
     bool isDrumStaff() const { return m_group == StaffGroup::PERCUSSION; }
 
+    //! Audio-track waveform lane. A content lane with no musical notation: it carries no
+    //! notes, so layout must skip it and the audio track renderer draws it instead.
+    //! Kept alongside isTabStaff()/isDrumStaff() as the single predicate every call site
+    //! should branch on (mirrors Staff::isJianpuStaff()).
+    bool isWaveformStaff() const { return m_staffType == StaffTypes::WAVEFORM; }
+
     bool isSimpleTabStaff() const;
     bool isCommonTabStaff() const;
     bool isHiddenElementOnTab(Sid commonTabStyle, Sid simpleTabStyle) const;
