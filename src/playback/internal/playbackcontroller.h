@@ -38,6 +38,7 @@
 #include "audio/main/iplayer.h"
 #include "audio/main/iplayback.h"
 #include "audio/common/audiotypes.h"
+#include "interactive/iinteractive.h"
 #include "tours/itoursservice.h"
 
 #include "drumsetloader.h"
@@ -56,6 +57,8 @@ class PlaybackController : public IPlaybackController, public muse::async::Async
     muse::ContextInject<muse::audio::IPlayback> playback = { this };
     muse::ContextInject<context::IGlobalContext> globalContext = { this };
     muse::ContextInject<muse::tours::IToursService> tours = { this };
+    //! Used to prompt for the audio file to import as a backing track.
+    muse::ContextInject<muse::IInteractive> interactive = { this };
 
 public:
     PlaybackController(const muse::modularity::ContextPtr& iocCtx);
@@ -122,6 +125,11 @@ public:
 
     void seekElement(const engraving::EngravingItem* element, bool flushSound = true) override;
     void seekBeat(int measureIndex, int beatIndex, bool flushSound = true) override;
+
+    muse::Ret importAudioTrack() override;
+    const std::vector<muse::audio::TrackId>& audioTrackIds() const override;
+    muse::async::Channel<muse::audio::TrackId> audioTrackAdded() const override;
+    muse::async::Channel<muse::audio::TrackId> audioTrackRemoved() const override;
 
     muse::secs_t totalPlayTime() const override;
     muse::async::Notification totalPlayTimeChanged() const override;
@@ -206,6 +214,9 @@ private:
     project::IProjectAudioSettingsPtr audioSettings() const;
 
     using TrackAddFinished = std::function<void ()>;
+    //! Backing audio tracks decode asynchronously on the engine side, so their add
+    //! callback reports success/failure rather than just completing.
+    using AudioTrackAddFinished = std::function<void (bool success)>;
 
     void resetPlayback();
     void setupPlayback();
@@ -215,14 +226,7 @@ private:
 
     //! Adds a backing/reference audio track (the Sound_track path).
     //! The file is decoded by the audiotrack module via the engine's file-source hook.
-    //! \param onFinished called once the add attempt settles (success or failure).
-    void addAudioTrack(const muse::io::path_t& filePath, const TrackAddFinished& onFinished);
-
-    //! TEMPORARY bootstrap for verification: if MUSE_AUDIOTRACK_FILE is set, adds that
-    //! file as an audio track once playback is set up. Lets the feature be exercised
-    //! end-to-end (including offline WAV export) before a UI exists.
-    //! Remove this once the score-level data model + UI land.
-    void setupAudioTracksFromEnv();
+    void addAudioTrack(const muse::io::path_t& filePath, const AudioTrackAddFinished& onFinished);
 
     void updateSoloMuteStates();
     void updateAuxMuteStates();
@@ -273,6 +277,8 @@ private:
     InstrumentTrackIdMap m_instrumentTrackIdMap;
     //! Engine track ids of the backing audio tracks we added (Sound_track path).
     std::vector<muse::audio::TrackId> m_audioTrackIds;
+    muse::async::Channel<muse::audio::TrackId> m_audioTrackAdded;
+    muse::async::Channel<muse::audio::TrackId> m_audioTrackRemoved;
     AuxTrackIdMap m_auxTrackIdMap;
 
     std::unordered_map<engraving::InstrumentTrackId, muse::audio::ControlParams> m_automatedControlParamsCache;

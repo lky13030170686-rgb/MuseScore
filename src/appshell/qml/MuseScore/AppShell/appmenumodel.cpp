@@ -328,6 +328,10 @@ MenuItem* AppMenuModel::makeAddMenu()
         makeMenu(TranslatableString("appshell/menu/add", "&Lines"), makeLinesItems(), "menu-lines"),
         makeMenu(TranslatableString("appshell/menu/add", "&Chords and fretboard diagrams"),
                  makeChordAndFretboardDiagramsItems(), "menu-chord-and-frets"),
+        makeSeparator(),
+        // Backing/reference audio track (see 音频轨/开发管理细则.md). Placed in Add
+        // because it adds a playable layer alongside the score, not score content itself.
+        makeMenuItem(IMPORT_AUDIO_COMMAND),
     };
 
     return makeMenu(TranslatableString("appshell/menu/add", "&Add"), addItems, "menu-add");

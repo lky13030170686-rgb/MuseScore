@@ -122,6 +122,18 @@ public:
     virtual void seekElement(const engraving::EngravingItem* element, bool flushSound = true) = 0;
     virtual void seekBeat(int measureIndex, int beatIndex, bool flushSound = true) = 0;
 
+    //! Backing/reference audio track ------------------------------------------------
+    //! Prompts for an audio file and adds it as a track that plays alongside the score.
+    //! Supported containers are those the audiotrack module can decode with libsndfile
+    //! (WAV/FLAC/OGG/Opus); MP3 is not decodable in this build.
+    virtual muse::Ret importAudioTrack() = 0;
+
+    //! Engine track ids of the audio tracks currently loaded, for UI/state queries.
+    virtual const std::vector<muse::audio::TrackId>& audioTrackIds() const = 0;
+    virtual muse::async::Channel<muse::audio::TrackId> audioTrackAdded() const = 0;
+    virtual muse::async::Channel<muse::audio::TrackId> audioTrackRemoved() const = 0;
+    //! ------------------------------------------------------------------------------
+
     virtual muse::secs_t totalPlayTime() const = 0;
     virtual muse::async::Notification totalPlayTimeChanged() const = 0;
 

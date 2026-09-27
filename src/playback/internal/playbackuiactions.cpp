@@ -102,6 +102,15 @@ const UiActionList PlaybackUiActions::s_mainActions = {
              TranslatableString("action", "Playback setup"),
              TranslatableString("action", "Open playback setup dialog"),
              IconCode::Code::NONE
+             ),
+    //! Backing/reference audio track. Kept in the playback action list so it appears
+    //! alongside the other playback commands in the menu/shortcut editor.
+    UiAction("import-audio",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_OPENED,
+             TranslatableString("action", "Import audio"),
+             TranslatableString("action", "Add an audio file as a backing track that plays along with the score"),
+             IconCode::Code::NONE
              )
 };
 

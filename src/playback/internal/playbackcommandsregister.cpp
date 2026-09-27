@@ -193,6 +193,15 @@ static const std::vector<CommandInfo> s_commandInfos = {
         Decoration(IconCode::Code::NONE)
     },
 
+    //! Backing/reference audio track (see 音频轨/开发管理细则.md).
+    CommandInfo{
+        IMPORT_AUDIO_COMMAND,
+        TranslatableString("playback", "Import audio"),
+        TranslatableString("playback", "Add an audio file as a backing track that plays along with the score"),
+        InputSchema(),
+        Decoration(IconCode::Code::NONE)
+    },
+
     CommandInfo{
         TOGGLE_MIXER_SECTION_COMMAND,
         TranslatableString("playback", "Toggle mixer section"),

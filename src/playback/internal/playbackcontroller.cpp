@@ -28,8 +28,6 @@
 #include "log.h"
 #include "types/ret.h"
 
-#include <cstdlib>
-
 #include <QDir>
 #include <QFile>
 
@@ -1538,47 +1536,91 @@ void PlaybackController::setupPlayback()
     setupTracks();
     setupPlayer();
 
-    // Backing audio tracks ride on top of the instrument tracks. Added after setupTracks()
-    // so the mixer already exists and the export path (saveSoundTrack) will include them.
-    setupAudioTracksFromEnv();
-
     m_isPlaybackInited = true;
     m_playbackInited.send(m_isPlaybackInited);
 }
 
-void PlaybackController::addAudioTrack(const muse::io::path_t& filePath, const TrackAddFinished& onFinished)
+void PlaybackController::addAudioTrack(const muse::io::path_t& filePath, const AudioTrackAddFinished& onFinished)
 {
     const std::string path = filePath.toStdString();
     const std::string name = muse::io::filename(filePath).toStdString();
+
     // The engine opens the file itself (it cannot be handed a decoder object across the
     // RPC boundary), so only the path travels. Errors come back as a rejected promise.
     playback()->addTrack(name, path, TrackParams {})
     .onResolve(this, [this, path, onFinished](const TrackId trackId, const TrackParams&) {
         LOGI() << "audio track added, trackId: " << trackId << ", file: " << path;
         m_audioTrackIds.push_back(trackId);
+        m_audioTrackAdded.send(trackId);
         if (onFinished) {
-            onFinished();
+            onFinished(true);
         }
     })
     .onReject(this, [path, onFinished](int code, const std::string& msg) {
         LOGE() << "failed to add audio track for file: " << path
                << ", code: " << code << ", error: " << msg;
         if (onFinished) {
-            onFinished();
+            onFinished(false);
         }
     });
 }
 
-void PlaybackController::setupAudioTracksFromEnv()
+Ret PlaybackController::importAudioTrack()
 {
-    // TEMPORARY (verification scaffold). See the header for why this exists.
-    const char* file = std::getenv("MUSE_AUDIOTRACK_FILE");
-    if (!file || !*file) {
-        return;
+    if (!m_isPlaybackInited) {
+        return make_ret(Ret::Code::InternalError, std::string("playback not initialized"));
     }
 
-    LOGI() << "MUSE_AUDIOTRACK_FILE set, adding audio track: " << file;
-    addAudioTrack(muse::io::path_t(file), nullptr);
+    // Only formats the audiotrack module can actually decode. libsndfile in this build has
+    // ENABLE_MPEG=OFF, so MP3 is deliberately absent rather than offered and then failing.
+    const std::vector<std::string> filter = {
+        muse::trc("playback", "Audio files") + " (*.wav *.wave *.flac *.ogg *.oga *.opus *.aiff *.aif *.w64 *.caf)",
+        muse::trc("playback", "WAV") + " (*.wav *.wave)",
+        muse::trc("playback", "FLAC") + " (*.flac)",
+        muse::trc("playback", "Ogg Vorbis") + " (*.ogg *.oga)",
+        muse::trc("playback", "Opus") + " (*.opus)",
+        muse::trc("playback", "All") + " (*)"
+    };
+
+    const muse::io::path_t path = interactive()->selectOpeningFileSync(
+        muse::trc("playback", "Import audio"), "", filter);
+
+    if (path.empty()) {
+        return muse::make_ret(Ret::Code::Cancel);   // user cancelled; not an error
+    }
+
+    LOGI() << "audio track import requested: " << path;
+
+    // Decoding happens on the engine side, so the outcome is asynchronous. Tell the user
+    // when the file could not be used instead of leaving a silently missing track.
+    addAudioTrack(path, [this, path](bool success) {
+        if (success) {
+            return;
+        }
+
+        std::string text = muse::trc("playback", "Could not read this audio file:");
+        text += "\n" + path.toStdString() + "\n\n";
+        text += muse::trc("playback", "Supported formats: WAV, FLAC, Ogg Vorbis, Opus.");
+
+        interactive()->error(muse::trc("playback", "Import audio"), text);
+    });
+
+    return muse::make_ok();
+}
+
+const std::vector<TrackId>& PlaybackController::audioTrackIds() const
+{
+    return m_audioTrackIds;
+}
+
+async::Channel<TrackId> PlaybackController::audioTrackAdded() const
+{
+    return m_audioTrackAdded;
+}
+
+async::Channel<TrackId> PlaybackController::audioTrackRemoved() const
+{
+    return m_audioTrackRemoved;
 }
 
 void PlaybackController::subscribeOnAudioParamsChanges()

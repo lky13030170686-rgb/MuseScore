@@ -93,6 +93,12 @@ public:
     MOCK_METHOD(void, seekElement, (const engraving::EngravingItem*, bool), (override));
     MOCK_METHOD(void, seekBeat, (int, int, bool), (override));
 
+    // Backing/reference audio track
+    MOCK_METHOD(muse::Ret, importAudioTrack, (), (override));
+    MOCK_METHOD((const std::vector<muse::audio::TrackId>&), audioTrackIds, (), (const, override));
+    MOCK_METHOD(muse::async::Channel<muse::audio::TrackId>, audioTrackAdded, (), (const, override));
+    MOCK_METHOD(muse::async::Channel<muse::audio::TrackId>, audioTrackRemoved, (), (const, override));
+
     MOCK_METHOD(muse::secs_t, totalPlayTime, (), (const, override));
     MOCK_METHOD(muse::async::Notification, totalPlayTimeChanged, (), (const, override));
 

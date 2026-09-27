@@ -222,6 +222,27 @@ void PlaybackControllerStub::seekBeat(int, int, bool)
 {
 }
 
+muse::Ret PlaybackControllerStub::importAudioTrack()
+{
+    return muse::make_ret(muse::Ret::Code::NotSupported);
+}
+
+const std::vector<muse::audio::TrackId>& PlaybackControllerStub::audioTrackIds() const
+{
+    static const std::vector<muse::audio::TrackId> dummy;
+    return dummy;
+}
+
+muse::async::Channel<muse::audio::TrackId> PlaybackControllerStub::audioTrackAdded() const
+{
+    return {};
+}
+
+muse::async::Channel<muse::audio::TrackId> PlaybackControllerStub::audioTrackRemoved() const
+{
+    return {};
+}
+
 muse::secs_t PlaybackControllerStub::totalPlayTime() const
 {
     return muse::secs_t { 0.0 };

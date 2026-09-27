@@ -88,6 +88,12 @@ public:
     void seekElement(const engraving::EngravingItem* element, bool flushSound = true) override;
     void seekBeat(int measureIndex, int beatIndex, bool flushSound = true) override;
 
+    // Backing/reference audio track: unavailable without the playback module.
+    muse::Ret importAudioTrack() override;
+    const std::vector<muse::audio::TrackId>& audioTrackIds() const override;
+    muse::async::Channel<muse::audio::TrackId> audioTrackAdded() const override;
+    muse::async::Channel<muse::audio::TrackId> audioTrackRemoved() const override;
+
     muse::secs_t totalPlayTime() const override;
     muse::async::Notification totalPlayTimeChanged() const override;
 
