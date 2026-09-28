@@ -428,6 +428,11 @@ public:
     std::vector<Rest*> setRests(const Fraction& tick, track_idx_t track, const Fraction& l, bool useDots, Tuplet* tuplet,
                                 bool useFullMeasureRest = true);
 
+    //! Turns every rest of `staffIdx` into a gap rest, so the staff stays measurable without
+    //! anything being drawn. Does nothing for a staff that holds notation. Used for content
+    //! lanes (the audio waveform lane) once their staff type is known.
+    void hideContentLaneRests(staff_idx_t staffIdx);
+
     ChordRest* searchNote(const Fraction& tick, track_idx_t track) const;
 
     // undo/redo ops

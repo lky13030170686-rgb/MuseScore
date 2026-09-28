@@ -44,6 +44,7 @@
 #include "engraving/dom/measure.h"
 #include "engraving/dom/measurebase.h"
 #include "engraving/dom/part.h"
+#include "engraving/dom/rest.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/segment.h"
 #include "engraving/dom/staff.h"
@@ -597,12 +598,18 @@ TEST_F(AudioTrackLayoutTests, WaveformLaneSurvivesSaveAndReload)
     ASSERT_TRUE(lane) << "the reopened audio staff has no lines to draw the waveform on";
     EXPECT_FALSE(lane->lines().empty()) << "the reopened lane came out blank";
 
-    // Note on measure rests: the lane is expected to carry one per measure, like any staff
-    // with nothing to notate. They are not decoration -- Score::sanityCheck reports
-    // "Incomplete measure" when a measure's voice does not add up to the time signature, and
-    // the application refuses to open a score that fails it. Suppressing them for content
-    // lanes was tried and produced files the app could not load, so they stay.
+    // The lane carries one rest per measure, and every one of them must be a *gap* rest.
+    //
+    // They cannot simply be removed: Score::sanityCheck reports "Incomplete measure" when a
+    // measure's first voice does not add up to the time signature, and NotationProject::load
+    // then refuses to open the score (removing them for content lanes was tried, and produced
+    // files the application could not load at all).
+    //
+    // But they must not be drawn either, because a measure rest is placed in the middle of the
+    // staff -- exactly where the waveform is drawn. Gap rests are skipped by
+    // RestLayout::layoutRest, so they satisfy the completeness check while staying invisible.
     int laneRests = 0;
+    int laneGapRests = 0;
     for (const MeasureBase* mb = reloaded->measures()->first(); mb; mb = mb->nextMM()) {
         if (!mb->isMeasure()) {
             continue;
@@ -610,8 +617,13 @@ TEST_F(AudioTrackLayoutTests, WaveformLaneSurvivesSaveAndReload)
         const Measure* measure = toMeasure(mb);
         for (const Segment* s = measure->first(SegmentType::ChordRest); s; s = s->next(SegmentType::ChordRest)) {
             for (voice_idx_t voice = 0; voice < VOICES; ++voice) {
-                if (s->element(1 * VOICES + voice)) {
-                    ++laneRests;
+                EngravingItem* e = s->element(1 * VOICES + voice);
+                if (!e) {
+                    continue;
+                }
+                ++laneRests;
+                if (e->isRest() && toRest(e)->isGap()) {
+                    ++laneGapRests;
                 }
             }
         }
@@ -620,6 +632,10 @@ TEST_F(AudioTrackLayoutTests, WaveformLaneSurvivesSaveAndReload)
     EXPECT_GT(laneRests, 0)
         << "the reopened lane has no rests; a measure that adds up to nothing is reported as "
            "corrupted and the score will not open";
+
+    EXPECT_EQ(laneGapRests, laneRests)
+        << "the lane has " << (laneRests - laneGapRests)
+        << " rest(s) that are not gap rests; they would be drawn on top of the waveform";
 
     delete reloaded;
 

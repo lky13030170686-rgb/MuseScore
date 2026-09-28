@@ -298,6 +298,20 @@ public:
     //! should branch on (mirrors Staff::isJianpuStaff()).
     bool isWaveformStaff() const { return m_staffType == StaffTypes::WAVEFORM; }
 
+    //! Whether this staff type holds musical notation, as opposed to drawing something else in
+    //! its place. A content lane answers false.
+    //!
+    //! This matters for rests. Every measure's first voice has to add up to the time signature
+    //! -- Score::sanityCheck reports "Incomplete measure" otherwise, and NotationProject::load
+    //! then refuses to open the score -- so even a lane that can never hold a note still needs
+    //! its measure rests. They must not be drawn though, or they sit in the middle of the lane
+    //! on top of the waveform. Content lanes therefore get their rests as *gap* rests, which
+    //! are not laid out at all (see RestLayout::layoutRest) and so are never painted.
+    //!
+    //! Any future lane (a tempo curve, say) belongs here too, so callers ask this rather than
+    //! testing for the waveform lane specifically.
+    bool holdsNotation() const { return !isWaveformStaff(); }
+
     bool isSimpleTabStaff() const;
     bool isCommonTabStaff() const;
     bool isHiddenElementOnTab(Sid commonTabStyle, Sid simpleTabStyle) const;

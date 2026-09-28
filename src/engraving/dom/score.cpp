@@ -3742,6 +3742,11 @@ void Score::appendPart(const InstrumentTemplate* t)
 
         undoInsertStaff(staff, i);
         staff->init(t, staffType, int(i));
+
+        // The staff was inserted before its type was applied, so the rests created above were
+        // made while it still looked like an ordinary staff. Now that the type is known, a
+        // content lane's rests are turned into gap rests so they are not drawn over the lane.
+        hideContentLaneRests(staff->idx());
     }
     undoInsertPart(part, m_parts.size());
     masterScore()->rebuildMidiMapping();

@@ -279,7 +279,15 @@ void Measure::fillGap(const Fraction& rtickStart, const Fraction& len, track_idx
         rest->setTicks(d.isMeasure() ? ticks() * stretch : d.fraction());
         rest->setDurationType(d);
         rest->setTrack(track);
-        rest->setGap(useGapRests);
+
+        // A content lane (the audio waveform lane) needs these rests to keep its measures
+        // complete, but must not draw them: a measure rest sits in the middle of the lane,
+        // exactly where the waveform goes. Gap rests are not laid out, so they stay invisible
+        // while still counting towards the measure.
+        const Staff* staff = score()->staff(track / VOICES);
+        const bool contentLane = staff && !staff->staffType(tick())->holdsNotation();
+        rest->setGap(useGapRests || contentLane);
+
         score()->undoAddCR(rest, this, curTick);
         curTick += rest->actualTicks();
     }
@@ -345,6 +353,44 @@ void Measure::checkMeasure(staff_idx_t staffIdx, bool useGapRests)
             }
         } else if (f < expectedPos) {
             LOGD("measure overrun %6d, %d > %d, track %zu", tick().ticks(), expectedPos.ticks(), f.ticks(), track);
+        }
+    }
+
+    // A content lane (the audio waveform lane) keeps its rests -- they are what stops the
+    // measure being reported as incomplete -- but must not draw them, because a measure rest
+    // is placed in the middle of the staff, right where the waveform goes.
+    score()->hideContentLaneRests(staffIdx);
+}
+
+//---------------------------------------------------------
+//   hideContentLaneRests
+//    a content lane's rests exist only to keep its measures
+//    complete; making them gap rests stops them being drawn
+//---------------------------------------------------------
+
+void Score::hideContentLaneRests(staff_idx_t staffIdx)
+{
+    const Staff* staff = this->staff(staffIdx);
+    if (!staff) {
+        return;
+    }
+
+    const StaffType* staffType = staff->staffType(Fraction(0, 1));
+    if (!staffType || staffType->holdsNotation()) {
+        return;
+    }
+
+    const track_idx_t strack = staffIdx * VOICES;
+    const track_idx_t etrack = strack + VOICES;
+
+    for (Measure* m = firstMeasure(); m; m = m->nextMeasure()) {
+        for (Segment* seg = m->first(SegmentType::ChordRest); seg; seg = seg->next(SegmentType::ChordRest)) {
+            for (track_idx_t track = strack; track < etrack; ++track) {
+                EngravingItem* e = seg->element(track);
+                if (e && e->isRest()) {
+                    toRest(e)->setGap(true);
+                }
+            }
         }
     }
 }

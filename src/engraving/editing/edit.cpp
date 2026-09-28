@@ -520,11 +520,18 @@ std::vector<Rest*> Score::setRests(const Fraction& _tick, track_idx_t track, con
             continue;
         }
 
+        // A content lane (the audio waveform lane) can never hold a note, but its measures
+        // still have to add up or the score will not open. Its rests are therefore created as
+        // gap rests: present for the completeness check, never laid out, never drawn.
+        const StaffType* staffType = staff->staffType(tick);
+        const bool contentLane = staffType && !staffType->holdsNotation();
+
         if ((measure->timesig() == measure->ticks())       // not in pickup measure
             && fullMeasure
             && !tuplet
             && useFullMeasureRest) {
             Rest* rest = addRest(tick, track, TDuration(DurationType::V_MEASURE), tuplet);
+            rest->setGap(contentLane);
             tick += rest->actualTicks();
             rests.push_back(rest);
         } else {
@@ -548,7 +555,7 @@ std::vector<Rest*> Score::setRests(const Fraction& _tick, track_idx_t track, con
             for (const TDuration& d : dList) {
                 rest = addRest(tick, track, d, tuplet);
                 // If we're filling an empty non-zero voice make these gaps
-                rest->setGap(emptyNonZeroVoice && !fullMeasure);
+                rest->setGap(contentLane || (emptyNonZeroVoice && !fullMeasure));
                 rests.push_back(rest);
                 tick += rest->actualTicks();
             }
