@@ -1687,6 +1687,74 @@ void PlaybackController::ensureAudioWaveformStaff()
     }
 }
 
+bool PlaybackController::isAudioTrackPart(const Part* part)
+{
+    if (!part) {
+        return false;
+    }
+
+    for (const Staff* staff : part->staves()) {
+        if (staff && staff->isWaveformStaff(Fraction(0, 1))) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void PlaybackController::onPartAdded(const Part* part)
+{
+    if (!isAudioTrackPart(part)) {
+        return;
+    }
+
+    // The audio track is added through the instrument dialog, exactly like an instrument, so
+    // at this point the lane exists but nothing has said which file it should play. Ask.
+    //
+    // Skipped while playback is still being set up: restoring a saved project also adds the
+    // lane (setupPlayback calls restoreAudioTrack), and that path already knows the file.
+    if (!m_isPlaybackInited) {
+        LOGI() << "audiotrack: waveform lane added during setup, not prompting";
+        return;
+    }
+
+    // An audio track is already playing (for example the user added the instrument a second
+    // time): leave it alone rather than replacing what they are listening to.
+    if (!m_audioTrackIds.empty()) {
+        LOGI() << "audiotrack: waveform lane added but a track is already loaded, not prompting";
+        return;
+    }
+
+    LOGI() << "audiotrack: waveform lane added, asking for the audio file";
+
+    const muse::ID partId = part->id();
+
+    // Deferred: adding a part happens inside the instrument dialog's own handling, and
+    // opening a modal file dialog from within it would stack two dialogs in one event.
+    QMetaObject::invokeMethod(qApp, [this, partId]() {
+        const muse::Ret ret = importAudioTrack();
+
+        if (ret.code() == static_cast<int>(muse::Ret::Code::Cancel)) {
+            // The user backed out of the file chooser. The lane was created by the
+            // instrument dialog before we could ask, and an audio track with no audio is
+            // not something they can finish later, so drop it again: the score goes back to
+            // how it was and adding the Audio track instrument can simply be repeated.
+            LOGI() << "audiotrack: file selection cancelled, removing the empty lane";
+            removeAudioTrackPart(partId);
+        }
+    }, Qt::QueuedConnection);
+}
+
+void PlaybackController::removeAudioTrackPart(const muse::ID& partId)
+{
+    const notation::INotationPartsPtr parts = masterNotationParts();
+    if (!parts || !partId.isValid() || !parts->partExists(partId)) {
+        return;
+    }
+
+    parts->removeParts(muse::IDList { partId });
+}
+
 void PlaybackController::onWaveformChanged()
 {
     // The notification arrives on the worker thread that finished decoding; score layout
@@ -2150,6 +2218,7 @@ void PlaybackController::setNotation(notation::INotationPtr notation)
 
     partList.onItemAdded(this, [this](const Part* part) {
         onPartChanged(part);
+        onPartAdded(part);
     });
 
     partList.onItemChanged(this, [this](const Part* part) {

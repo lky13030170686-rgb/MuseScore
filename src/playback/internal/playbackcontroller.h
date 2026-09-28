@@ -245,6 +245,18 @@ private:
     //! main thread: it edits the score through the undo stack.
     void ensureAudioWaveformStaff();
 
+    //! Called when a part is added to the score. The audio track is added the same way as an
+    //! instrument (it is listed in the instrument dialog), so a newly added waveform lane
+    //! starts out with no audio attached; this asks the user which file to play.
+    void onPartAdded(const engraving::Part* part);
+
+    //! Whether `part` is the audio waveform lane rather than a musical part.
+    static bool isAudioTrackPart(const engraving::Part* part);
+
+    //! Removes the audio lane by part id. Used when the user adds the Audio track
+    //! instrument but then cancels the file chooser, so no empty lane is left behind.
+    void removeAudioTrackPart(const muse::ID& partId);
+
     //! Records the audio file in the project settings so saving keeps it.
     void rememberAudioTrack(const muse::io::path_t& filePath);
 
