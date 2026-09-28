@@ -36,6 +36,8 @@
 
 #include <gtest/gtest.h>
 
+#include <QString>
+
 #include <string>
 
 #include "engraving/dom/instrtemplate.h"
@@ -100,6 +102,22 @@ TEST(AudioTrackInstrumentTests, IsVisibleInTheDefaultGenre)
     EXPECT_TRUE(inCommonGenre)
         << "the audio track is not in the \"common\" genre, so the instrument dialog will not "
            "list it until the user changes the genre filter";
+}
+
+// The instrument list holds several hundred entries, so in practice the user finds the audio
+// track by typing in the search box. That search matches on the template's track name and
+// nothing else (InstrumentListModel::isInstrumentAccepted), so the feature is unreachable if
+// the name does not contain the obvious word -- which is exactly how the previous Add-menu
+// entry was reported as "can't find it".
+TEST(AudioTrackInstrumentTests, IsFindableBySearchingItsName)
+{
+    const InstrumentTemplate* templ = searchTemplate(String::fromAscii(AUDIO_TRACK_ID));
+    ASSERT_TRUE(templ);
+
+    const QString trackName = templ->trackName.toQString();
+    EXPECT_TRUE(trackName.contains(QStringLiteral("audio"), Qt::CaseInsensitive))
+        << "searching for \"audio\" would not find \"" << trackName.toStdString()
+        << "\"; the dialog only matches on the track name";
 }
 
 // The lane must not advertise itself as a pitched instrument with a usable range: it holds no
