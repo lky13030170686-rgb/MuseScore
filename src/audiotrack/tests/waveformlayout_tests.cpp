@@ -31,7 +31,11 @@
 
 #include <gtest/gtest.h>
 
+#include <QDir>
+#include <QFile>
+
 #include <cmath>
+#include <iostream>
 #include <utility>
 #include <vector>
 
@@ -41,6 +45,7 @@
 #include "engraving/dom/measurebase.h"
 #include "engraving/dom/part.h"
 #include "engraving/dom/score.h"
+#include "engraving/dom/segment.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/stafflines.h"
 #include "engraving/dom/system.h"
@@ -535,5 +540,93 @@ TEST_F(AudioTrackLayoutTests, AddingTheAudioTrackInstrumentDrawsAWaveform)
     EXPECT_GT(fullHeight, 0u) << "every column was drawn as a flat hairline";
 
     delete score;
+}
+
+// Saving and reopening has to bring the lane back as a waveform lane.
+//
+// Reopening re-reads the part from the file rather than going through the instrument
+// template, so the staff type has to be carried in the score itself. If it were not, the
+// project would come back with an ordinary staff where the waveform used to be -- and the
+// user's saved projects would quietly lose the lane.
+TEST_F(AudioTrackLayoutTests, WaveformLaneSurvivesSaveAndReload)
+{
+    auto provider = std::make_shared<FakeWaveformProvider>();
+    ScopedProvider scoped(provider);
+
+    const InstrumentTemplate* templ = searchTemplate(u"audio-track");
+    ASSERT_TRUE(templ);
+
+    // Set MUSE_AUDIOTRACK_KEEP_SCORE to keep the saved score instead of deleting it, so it
+    // can be rendered by the real application as an end-to-end check of the shipped binary.
+    // Same idea as MUSE_WAVEFORM_PNG_DIR in the renderer output tests.
+    const bool keepScore = qEnvironmentVariableIsSet("MUSE_AUDIOTRACK_KEEP_SCORE");
+    const QString savedPath = keepScore
+                              ? QDir::tempPath() + QStringLiteral("/dsh-audiotrack-score.mscx")
+                              : QDir::tempPath() + QStringLiteral("/dsh-audiotrack-roundtrip.mscx");
+    QFile::remove(savedPath);
+
+    {
+        MasterScore* score = ScoreRW::readScore(u"data/audiotrack/plain-staff.mscx");
+        ASSERT_TRUE(score);
+
+        score->appendPart(templ);
+        ASSERT_EQ(score->nstaves(), 2u);
+        ASSERT_TRUE(score->staff(1)->isWaveformStaff(Fraction(0, 1)))
+            << "precondition failed: the lane was not a waveform staff before saving";
+
+        ASSERT_TRUE(ScoreRW::saveScore(score, savedPath)) << "could not save the score";
+        delete score;
+    }
+
+    ASSERT_TRUE(QFile::exists(savedPath)) << "the saved score is not on disk";
+
+    MasterScore* reloaded = ScoreRW::readScore(savedPath, /*isAbsolutePath*/ true);
+    ASSERT_TRUE(reloaded) << "could not reopen the saved score";
+    ASSERT_EQ(reloaded->nstaves(), 2u) << "the audio lane did not come back";
+
+    const Staff* laneStaff = reloaded->staff(1);
+    ASSERT_TRUE(laneStaff);
+    EXPECT_TRUE(laneStaff->isWaveformStaff(Fraction(0, 1)))
+        << "reopening turned the waveform lane into a \""
+        << laneStaff->staffType(Fraction(0, 1))->xmlName().toStdString() << "\" staff";
+
+    // And it still draws, so the lane is not merely the right type but functional.
+    reloaded->doLayout();
+
+    StaffLines* lane = firstWaveformLane(reloaded);
+    ASSERT_TRUE(lane) << "the reopened audio staff has no lines to draw the waveform on";
+    EXPECT_FALSE(lane->lines().empty()) << "the reopened lane came out blank";
+
+    // Note on measure rests: the lane is expected to carry one per measure, like any staff
+    // with nothing to notate. They are not decoration -- Score::sanityCheck reports
+    // "Incomplete measure" when a measure's voice does not add up to the time signature, and
+    // the application refuses to open a score that fails it. Suppressing them for content
+    // lanes was tried and produced files the app could not load, so they stay.
+    int laneRests = 0;
+    for (const MeasureBase* mb = reloaded->measures()->first(); mb; mb = mb->nextMM()) {
+        if (!mb->isMeasure()) {
+            continue;
+        }
+        const Measure* measure = toMeasure(mb);
+        for (const Segment* s = measure->first(SegmentType::ChordRest); s; s = s->next(SegmentType::ChordRest)) {
+            for (voice_idx_t voice = 0; voice < VOICES; ++voice) {
+                if (s->element(1 * VOICES + voice)) {
+                    ++laneRests;
+                }
+            }
+        }
+    }
+
+    EXPECT_GT(laneRests, 0)
+        << "the reopened lane has no rests; a measure that adds up to nothing is reported as "
+           "corrupted and the score will not open";
+
+    delete reloaded;
+
+    if (keepScore) {
+        std::cout << "[keep] saved score: " << savedPath.toStdString() << std::endl;
+    } else {
+        QFile::remove(savedPath);
+    }
 }
 } // namespace mu::audiotrack::tests
