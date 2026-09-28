@@ -104,6 +104,36 @@ TEST(AudioTrackInstrumentTests, IsVisibleInTheDefaultGenre)
            "list it until the user changes the genre filter";
 }
 
+// The instrument dialog opens on the FIRST group of the Common genre, not on a full list
+// (InstrumentListModel::init(COMMON_GENRE_ID, FIRST_GROUP_ID), where FIRST_GROUP_ID resolves
+// to instrumentGroups.front()). Anything further down the group list is off screen until the
+// user thinks to scroll it or to use the search box.
+//
+// The audio track lived at the bottom of that list, below Strings, and was reported as
+// impossible to find. Its group is now declared first, so the instrument is on screen the
+// moment the dialog opens. This test is what keeps it there: a group added above it, or the
+// audio group moved back, silently puts the feature out of sight again.
+TEST(AudioTrackInstrumentTests, IsOnScreenWhenTheInstrumentDialogOpens)
+{
+    ASSERT_FALSE(instrumentGroups.empty()) << "no instrument groups were loaded";
+
+    const InstrumentGroup* first = instrumentGroups.front();
+    ASSERT_TRUE(first);
+
+    bool hasAudioTrack = false;
+    for (const InstrumentTemplate* templ : first->instrumentTemplates) {
+        if (templ && templ->id == String::fromAscii(AUDIO_TRACK_ID)) {
+            hasAudioTrack = true;
+            break;
+        }
+    }
+
+    EXPECT_TRUE(hasAudioTrack)
+        << "the instrument dialog opens on the group \"" << first->name.toStdString()
+        << "\", which does not contain the audio track; the user would have to scroll the "
+           "group list or search to reach it";
+}
+
 // The instrument list holds several hundred entries, so in practice the user finds the audio
 // track by typing in the search box. That search matches on the template's track name and
 // nothing else (InstrumentListModel::isInstrumentAccepted), so the feature is unreachable if

@@ -440,6 +440,31 @@
             <velocity>120</velocity>
             <gateTime>100</gateTime>
       </Articulation>
+      <!-- The audio track is deliberately modelled as an instrument so that it is added
+           through the ordinary instrument flow: it appears in the instrument list, the part
+           is created with undo support, and it can be removed like any other part.
+
+           staffTypePreset=stdWaveform is what makes this work; the instrument carries no
+           notes and its staff draws the audio waveform instead. Note that the preset's
+           staff group must match the group text below, otherwise the loader falls back to
+           the default preset for that group. -->
+      <InstrumentGroup id="audio">
+            <name>Audio</name>
+            <Instrument id="audio-track">
+                  <family>audio</family>
+                  <trackName>Audio track</trackName>
+                  <longName>Audio track</longName>
+                  <shortName>Audio</shortName>
+                  <description>Backing or reference audio that plays in sync with the score. Choose the audio file after adding the track.</description>
+                  <clef>G</clef>
+                  <stafftype staffTypePreset="stdWaveform">standard</stafftype>
+                  <barlineSpan>1</barlineSpan>
+                  <Channel>
+                        <program value="0"/>
+                  </Channel>
+                  <genre>common</genre>
+            </Instrument>
+      </InstrumentGroup>
       <InstrumentGroup id="woodwinds">
             <name>Woodwinds</name>
             <Instrument id="winds">
@@ -16723,29 +16748,5 @@
                   <genre>world</genre>
             </Instrument>
       </InstrumentGroup>
-      <!-- The audio track is deliberately modelled as an instrument so that it is added
-           through the ordinary instrument flow: it appears in the instrument list, the part
-           is created with undo support, and it can be removed like any other part.
 
-           staffTypePreset=stdWaveform is what makes this work; the instrument carries no
-           notes and its staff draws the audio waveform instead. Note that the preset's
-           staff group must match the group text below, otherwise the loader falls back to
-           the default preset for that group. -->
-      <InstrumentGroup id="audio">
-            <name>Audio</name>
-            <Instrument id="audio-track">
-                  <family>audio</family>
-                  <trackName>Audio track</trackName>
-                  <longName>Audio track</longName>
-                  <shortName>Audio</shortName>
-                  <description>Backing or reference audio that plays in sync with the score. Choose the audio file after adding the track.</description>
-                  <clef>G</clef>
-                  <stafftype staffTypePreset="stdWaveform">standard</stafftype>
-                  <barlineSpan>1</barlineSpan>
-                  <Channel>
-                        <program value="0"/>
-                  </Channel>
-                  <genre>common</genre>
-            </Instrument>
-      </InstrumentGroup>
 </museScore>
