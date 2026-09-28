@@ -39,9 +39,14 @@
 #include <string>
 
 #include "engraving/dom/instrtemplate.h"
+#include "engraving/dom/masterscore.h"
+#include "engraving/dom/part.h"
+#include "engraving/dom/staff.h"
 #include "engraving/dom/stafflabel.h"
 #include "engraving/dom/stafftype.h"
 #include "engraving/types/types.h"
+
+#include "utils/scorerw.h"
 
 using namespace mu::engraving;
 using namespace muse;
@@ -111,5 +116,37 @@ TEST(AudioTrackInstrumentTests, IsNotAUsableNotationStaff)
     EXPECT_FALSE(st->genClef()) << "a clef would be drawn on the audio lane";
     EXPECT_FALSE(st->genKeysig()) << "a key signature would be drawn on the audio lane";
     EXPECT_FALSE(st->genTimesig()) << "a time signature would be drawn on the audio lane";
+}
+
+// Adding the instrument has to actually produce a waveform staff, not just declare one.
+//
+// This exercises the path a plugin takes (Score::appendPart(instrumentId)), which is the one
+// route into the score that builds a part straight from an InstrumentTemplate. The instrument
+// dialog goes through notation instead and honours the preset there, so a difference between
+// the two would mean the same instrument produces a waveform lane in one case and an ordinary
+// five-line staff in the other -- with no error either way.
+TEST(AudioTrackInstrumentTests, AddingTheInstrumentCreatesAWaveformStaff)
+{
+    const InstrumentTemplate* templ = searchTemplate(String::fromAscii(AUDIO_TRACK_ID));
+    ASSERT_TRUE(templ);
+
+    MasterScore* score = ScoreRW::readScore(u"data/audiotrack/plain-staff.mscx");
+    ASSERT_TRUE(score);
+
+    const size_t stavesBefore = score->nstaves();
+    ASSERT_EQ(stavesBefore, 1u) << "the fixture is expected to start with one staff";
+
+    score->appendPart(templ);
+    score->doLayout();
+
+    ASSERT_EQ(score->nstaves(), stavesBefore + 1) << "the audio track did not add a staff";
+
+    const Staff* added = score->staff(stavesBefore);
+    ASSERT_TRUE(added);
+    EXPECT_TRUE(added->isWaveformStaff(Fraction(0, 1)))
+        << "adding the audio track instrument produced a \"" << added->staffType(Fraction(0, 1))->xmlName().toStdString()
+        << "\" staff instead of the waveform lane";
+
+    delete score;
 }
 } // namespace mu::audiotrack::tests

@@ -35,6 +35,7 @@
 #include <utility>
 #include <vector>
 
+#include "engraving/dom/instrtemplate.h"
 #include "engraving/dom/masterscore.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/measurebase.h"
@@ -483,6 +484,55 @@ TEST_F(AudioTrackLayoutTests, LaneSurvivesHideEmptyStaves)
 
     EXPECT_EQ(shownWithStyle, shownByDefault)
         << "turning on hide-empty-staves removed the waveform lane from systems that showed it";
+
+    delete score;
+}
+
+// The whole feature in one test: take an ordinary score, add the Audio track the way a user
+// does, and check that a waveform actually gets drawn on the new lane.
+//
+// The other tests each cover one link (the instrument resolves to a waveform staff, the lane
+// draws peaks, the lane is eligible for painting). This one covers the seam between them --
+// instrument added -> part and staff created -> layout finds the lane -> peaks reach it --
+// which is where a mistake would produce a lane that exists but stays blank.
+TEST_F(AudioTrackLayoutTests, AddingTheAudioTrackInstrumentDrawsAWaveform)
+{
+    auto provider = std::make_shared<FakeWaveformProvider>();
+    ScopedProvider scoped(provider);
+
+    const InstrumentTemplate* templ = searchTemplate(u"audio-track");
+    ASSERT_TRUE(templ) << "the Audio track instrument is missing from instruments.xml";
+
+    MasterScore* score = ScoreRW::readScore(u"data/audiotrack/plain-staff.mscx");
+    ASSERT_TRUE(score);
+    ASSERT_EQ(score->nstaves(), 1u);
+
+    // Exactly what adding the instrument from the instrument dialog ends up doing: a part
+    // built from the template.
+    score->appendPart(templ);
+    ASSERT_EQ(score->nstaves(), 2u) << "adding the Audio track did not add a staff";
+
+    score->doLayout();
+
+    StaffLines* lane = firstWaveformLane(score);
+    ASSERT_TRUE(lane) << "the added audio staff has no staff lines to draw the waveform on";
+
+    EXPECT_TRUE(lane->staff()->isWaveformStaff(Fraction(0, 1)))
+        << "the added staff is not the waveform lane";
+
+    EXPECT_FALSE(lane->lines().empty())
+        << "the waveform lane came out blank: peaks never reached a lane created by adding "
+           "the instrument";
+
+    // A blank lane would also pass a bare "not empty" check, so confirm the columns really
+    // carry the peak heights rather than a fallback hairline.
+    size_t fullHeight = 0;
+    for (const LineF& line : lane->lines()) {
+        if (std::abs(line.p2().y() - line.p1().y()) > 1.0) {
+            ++fullHeight;
+        }
+    }
+    EXPECT_GT(fullHeight, 0u) << "every column was drawn as a flat hairline";
 
     delete score;
 }

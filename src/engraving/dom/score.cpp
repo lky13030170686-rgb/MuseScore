@@ -3727,9 +3727,21 @@ void Score::appendPart(const InstrumentTemplate* t)
     part->initFromInstrTemplate(t);
     for (staff_idx_t i = 0; i < t->staffCount; ++i) {
         Staff* staff = Factory::createStaff(part);
-        StaffType* stt = staff->staffType(Fraction(0, 1));
+
+        // Prefer the template's staff type preset. This is what gives an instrument such as
+        // the audio track its waveform lane. Passing the staff's own type instead silently
+        // ignores the preset, and the same instrument would then produce a waveform lane when
+        // added from the instrument dialog (which goes through NotationsParts::appendStaves)
+        // and an ordinary staff here, with no error either way.
+        //
+        // Templates without a preset keep the previous behaviour of using the staff's type.
+        const StaffType* staffType = t->staffTypePreset;
+        if (!staffType) {
+            staffType = staff->staffType(Fraction(0, 1));
+        }
+
         undoInsertStaff(staff, i);
-        staff->init(t, stt, int(i));
+        staff->init(t, staffType, int(i));
     }
     undoInsertPart(part, m_parts.size());
     masterScore()->rebuildMidiMapping();
