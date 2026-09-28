@@ -595,12 +595,17 @@ enum class StaffHideMode {
 static StaffHideMode computeHideMode(const System* system, const Staff* staff, const staff_idx_t staffIdx, const bool globalHideIfEmpty,
                                      bool& hasSystemSpecificOverrides)
 {
-    // The audio-track waveform lane holds no notes by construction, so every rule below
-    // would classify it as empty and hide it as soon as the score turns on "hide empty
-    // staves" -- leaving the user with a waveform that vanishes from all systems. It is a
-    // content lane rather than a musical staff, so it always shows.
+    // A content lane (the audio waveform lane) holds no notes by construction, so every rule
+    // below would classify it as empty and hide it as soon as the score turns on "hide empty
+    // staves" -- leaving the user with a lane that vanishes from all systems. A lane whose
+    // whole purpose is to be looked at always shows.
+    //
+    // Asked as "does this staff hold notation" rather than "is it the waveform lane" so that
+    // a future lane (a tempo curve, say) is covered by adding it to StaffType::holdsNotation()
+    // instead of having to find this call site.
     const MeasureBase* firstOfSystem = system ? system->first() : nullptr;
-    if (firstOfSystem && staff->isWaveformStaff(firstOfSystem->tick())) {
+    const StaffType* staffType = firstOfSystem ? staff->staffType(firstOfSystem->tick()) : nullptr;
+    if (staffType && !staffType->holdsNotation()) {
         return StaffHideMode::ALWAYS_SHOW;
     }
 
