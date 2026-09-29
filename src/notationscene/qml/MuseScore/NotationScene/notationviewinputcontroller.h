@@ -202,7 +202,13 @@ private:
 
     //! Starts dragging the audio lane if the press landed on one. Returns true when the event
     //! belongs to the drag and must not be treated as a normal click.
-    bool beginAudioLaneDrag(const muse::PointF& logicPos, engraving::EngravingItem* hitElement);
+    //!
+    //! `hitStaff` is the staff the press handler already resolved, and it is the right test:
+    //! hitStaff() resolves through hitMeasure(), which asks whether the point is inside a
+    //! StaffLines hit shape -- exactly "on the lane". The hit element cannot be used instead,
+    //! because hitElement() is built from the segments (notes, rests, and so on) and never
+    //! returns the StaffLines that draws the lane, so an element-based test never fires.
+    bool beginAudioLaneDrag(const muse::PointF& logicPos, engraving::Staff* hitStaff);
     void updateAudioLaneDrag(const muse::PointF& logicPos);
     void endAudioLaneDrag();
 

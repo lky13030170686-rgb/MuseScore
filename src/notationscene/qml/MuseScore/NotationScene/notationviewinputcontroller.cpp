@@ -648,20 +648,33 @@ void NotationViewInputController::wheelEvent(QWheelEvent* event)
 // false.
 // ---------------------------------------------------------------------------
 
-bool NotationViewInputController::beginAudioLaneDrag(const PointF& logicPos, EngravingItem* hitElement)
+bool NotationViewInputController::beginAudioLaneDrag(const PointF& logicPos, Staff* hitStaff)
 {
-    if (!hitElement || !hitElement->isStaffLines()) {
+    // hitStaff is the staff the press handler already resolved. It only answers when the point
+    // is inside a StaffLines hit shape (hitStaff() resolves through hitMeasure(), which tests
+    // canvasHitShape()), and the lane's hit shape is its bounding box -- the whole lane. That
+    // is what "on the lane" means. The hit element cannot be used instead: hitElement() is
+    // built from the segments, so it never returns the StaffLines that draws the lane.
+    if (!hitStaff) {
         return false;
     }
 
-    StaffLines* lines = toStaffLines(hitElement);
-    Measure* measure = lines->measure();
-    if (!measure || !lines->staff()) {
+    Score* score = hitStaff->score();
+    if (!score) {
+        return false;
+    }
+
+    // The measure under the press, for the local pixel-to-time scale.
+    staff_idx_t staffIdx = muse::nidx;
+    Segment* segment = nullptr;
+    PointF offset;
+    Measure* measure = score->pos2measure(logicPos, &staffIdx, nullptr, &segment, &offset);
+    if (!measure) {
         return false;
     }
 
     // Only a waveform lane, and only when there is audio to move.
-    if (!lines->staff()->isWaveformStaff(measure->tick())) {
+    if (!hitStaff->isWaveformStaff(measure->tick())) {
         return false;
     }
 
@@ -729,6 +742,7 @@ void NotationViewInputController::mousePressEvent(QMouseEvent* event)
 
     EngravingItem* hitElement = nullptr;
     staff_idx_t hitStaffIndex = muse::nidx;
+    Staff* hitStaff = nullptr;
 
     if (!m_readonly) {
         INotationInteraction::HitElementContext context;
@@ -737,13 +751,15 @@ void NotationViewInputController::mousePressEvent(QMouseEvent* event)
         viewInteraction()->setHitElementContext(context);
 
         hitElement = context.element;
+        hitStaff = context.staff;
         hitStaffIndex = context.staff ? context.staff->idx() : muse::nidx;
     }
 
     // The backing track is moved by dragging its lane. Checked before anything else claims
     // the press, because the lane is drawn on a staff and would otherwise be read as a click
-    // on the score.
-    if (button == Qt::LeftButton && !m_readonly && beginAudioLaneDrag(logicPos, hitElement)) {
+    // on the score. Reuses the staff resolved just above rather than asking again: the
+    // interaction is strictly mocked in tests, and a second query is a second call.
+    if (button == Qt::LeftButton && !m_readonly && beginAudioLaneDrag(logicPos, hitStaff)) {
         return;
     }
 
