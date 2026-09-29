@@ -22,6 +22,7 @@
 #ifndef MUSE_AUDIOTRACK_AUDIOTRACKSOURCE_H
 #define MUSE_AUDIOTRACK_AUDIOTRACKSOURCE_H
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -90,6 +91,11 @@ public:
     unsigned int audioChannelsCount() const override;
     muse::audio::samples_t process(float* buffer, muse::audio::samples_t samplesPerChannel) override;
 
+    //! Records whether the transport is running. The engine calls this on its own thread
+    //! whenever the playback mode changes; process() runs on the audio thread and reads the
+    //! flag, so it is kept in an atomic rather than trusting the base class's plain field.
+    void setMode(muse::audio::ProcessMode mode) override;
+
 private:
     //! Fills the resampler's source-side cache with the next chunk of file data.
     //! Returns false at end of file. Audio-thread only.
@@ -140,6 +146,12 @@ private:
     //! under m_seekMutex so position() never tears.
     mutable std::mutex m_posMutex;
     double m_publishedSeconds = 0.0;
+
+    //! Whether the transport is running. Set on the engine thread by setMode(), read on the
+    //! audio thread by process(). Starts false: a source that has just been created is not
+    //! playing yet, and producing sound before the transport starts is exactly the bug this
+    //! guards against.
+    std::atomic<bool> m_playing { false };
 
     static constexpr int64_t CACHE_FRAMES = 16384;
 };

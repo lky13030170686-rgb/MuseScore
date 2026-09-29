@@ -51,6 +51,18 @@ void setSpec(AudioTrackSource& src, int rate, int channels)
     src.setOutputSpec(spec);
 }
 
+//! Sets the source up the way the engine does once playback begins: the output spec, and the
+//! transport running.
+//!
+//! A file source is silent unless the transport runs -- that is what stops a backing track
+//! from playing the moment it is loaded -- so a test that expects audio has to start it, just
+//! as AudioContext does. Tests that specifically want a stopped source use setSpec() alone.
+void prepareForPlayback(AudioTrackSource& src, int rate, int channels)
+{
+    setSpec(src, rate, channels);
+    src.setMode(ProcessMode::Playing);
+}
+
 //! Peak absolute value, used to assert "this block is not silent".
 float peak(const std::vector<float>& v)
 {
@@ -77,7 +89,7 @@ TEST(AudioTrackSourceTests, ProducesNonSilentAudioAtFileRate)
     AudioTrackSource src;
     ASSERT_TRUE(src.load(testFile(SWEEP)));
 
-    setSpec(src, 44100, 2);   // same rate as the file: no resampling
+    prepareForPlayback(src, 44100, 2);   // same rate as the file: no resampling
 
     std::vector<float> buf(512 * 2, 0.f);
     src.process(buf.data(), 512);
@@ -96,7 +108,7 @@ TEST(AudioTrackSourceTests, ResamplingKeepsBlockCadenceAcrossRates)
     for (const Case& c : cases) {
         AudioTrackSource src;
         ASSERT_TRUE(src.load(testFile(SWEEP))) << "rate " << c.outRate;
-        setSpec(src, c.outRate, 2);
+        prepareForPlayback(src, c.outRate, 2);
 
         const int64_t frames = 4096;
         std::vector<float> buf(static_cast<size_t>(frames) * 2, 0.f);
@@ -112,7 +124,7 @@ TEST(AudioTrackSourceTests, SeekChangesPositionAndAudioContent)
 {
     AudioTrackSource src;
     ASSERT_TRUE(src.load(testFile(SWEEP)));
-    setSpec(src, 44100, 2);
+    prepareForPlayback(src, 44100, 2);
 
     std::vector<float> atStart(1024 * 2, 0.f);
     src.process(atStart.data(), 1024);
@@ -141,7 +153,7 @@ TEST(AudioTrackSourceTests, DeferredSeekIsAppliedExactlyOnce)
     // playback back and make audio stutter on every block).
     AudioTrackSource src;
     ASSERT_TRUE(src.load(testFile(SWEEP)));
-    setSpec(src, 44100, 2);
+    prepareForPlayback(src, 44100, 2);
 
     src.seekTo(TimePosition::fromTime(secs_t(2.0), 44100));
     std::vector<float> first(512 * 2, 0.f);
@@ -167,7 +179,7 @@ TEST(AudioTrackSourceTests, SeeksLandOnTheExactRequestedSample)
 
     AudioTrackSource src;
     ASSERT_TRUE(src.load(testFile(SWEEP)));
-    setSpec(src, 44100, 2);
+    prepareForPlayback(src, 44100, 2);
     src.seekTo(TimePosition::fromTime(secs_t(4.0), 44100));
 
     const int64_t n = 256;
@@ -194,7 +206,7 @@ TEST(AudioTrackSourceTests, RepeatedSeeksAreIdempotent)
     auto capture = [&](std::vector<float>& out) {
         AudioTrackSource s;
         EXPECT_TRUE(s.load(testFile(SWEEP)));
-        setSpec(s, 44100, 2);
+        prepareForPlayback(s, 44100, 2);
         s.seekTo(TimePosition::fromTime(secs_t(t), 44100));
         out.assign(512 * 2, 0.f);
         s.process(out.data(), 512);
@@ -210,7 +222,7 @@ TEST(AudioTrackSourceTests, SilenceAfterEndOfFile)
 {
     AudioTrackSource src;
     ASSERT_TRUE(src.load(testFile(SWEEP)));
-    setSpec(src, 44100, 2);
+    prepareForPlayback(src, 44100, 2);
 
     // Jump just past the end (file is 8.0 s).
     src.seekTo(TimePosition::fromTime(secs_t(8.001), 44100));
@@ -235,17 +247,17 @@ TEST(AudioTrackSourceTests, HandlesOutputChannelChangeWithoutCrash)
     AudioTrackSource src;
     ASSERT_TRUE(src.load(testFile(TONE)));
 
-    setSpec(src, 44100, 1);   // mono out, matching the mono file
+    prepareForPlayback(src, 44100, 1);   // mono out, matching the mono file
     std::vector<float> mono(512, 0.f);
     src.process(mono.data(), 512);
     EXPECT_GT(peak(mono), 0.05f);
 
-    setSpec(src, 44100, 2);   // widen to stereo
+    prepareForPlayback(src, 44100, 2);   // widen to stereo
     std::vector<float> stereo(512 * 2, 0.f);
     src.process(stereo.data(), 512);
     EXPECT_GT(peak(stereo), 0.05f);
 
-    setSpec(src, 44100, 1);   // and back down again
+    prepareForPlayback(src, 44100, 1);   // and back down again
     std::vector<float> mono2(512, 0.f);
     src.process(mono2.data(), 512);
     EXPECT_GT(peak(mono2), 0.05f);
@@ -258,14 +270,16 @@ TEST(AudioTrackSourceTests, AntiPhaseStereoDownmixIsSilentByConstruction)
     AudioTrackSource src;
     ASSERT_TRUE(src.load(testFile(SWEEP)));
 
-    setSpec(src, 44100, 2);
+    prepareForPlayback(src, 44100, 2);
     std::vector<float> stereo(256 * 2, 0.f);
     src.process(stereo.data(), 256);
     EXPECT_GT(peak(stereo), 0.05f) << "stereo output must carry signal";
 
     AudioTrackSource src2;
     ASSERT_TRUE(src2.load(testFile(SWEEP)));
-    setSpec(src2, 44100, 1);
+    // The transport has to be running, otherwise the silence asserted below would be the
+    // "transport stopped" silence rather than the downmix cancellation being demonstrated.
+    prepareForPlayback(src2, 44100, 1);
     std::vector<float> mono(256, 0.f);
     src2.process(mono.data(), 256);
     EXPECT_FLOAT_EQ(peak(mono), 0.f) << "anti-phase downmix cancels exactly";
@@ -278,7 +292,7 @@ TEST(AudioTrackSourceTests, MetronomePeaksLandOnBeats)
     // resampled stream stays on the original timeline (48k file -> 44.1k device).
     AudioTrackSource src;
     ASSERT_TRUE(src.load(testFile(METRONOME)));
-    setSpec(src, 44100, 1);
+    prepareForPlayback(src, 44100, 1);
 
     std::vector<float> all(static_cast<size_t>(44100) * 4, 0.f);   // first 4 s
     src.process(all.data(), 44100 * 4);
@@ -311,8 +325,60 @@ TEST(AudioTrackSourceTests, LoadFailureIsReportedNotCrashed)
     EXPECT_FALSE(src.isValid());
 
     // process() on an unloaded source must be safe and silent.
-    setSpec(src, 44100, 2);
+    prepareForPlayback(src, 44100, 2);
     std::vector<float> buf(64 * 2, 999.f);
     src.process(buf.data(), 64);
     EXPECT_FLOAT_EQ(peak(buf), 0.f);
+}
+
+// The transport decides whether a loaded track is audible.
+//
+// The mixer runs continuously -- it keeps asking for samples while the score sits stopped --
+// so a source that produces sound whenever it is asked plays the moment its track is added to
+// the engine and keeps going regardless of the transport, which also means the cursor has no
+// effect on what is heard. The engine starts the transport (ProcessMode::Playing, driven by
+// the player's isActiveChanged) only while the score is playing, and re-seeks every source on
+// each play, pause and seek, so honouring the mode is all the audio needs to follow the
+// cursor.
+TEST(AudioTrackSourceTests, IsSilentUnlessTheTransportIsRunning)
+{
+    AudioTrackSource src;
+    ASSERT_TRUE(src.load(testFile(SWEEP)));
+
+    // Spec only: the engine has not started the transport.
+    setSpec(src, 44100, 2);
+
+    std::vector<float> stopped(512 * 2, 12345.f);
+    src.process(stopped.data(), 512);
+    EXPECT_FLOAT_EQ(peak(stopped), 0.f)
+        << "a loaded track must be silent until the score is played";
+
+    // And it must not have advanced while stopped, so play resumes where the cursor left it
+    // rather than from wherever the file happened to have been left.
+    const double posWhileStopped = src.positionSeconds();
+    std::vector<float> stopped2(512 * 2, 0.f);
+    src.process(stopped2.data(), 512);
+    EXPECT_DOUBLE_EQ(src.positionSeconds(), posWhileStopped)
+        << "a stopped track must not run on";
+
+    // Starting the transport makes it audible.
+    src.setMode(ProcessMode::Playing);
+    std::vector<float> playing(512 * 2, 0.f);
+    src.process(playing.data(), 512);
+    EXPECT_GT(peak(playing), 0.05f) << "playing the score must produce audio";
+
+    // Stopping silences it again, and keeps the position.
+    const double posWhilePlaying = src.positionSeconds();
+    src.setMode(ProcessMode::Idle);
+    std::vector<float> idle(512 * 2, 12345.f);
+    src.process(idle.data(), 512);
+    EXPECT_FLOAT_EQ(peak(idle), 0.f) << "pausing must silence the track";
+    EXPECT_DOUBLE_EQ(src.positionSeconds(), posWhilePlaying)
+        << "pausing must keep the position so resuming continues from it";
+
+    // Export is offline playback, and the backing track belongs in the exported file.
+    src.setMode(ProcessMode::PlayingOffline);
+    std::vector<float> exporting(512 * 2, 0.f);
+    src.process(exporting.data(), 512);
+    EXPECT_GT(peak(exporting), 0.05f) << "offline export must include the backing track";
 }

@@ -238,6 +238,16 @@ bool AudioTrackSource::refill()
     return true;
 }
 
+void AudioTrackSource::setMode(ProcessMode mode)
+{
+    AbstractAudioSource::setMode(mode);
+
+    // PlayingOffline is the export path: the audio track has to be audible there too, which
+    // is what makes an exported file contain the backing track.
+    const bool playing = mode == ProcessMode::Playing || mode == ProcessMode::PlayingOffline;
+    m_playing.store(playing, std::memory_order_release);
+}
+
 samples_t AudioTrackSource::process(float* buffer, samples_t samplesPerChannel)
 {
     if (!buffer || samplesPerChannel == 0) {
@@ -254,6 +264,23 @@ samples_t AudioTrackSource::process(float* buffer, samples_t samplesPerChannel)
 
     const int outCh = m_outChannels;
     const samples_t total = samplesPerChannel * static_cast<samples_t>(outCh);
+
+    // Silence unless the transport is running.
+    //
+    // The mixer runs continuously -- it keeps asking for samples while the score sits
+    // stopped -- so without this the backing track would start playing the moment its track
+    // was added to the engine and would carry on regardless of the transport. That is not
+    // merely noisy: it also means the cursor has no effect on what is heard. With the gate,
+    // audio is heard exactly while the score plays, and the engine positions it by seeking
+    // this source on every play, pause and seek (ContextPlayer::seekAllTracks), so the track
+    // follows the cursor.
+    //
+    // The read cursor is deliberately left where it is, so resuming continues from the
+    // current position instead of snapping back to the start.
+    if (!m_playing.load(std::memory_order_acquire)) {
+        std::fill(buffer, buffer + total, 0.f);
+        return samplesPerChannel;
+    }
 
     if (!m_reader.isOpen()) {
         std::fill(buffer, buffer + total, 0.f);
