@@ -4721,8 +4721,31 @@ void Score::undoAddCR(ChordRest* cr, Measure* measure, const Fraction& tick)
             tupletAbove = tupletAbove->tuplet();
         }
 
-        if (newcr->isRest() && (toRest(newcr)->isGap()) && !(toRest(newcr)->track() % VOICES)) {
-            toRest(newcr)->setGap(false);
+        if (newcr->isRest()) {
+            Rest* rest = toRest(newcr);
+            const StaffType* staffType = staff->staffType(tick);
+            const bool contentLane = staffType && !staffType->holdsNotation();
+
+            if (contentLane) {
+                // A content lane (the audio waveform lane) needs this rest to keep the
+                // measure's voice adding up to the time signature, but must never draw it: a
+                // measure rest sits in the middle of the staff, exactly where the lane draws
+                // the waveform.
+                //
+                // Enforced here because every rest insertion passes through this function,
+                // and only here: callers create rests for a whole score at a time (a new
+                // measure is filled on every staff, a score is read, a lane is created) and
+                // cannot all be expected to know about lanes. Setting the flag at the call
+                // site is not enough either, because the branch below clears it again for
+                // exactly the rests a lane uses -- every one of them is in voice 0. That is
+                // what made measures added after the audio track exist come with a drawn rest
+                // on the lane even though it was clean when the track was created.
+                rest->setGap(true);
+            } else if (rest->isGap() && !(rest->track() % VOICES)) {
+                // A gap rest in voice 0 is normally turned back into a real one, so that a
+                // measure is not left looking empty.
+                rest->setGap(false);
+            }
         }
 
         doUndoAddElement(newcr);

@@ -849,6 +849,9 @@ MeasureBase* MasterScore::insertMeasure(MeasureBase* beforeMeasure, const Insert
             Fraction timeStretch(staff(staffIdx)->timeStretch(masterMeasure->tick()));
             rest->setTicks(masterMeasure->ticks() * timeStretch);
             rest->setTrack(track);
+            //! NOTE The rest is made a gap rest here for a content lane (the audio waveform
+            //! lane) by Score::undoAddCR, which is the one place every rest insertion passes
+            //! through. See the comment there.
             undoAddCR(rest, masterMeasure, tick);
         }
     }

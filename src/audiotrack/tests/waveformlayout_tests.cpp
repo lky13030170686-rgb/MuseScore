@@ -164,6 +164,63 @@ StaffLines* firstWaveformLane(Score* score)
 
     return nullptr;
 }
+
+//! The rests on one lane, and how many of them are gap rests (the invisible kind).
+//!
+//! The lane needs these rests -- a measure whose voice does not add up to the time signature
+//! is reported as incomplete and the score will not open -- but they must all be gap rests,
+//! because a measure rest is drawn in the middle of the staff, exactly where the waveform
+//! goes. Counting both together is what keeps a "clean lane" assertion honest.
+struct LaneRests
+{
+    int total = 0;
+    int gap = 0;
+};
+
+LaneRests countLaneRests(Score* score, staff_idx_t laneIdx)
+{
+    LaneRests result;
+
+    const MeasureBaseList* measures = score->measures();
+    if (!measures) {
+        return result;
+    }
+
+    for (const MeasureBase* mb = measures->first(); mb; mb = mb->nextMM()) {
+        if (!mb->isMeasure()) {
+            continue;
+        }
+
+        const Measure* measure = toMeasure(mb);
+        for (const Segment* s = measure->first(SegmentType::ChordRest); s; s = s->next(SegmentType::ChordRest)) {
+            for (voice_idx_t voice = 0; voice < VOICES; ++voice) {
+                EngravingItem* e = s->element(laneIdx * VOICES + voice);
+                if (!e) {
+                    continue;
+                }
+
+                ++result.total;
+                if (e->isRest() && toRest(e)->isGap()) {
+                    ++result.gap;
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+int countMeasures(Score* score)
+{
+    int count = 0;
+    const MeasureBaseList* measures = score->measures();
+    for (const MeasureBase* mb = measures ? measures->first() : nullptr; mb; mb = mb->nextMM()) {
+        if (mb->isMeasure()) {
+            ++count;
+        }
+    }
+    return count;
+}
 } // namespace
 
 class AudioTrackLayoutTests : public ::testing::Test
@@ -502,8 +559,7 @@ TEST_F(AudioTrackLayoutTests, LaneSurvivesHideEmptyStaves)
 // instrument added -> part and staff created -> layout finds the lane -> peaks reach it --
 // which is where a mistake would produce a lane that exists but stays blank.
 TEST_F(AudioTrackLayoutTests, AddingTheAudioTrackInstrumentDrawsAWaveform)
-{
-    auto provider = std::make_shared<FakeWaveformProvider>();
+{    auto provider = std::make_shared<FakeWaveformProvider>();
     ScopedProvider scoped(provider);
 
     const InstrumentTemplate* templ = searchTemplate(u"audio-track");
@@ -644,5 +700,52 @@ TEST_F(AudioTrackLayoutTests, WaveformLaneSurvivesSaveAndReload)
     } else {
         QFile::remove(savedPath);
     }
+}
+
+// Measures added after the audio track exists must not put a drawn rest on the lane.
+//
+// A new measure is filled with a measure rest on every staff, including the lane, so that its
+// voice adds up. On a content lane that rest has to stay invisible, and it did not: the flag
+// was cleared again by Score::undoAddCR, which turns gap rests in voice 0 back into real ones
+// so that a measure is never left looking empty -- and every rest on the lane is in voice 0.
+// The lane therefore stayed clean when the track was created (that path normalised it
+// afterwards) but grew a visible rest per measure as soon as the user added measures.
+TEST_F(AudioTrackLayoutTests, MeasuresAddedLaterKeepTheLaneClean)
+{
+    auto provider = std::make_shared<FakeWaveformProvider>();
+    ScopedProvider scoped(provider);
+
+    const InstrumentTemplate* templ = searchTemplate(u"audio-track");
+    ASSERT_TRUE(templ) << "the Audio track instrument is missing from instruments.xml";
+
+    MasterScore* score = ScoreRW::readScore(u"data/audiotrack/plain-staff.mscx");
+    ASSERT_TRUE(score);
+    score->appendPart(templ);
+    score->doLayout();
+
+    ASSERT_EQ(score->nstaves(), 2u);
+    ASSERT_TRUE(score->staff(1)->isWaveformStaff(Fraction(0, 1)));
+
+    const LaneRests before = countLaneRests(score, 1);
+    ASSERT_GT(before.total, 0) << "the lane has no rests; its measures would not add up";
+    ASSERT_EQ(before.gap, before.total) << "precondition: the lane was clean before adding";
+
+    const int measuresBefore = countMeasures(score);
+
+    // What "Add > Measures > Append" does.
+    score->appendMeasures(1);
+    score->doLayout();
+
+    EXPECT_EQ(countMeasures(score), measuresBefore + 1) << "no measure was added";
+
+    const LaneRests after = countLaneRests(score, 1);
+    EXPECT_GT(after.total, before.total)
+        << "the new measure has no rest on the lane; it would be reported as incomplete";
+
+    EXPECT_EQ(after.gap, after.total)
+        << "adding a measure put " << (after.total - after.gap)
+        << " drawn rest(s) on the lane; they sit in the middle of the staff, on the waveform";
+
+    delete score;
 }
 } // namespace mu::audiotrack::tests
