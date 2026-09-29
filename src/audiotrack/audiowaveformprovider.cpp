@@ -107,7 +107,16 @@ void AudioWaveformProvider::waveformPeaks(double scoreFromSeconds, double scoreT
         const double colFrom = fromSeconds + secondsPerColumn * static_cast<double>(col);
         const double colTo = colFrom + secondsPerColumn;
 
-        const int64_t frameFrom = static_cast<int64_t>(std::floor(colFrom * cache.sampleRate()));
+        // A column that falls before the file's beginning is silence, not the start of the
+        // file. Without this a column at a negative file time clamps to peak 0 and draws
+        // whatever the file opens with -- so a track moved later would appear to have its
+        // first note repeated everywhere before it starts. Left as the zero peak assigned at
+        // the top.
+        if (colTo <= 0.0) {
+            continue;
+        }
+
+        const int64_t frameFrom = static_cast<int64_t>(std::floor(std::max(0.0, colFrom) * cache.sampleRate()));
         const int64_t frameTo = static_cast<int64_t>(std::ceil(colTo * cache.sampleRate()));
 
         int64_t peakFrom = frameFrom / spp;
