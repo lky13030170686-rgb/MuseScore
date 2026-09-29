@@ -1704,7 +1704,25 @@ void PlaybackController::applyAudioTrackOffset()
     if (audioWaveformProvider()) {
         audioWaveformProvider()->setScoreOffsetSeconds(seconds);
     }
-    onWaveformChanged();
+    requestWaveformRelayout();
+}
+
+void PlaybackController::requestWaveformRelayout()
+{
+    // A drag asks for a redraw on every mouse move, which is far faster than a score can be
+    // laid out. Queueing one re-layout per move piles them up without bound -- hundreds of
+    // pending full relayouts during a single drag -- so only one is ever outstanding: the
+    // moves that arrive while it is queued are served by that one run, because it reads the
+    // current offset rather than a captured one.
+    bool expected = false;
+    if (!m_waveformRelayoutPending.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
+    QMetaObject::invokeMethod(qApp, [this]() {
+        m_waveformRelayoutPending.store(false);
+        onWaveformChanged();
+    }, Qt::QueuedConnection);
 }
 
 void PlaybackController::setAudioTrackOffset(int tickOffset)

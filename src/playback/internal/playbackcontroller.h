@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <optional>
 #include <unordered_map>
 
@@ -249,6 +250,13 @@ private:
     //! Called (on a worker thread) when a prepared waveform becomes available; marshals to
     //! the main thread and asks the score to lay out again so the waveform staff updates.
     void onWaveformChanged();
+
+    //! Asks for that re-layout, coalescing requests so that at most one is ever queued.
+    //! Dragging the audio lane asks on every mouse move; see the comment on the definition.
+    void requestWaveformRelayout();
+
+    //! Written on the main thread, read on the main thread; the queued run clears it.
+    std::atomic<bool> m_waveformRelayoutPending { false };
 
     //! Adds the audio waveform lane to the score if it is not there yet. Must run on the
     //! main thread: it edits the score through the undo stack.
