@@ -118,6 +118,49 @@ TEST(AudioWaveformProviderTests, ClearsCache)
     EXPECT_DOUBLE_EQ(provider.waveformDuration(), 0.0);
 }
 
+// The provider is asked in SCORE seconds and holds the FILE, so the alignment offset is what
+// reconciles the two. Without it a track that had been moved would still be drawn where it
+// used to be, and lining audio up by dragging would be done blind.
+TEST(AudioWaveformProviderTests, ScoreOffsetShiftsWhichPartOfTheFileIsDrawn)
+{
+    // The metronome is a 1 kHz click every 0.5 s, so a window containing a click is loud and
+    // one between clicks is silent -- enough to tell which part of the file was read.
+    auto cache = makeCache(METRONOME);
+    ASSERT_TRUE(cache);
+
+    AudioWaveformProvider provider;
+    provider.setCache(cache);
+    ASSERT_DOUBLE_EQ(provider.scoreOffsetSeconds(), 0.0) << "defaults to no offset";
+
+    auto peakOf = [&provider](double from, double to) {
+        std::vector<AudioWaveformPeak> peaks;
+        provider.waveformPeaks(from, to, 64, peaks);
+        float m = 0.f;
+        for (const AudioWaveformPeak& p : peaks) {
+            m = std::max(m, std::abs(p.max));
+        }
+        return m;
+    };
+
+    // With no offset, score time is file time: the click at 1.0 s is found at 1.0 s.
+    const float atOneWithoutOffset = peakOf(0.98, 1.02);
+    EXPECT_GT(atOneWithoutOffset, 0.05f) << "the click should be under score 1.0 s";
+
+    // Move the audio 2 s later, so score 1.0 s now corresponds to the file's own start, where
+    // there is no click. The picture has to follow the sound.
+    provider.setScoreOffsetSeconds(2.0);
+    EXPECT_DOUBLE_EQ(provider.scoreOffsetSeconds(), 2.0);
+
+    const float atOneWithOffset = peakOf(0.98, 1.02);
+    EXPECT_LT(atOneWithOffset, 0.05f)
+        << "score 1.0 s is before the moved track starts, so nothing should be drawn there";
+
+    // And the click that was at file 1.0 s is now heard at score 3.0 s.
+    const float atThreeWithOffset = peakOf(2.98, 3.02);
+    EXPECT_GT(atThreeWithOffset, 0.05f)
+        << "the click should have moved to score 3.0 s with the offset";
+}
+
 TEST(AudioWaveformProviderTests, HandlesDegenerateQueriesWithoutCrashing)
 {
     auto cache = makeCache(SWEEP);

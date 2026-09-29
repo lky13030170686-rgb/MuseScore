@@ -59,8 +59,19 @@ public:
     //! Total duration of the loaded audio, in seconds. 0 when none.
     virtual double waveformDuration() const = 0;
 
-    //! Fills `out` with `count` peaks evenly spanning [fromSeconds, toSeconds).
-    //! Out-of-range time yields silence rather than an error. `out` is resized to `count`.
+    //! The score position, in seconds, at which the audio file's own 0:00 sounds.
+    //!
+    //! The playback layer sets this from the project's alignment offset, and callers below
+    //! ask in SCORE seconds: the provider is what reconciles the two, so the picture shows
+    //! the audio that will actually be heard at that point in the score. Without it a moved
+    //! track would still be drawn where it used to be, and lining audio up by dragging would
+    //! be done blind.
+    virtual void setScoreOffsetSeconds(double seconds) = 0;
+    virtual double scoreOffsetSeconds() const = 0;
+
+    //! Fills `out` with `count` peaks evenly spanning the SCORE seconds
+    //! [fromSeconds, toSeconds). Out-of-range time yields silence rather than an error.
+    //! `out` is resized to `count`.
     virtual void waveformPeaks(double fromSeconds, double toSeconds, int64_t count,
                                std::vector<AudioWaveformPeak>& out) const = 0;
 };

@@ -183,6 +183,31 @@ private:
     INotationInteractionPtr viewInteraction() const;
     const INotationInteraction::HitElementContext& hitElementContext() const;
 
+    //! Everything a lane drag needs to keep in mind between press, move and release.
+    struct AudioLaneDrag
+    {
+        bool active = false;
+        //! Where the pointer went down, in score units. Deltas are measured from here rather
+        //! than accumulated per move, so a drag that wanders and comes back lands where it
+        //! started instead of drifting.
+        muse::PointF beginPos;
+        //! Score units per tick at the lane under the press. Taken from the measure the press
+        //! landed on, because that is the only place where the local pixel-to-time scale is
+        //! known -- it differs between measures and resets at every system break.
+        double unitsPerTick = 0.0;
+        //! Ticks already handed to the playback layer for this drag, so each move can send
+        //! only the difference.
+        int appliedTicks = 0;
+    };
+
+    //! Starts dragging the audio lane if the press landed on one. Returns true when the event
+    //! belongs to the drag and must not be treated as a normal click.
+    bool beginAudioLaneDrag(const muse::PointF& logicPos, engraving::EngravingItem* hitElement);
+    void updateAudioLaneDrag(const muse::PointF& logicPos);
+    void endAudioLaneDrag();
+
+    AudioLaneDrag m_audioLaneDrag;
+
     void onNotationChanged();
 
     void doZoomToPageWidth();

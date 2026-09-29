@@ -41,6 +41,7 @@
 #include "interactive/iinteractive.h"
 #include "audiotrack/iaudiowaveformservice.h"
 #include "audiotrack/audiofilesourceprovider.h"
+#include "engraving/dom/iaudiowaveformprovider.h"
 #include "tours/itoursservice.h"
 
 #include "drumsetloader.h"
@@ -64,6 +65,9 @@ class PlaybackController : public IPlaybackController, public muse::async::Async
     //! Prepares the waveform for a backing track so a waveform staff can draw it.
     //! Optional: absent in builds without the audiotrack module.
     muse::GlobalInject<muse::audiotrack::IAudioWaveformService> audioWaveformService;
+    //! Keeps the drawn waveform in step with the alignment offset, so the lane shows the
+    //! audio that will actually be heard at that point in the score.
+    muse::GlobalInject<mu::engraving::IAudioWaveformProvider> audioWaveformProvider;
     //! Reaches the source object of the backing track, to line it up with the score. Injected
     //! as the engine interface and cast down: the source is app-side, so no engine-level
     //! interface can hand it out. See AudioFileSourceProvider::createSource.

@@ -41,6 +41,8 @@
 #include "engraving/dom/mscore.h"
 #include "engraving/dom/shadownote.h"
 #include "engraving/dom/staff.h"
+#include "engraving/dom/stafflines.h"
+#include "engraving/dom/measure.h"
 
 #include "notation/inotation.h"
 #include "notation/inotationelements.h" // IWYU pragma: keep
@@ -637,6 +639,75 @@ void NotationViewInputController::wheelEvent(QWheelEvent* event)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Dragging the backing track's lane to line it up with the score.
+//
+// The interaction is deliberately drag-only: pressing on the lane and moving the pointer
+// moves the audio, and nothing else about the lane is clickable. That keeps it out of the
+// way of normal score editing, which is what the press handler does next when this returns
+// false.
+// ---------------------------------------------------------------------------
+
+bool NotationViewInputController::beginAudioLaneDrag(const PointF& logicPos, EngravingItem* hitElement)
+{
+    if (!hitElement || !hitElement->isStaffLines()) {
+        return false;
+    }
+
+    StaffLines* lines = toStaffLines(hitElement);
+    Measure* measure = lines->measure();
+    if (!measure || !lines->staff()) {
+        return false;
+    }
+
+    // Only a waveform lane, and only when there is audio to move.
+    if (!lines->staff()->isWaveformStaff(measure->tick())) {
+        return false;
+    }
+
+    const double measureWidth = measure->width();
+    if (!(measureWidth > 0.0) || measure->ticks().isZero()) {
+        return false;
+    }
+
+    m_audioLaneDrag.active = true;
+    m_audioLaneDrag.beginPos = logicPos;
+    // The measure's own width and duration give the local scale. Using it rather than a
+    // score-wide average matters because measures differ in width, and because the mapping
+    // restarts at every system break.
+    m_audioLaneDrag.unitsPerTick = measureWidth / static_cast<double>(measure->ticks().ticks());
+    m_audioLaneDrag.appliedTicks = 0;
+
+    return true;
+}
+
+void NotationViewInputController::updateAudioLaneDrag(const PointF& logicPos)
+{
+    if (!m_audioLaneDrag.active || !(m_audioLaneDrag.unitsPerTick > 0.0)) {
+        return;
+    }
+
+    // Measured from the press, not accumulated: a drag that wanders and returns lands exactly
+    // where it started instead of leaving a residue of rounding.
+    const double deltaUnits = logicPos.x() - m_audioLaneDrag.beginPos.x();
+    const int totalTicks = static_cast<int>(std::llround(deltaUnits / m_audioLaneDrag.unitsPerTick));
+
+    const int delta = totalTicks - m_audioLaneDrag.appliedTicks;
+    if (delta == 0) {
+        return;
+    }
+
+    // Moving the pointer right must move the audio later, which is what shifting by a
+    // positive number of ticks means.
+    playbackController()->shiftAudioTrackOffset(delta);
+    m_audioLaneDrag.appliedTicks = totalTicks;
+}
+
+void NotationViewInputController::endAudioLaneDrag()
+{
+    m_audioLaneDrag = AudioLaneDrag {};
+}
+
 void NotationViewInputController::mousePressEvent(QMouseEvent* event)
 {
     PointF logicPos = m_view->toLogical(event->pos());
@@ -667,6 +738,13 @@ void NotationViewInputController::mousePressEvent(QMouseEvent* event)
 
         hitElement = context.element;
         hitStaffIndex = context.staff ? context.staff->idx() : muse::nidx;
+    }
+
+    // The backing track is moved by dragging its lane. Checked before anything else claims
+    // the press, because the lane is drawn on a staff and would otherwise be read as a click
+    // on the score.
+    if (button == Qt::LeftButton && !m_readonly && beginAudioLaneDrag(logicPos, hitElement)) {
+        return;
     }
 
     // note enter mode
@@ -1046,6 +1124,13 @@ bool NotationViewInputController::tryPercussionShortcut(QKeyEvent* event)
 
 void NotationViewInputController::mouseMoveEvent(QMouseEvent* event)
 {
+    // A lane drag is its own gesture: it must not be mistaken for a canvas drag or an element
+    // drag, both of which would fight it for the same pointer.
+    if (m_audioLaneDrag.active) {
+        updateAudioLaneDrag(m_view->toLogical(event->pos()));
+        return;
+    }
+
     if (m_mouseDownInfo.dragAction == MouseDownInfo::Nothing) {
         return;
     }
@@ -1190,6 +1275,16 @@ void NotationViewInputController::startDragElements(ElementType elementsType, co
 
 void NotationViewInputController::mouseReleaseEvent(QMouseEvent* event)
 {
+    // Ends a lane drag before anything else looks at the release. The lane has no selection
+    // and no undo entry of its own: the offset is stored with the project and applied as the
+    // pointer moves, so there is nothing to commit here.
+    if (m_audioLaneDrag.active) {
+        endAudioLaneDrag();
+        m_mouseDownInfo.dragAction = MouseDownInfo::Nothing;
+        m_view->asItem()->setCursor(QCursor());
+        return;
+    }
+
     if (m_mouseDownInfo.dragAction == MouseDownInfo::Nothing) {
         return;
     }

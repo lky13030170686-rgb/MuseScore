@@ -84,6 +84,9 @@ public:
 
     double waveformDuration() const override { return m_hasWaveform ? 2.0 : 0.0; }
 
+    void setScoreOffsetSeconds(double seconds) override { m_scoreOffsetSeconds = seconds; }
+    double scoreOffsetSeconds() const override { return m_scoreOffsetSeconds; }
+
     void waveformPeaks(double fromSeconds, double toSeconds, int64_t count,
                        std::vector<AudioWaveformPeak>& out) const override
     {
@@ -117,6 +120,7 @@ private:
     bool m_hasWaveform = true;
     float m_peakMax = 0.8f;
     float m_peakMin = -0.2f;
+    double m_scoreOffsetSeconds = 0.0;
 };
 
 // RAII: engraving resolves the provider through globalIoc(), so the mock has to be

@@ -52,7 +52,19 @@ double AudioWaveformProvider::waveformDuration() const
     return m_cache ? m_cache->duration() : 0.0;
 }
 
-void AudioWaveformProvider::waveformPeaks(double fromSeconds, double toSeconds, int64_t count,
+void AudioWaveformProvider::setScoreOffsetSeconds(double seconds)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_scoreOffsetSeconds = seconds;
+}
+
+double AudioWaveformProvider::scoreOffsetSeconds() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_scoreOffsetSeconds;
+}
+
+void AudioWaveformProvider::waveformPeaks(double scoreFromSeconds, double scoreToSeconds, int64_t count,
                                           std::vector<AudioWaveformPeak>& out) const
 {
     out.assign(static_cast<size_t>(std::max<int64_t>(0, count)), AudioWaveformPeak {});
@@ -61,6 +73,13 @@ void AudioWaveformProvider::waveformPeaks(double fromSeconds, double toSeconds, 
     if (!m_cache || m_cache->isEmpty() || count <= 0) {
         return;
     }
+
+    // Callers ask in SCORE seconds, because that is what the engraver knows. The cache holds
+    // the file, whose own beginning sounds at the alignment offset. Without this conversion
+    // a track that had been moved would still be drawn where it used to be -- so lining the
+    // audio up would have to be done blind.
+    const double fromSeconds = scoreFromSeconds - m_scoreOffsetSeconds;
+    const double toSeconds = scoreToSeconds - m_scoreOffsetSeconds;
 
     const WaveformCache& cache = *m_cache;
 

@@ -1696,6 +1696,15 @@ void PlaybackController::applyAudioTrackOffset()
 
     source->setStartOffsetSeconds(seconds);
     LOGI() << "audiotrack: alignment offset set to " << seconds << " s";
+
+    // The picture has to move with the sound. The waveform provider works in file time and
+    // is asked in score time, so it needs the same offset; then the lane is laid out again
+    // so the new mapping is actually drawn. Without this, dragging the lane would change
+    // what you hear while the picture stayed put -- aligning would have to be done blind.
+    if (audioWaveformProvider()) {
+        audioWaveformProvider()->setScoreOffsetSeconds(seconds);
+    }
+    onWaveformChanged();
 }
 
 void PlaybackController::setAudioTrackOffset(int tickOffset)

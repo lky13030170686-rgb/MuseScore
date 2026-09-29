@@ -49,12 +49,17 @@ public:
 
     bool hasWaveform() const override;
     double waveformDuration() const override;
+    void setScoreOffsetSeconds(double seconds) override;
+    double scoreOffsetSeconds() const override;
     void waveformPeaks(double fromSeconds, double toSeconds, int64_t count,
                        std::vector<mu::engraving::AudioWaveformPeak>& out) const override;
 
 private:
     mutable std::mutex m_mutex;
     std::shared_ptr<const WaveformCache> m_cache;
+    //! Score seconds at which the file's 0:00 sounds; mirrored from the track's alignment
+    //! offset so the drawing and the playback agree.
+    double m_scoreOffsetSeconds = 0.0;
 };
 } // namespace muse::audiotrack
 
