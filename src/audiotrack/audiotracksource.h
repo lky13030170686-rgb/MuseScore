@@ -83,6 +83,19 @@ public:
     void setPositionSeconds(double seconds);
     double positionSeconds() const;
 
+    //! The position in the SCORE, in seconds, at which the file's own 0:00 sounds.
+    //!
+    //! This is what makes a backing track line up with the music: the engine seeks this
+    //! source to the transport position, and the source plays the file from
+    //! (transport - offset). Positive values delay the audio (it starts that far into the
+    //! score); negative values mean the file carries material belonging before the score's
+    //! start, so at score 0 it is already part-way through.
+    //!
+    //! Thread-safe, and effective immediately: changing it while the transport runs re-lays
+    //! the audio against the current position, so the offset can be dialled in by ear.
+    void setStartOffsetSeconds(double seconds);
+    double startOffsetSeconds() const;
+
     // ISeekableAudioSource
     void seekTo(const muse::audio::TimePosition& position) override;
     muse::audio::TimePosition position() const override;
@@ -142,10 +155,28 @@ private:
     double m_pendingSeekSeconds = 0.0;
     bool m_hasPendingSeek = false;
 
-    //! Mirrors m_readPos for lock-free-ish position queries. Written by the audio thread
-    //! under m_seekMutex so position() never tears.
+    //! Mirrors the playback position for cross-thread queries (position()/positionSeconds()).
+    //! Written by the audio thread under m_posMutex so readers never see it tear.
+    //!
+    //! Expressed in SCORE seconds (file position + offset), because that is what the engine
+    //! seeks with: AudioFileNode::seek skips a seek when position() already equals the
+    //! requested transport position.
     mutable std::mutex m_posMutex;
     double m_publishedSeconds = 0.0;
+
+    //! The transport position, in SCORE seconds: where the last seek put us, advanced by the
+    //! audio produced since. The file position is derived from it through the offset, so
+    //! changing the offset can re-lay the audio without losing our place.
+    //! AUDIO THREAD ONLY, published under m_posMutex for readers.
+    double m_scoreSeconds = 0.0;
+
+    //! How much more silence to emit before the file starts, because the transport has not
+    //! reached the offset yet. Counted down by process(). AUDIO THREAD ONLY.
+    double m_pendingSilenceSeconds = 0.0;
+
+    //! Score time at which the file's own 0:00 sounds. Written on the engine thread by
+    //! setStartOffsetSeconds(), read on the audio thread by process().
+    std::atomic<double> m_startOffsetSeconds { 0.0 };
 
     //! Whether the transport is running. Set on the engine thread by setMode(), read on the
     //! audio thread by process(). Starts false: a source that has just been created is not

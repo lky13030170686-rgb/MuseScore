@@ -128,6 +128,13 @@ public:
     //! (WAV/FLAC/OGG/Opus); MP3 is not decodable in this build.
     virtual muse::Ret importAudioTrack() = 0;
 
+    //! Moves the backing track relative to the score by `tickDelta` score ticks, so it can be
+    //! lined up by ear while the music plays. Positive moves the audio later.
+    //!
+    //! Expressed in ticks rather than seconds because the offset is anchored to the music: a
+    //! later tempo change must not slide the audio away from the bar it was aligned to.
+    virtual void shiftAudioTrackOffset(int tickDelta) = 0;
+
     //! Engine track ids of the audio tracks currently loaded, for UI/state queries.
     virtual const std::vector<muse::audio::TrackId>& audioTrackIds() const = 0;
     virtual muse::async::Channel<muse::audio::TrackId> audioTrackAdded() const = 0;

@@ -43,12 +43,27 @@ IAudioSourcePtr AudioFileSourceProvider::createSource(const std::string& filePat
         return nullptr;
     }
 
+    // Remember the source so the playback layer can configure it afterwards.
+    //
+    // The engine owns the track from here on, and nothing in the track API carries either
+    // the alignment offset or a way to reach the object -- and the offset has to be
+    // adjustable WHILE the music plays, so it cannot be a construction-time parameter that
+    // is baked in and forgotten. The provider is the only place that sees the source, so it
+    // keeps a weak reference and the playback layer asks for it. Weak, because the engine
+    // owns the lifetime: when the track is removed the source must be free to go.
+    m_lastSource = source;
+
     LOGI() << "created audio track source for: " << filePath
            << " (" << source->info().sampleRate << " Hz, "
            << source->info().channels << " ch, "
            << source->info().duration << " s)";
 
     return source;
+}
+
+AudioTrackSourcePtr AudioFileSourceProvider::lastCreatedSource() const
+{
+    return m_lastSource.lock();
 }
 
 bool AudioFileSourceProvider::isSupportedFile(const std::string& filePath) const

@@ -51,7 +51,11 @@ public:
     std::shared_ptr<AudioWaveformProvider> waveformProvider() const;
 
 private:
-    std::shared_ptr<muse::audio::engine::IAudioFileSourceProvider> m_provider;
+    //! Held by its concrete type, not as the engine interface: the same instance is also
+    //! registered under its own type so the playback layer can reach the source object and
+    //! set the alignment offset. Registering one object under two types needs the concrete
+    //! pointer to start from.
+    std::shared_ptr<AudioFileSourceProvider> m_provider;
     std::shared_ptr<AudioWaveformProvider> m_waveformProvider;
     std::shared_ptr<AudioWaveformService> m_waveformService;
 };

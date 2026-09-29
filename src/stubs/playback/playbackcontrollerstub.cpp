@@ -227,6 +227,11 @@ muse::Ret PlaybackControllerStub::importAudioTrack()
     return muse::make_ret(muse::Ret::Code::NotSupported);
 }
 
+void PlaybackControllerStub::shiftAudioTrackOffset(int /*tickDelta*/)
+{
+    // No playback module, so no backing track to move.
+}
+
 const std::vector<muse::audio::TrackId>& PlaybackControllerStub::audioTrackIds() const
 {
     static const std::vector<muse::audio::TrackId> dummy;

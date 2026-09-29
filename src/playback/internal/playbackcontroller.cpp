@@ -1570,6 +1570,11 @@ void PlaybackController::addAudioTrack(const muse::io::path_t& filePath, const A
         // Remember the file in the project, so reopening the score restores this track.
         rememberAudioTrack(muse::io::path_t(path));
 
+        // Line the audio up with the score. Done here rather than by the engine because the
+        // offset is stored against the score (a tick), and only the notation side knows the
+        // tempo map that turns it into the seconds the source works in.
+        applyAudioTrackOffset();
+
         // Kick off waveform preparation. This is asynchronous on purpose: decoding a
         // multi-minute file takes hundreds of milliseconds and must not block the UI.
         // When it finishes, the score is asked to lay out again so the waveform staff
@@ -1629,13 +1634,94 @@ void PlaybackController::rememberAudioTrack(const muse::io::path_t& filePath)
         return;
     }
 
-    project::AudioTrackParams params;
+    // Read-modify-write rather than starting from a fresh struct: the alignment offset is
+    // set separately from the file, and rebuilding the params here would silently reset it.
+    project::AudioTrackParams params = audioSettings()->audioTrackParams();
     params.filePath = filePath;
     // io::filename() yields a path_t; the params field is a muse::String.
     params.name = muse::io::filename(filePath).toString();
     audioSettings()->setAudioTrackParams(params);
 
     LOGI() << "audiotrack: remembered audio track in project: " << filePath;
+}
+
+double PlaybackController::audioTrackOffsetSeconds() const
+{
+    if (!audioSettings()) {
+        return 0.0;
+    }
+
+    const int tickOffset = audioSettings()->audioTrackParams().tickOffset;
+    if (tickOffset == 0) {
+        return 0.0;
+    }
+
+    // The offset is stored against the score, so it survives a tempo change: it means "the
+    // audio's beginning lands here in the music", not "delay the audio by this many seconds".
+    const engraving::Score* score = m_notation ? m_notation->score() : nullptr;
+    if (!score) {
+        return 0.0;
+    }
+
+    // A negative tick offset (the file carries material belonging before the score's start)
+    // is expressed by the sign of the tick itself, which utick2utime handles.
+    return score->utick2utime(tickOffset);
+}
+
+void PlaybackController::applyAudioTrackOffset()
+{
+    if (m_audioTrackIds.empty()) {
+        return;
+    }
+
+    const double seconds = audioTrackOffsetSeconds();
+
+    // The source is reachable only through the provider that created it -- see
+    // AudioFileSourceProvider::createSource for why. Adjusting it takes effect at once, so
+    // this doubles as the live path used while the user dials the offset in by ear.
+    // Resolved as the engine interface and cast down. Registering the concrete class as well
+    // would be simpler here, but the IoC container warns about the same object under two
+    // types, and a noisy startup log is a cost paid by every run.
+    std::shared_ptr<muse::audiotrack::AudioFileSourceProvider> provider
+        = std::dynamic_pointer_cast<muse::audiotrack::AudioFileSourceProvider>(audioFileSourceProvider());
+    if (!provider) {
+        return;
+    }
+
+    muse::audiotrack::AudioTrackSourcePtr source = provider->lastCreatedSource();
+    if (!source) {
+        LOGW() << "audiotrack: audio source is gone, cannot apply offset";
+        return;
+    }
+
+    source->setStartOffsetSeconds(seconds);
+    LOGI() << "audiotrack: alignment offset set to " << seconds << " s";
+}
+
+void PlaybackController::setAudioTrackOffset(int tickOffset)
+{
+    if (!audioSettings()) {
+        return;
+    }
+
+    project::AudioTrackParams params = audioSettings()->audioTrackParams();
+    if (params.tickOffset == tickOffset) {
+        return;
+    }
+
+    params.tickOffset = tickOffset;
+    audioSettings()->setAudioTrackParams(params);
+
+    applyAudioTrackOffset();
+}
+
+void PlaybackController::shiftAudioTrackOffset(int tickDelta)
+{
+    if (!audioSettings() || tickDelta == 0) {
+        return;
+    }
+
+    setAudioTrackOffset(audioSettings()->audioTrackParams().tickOffset + tickDelta);
 }
 
 void PlaybackController::restoreAudioTrack()

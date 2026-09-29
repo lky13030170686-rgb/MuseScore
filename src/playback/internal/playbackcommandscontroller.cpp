@@ -28,6 +28,7 @@
 #include "rcommand/actiontocommand.h"
 #include "rcommand/commandtypes.h"
 #include "audio/common/audiotypes.h"
+#include "engraving/types/constants.h"
 
 #include "../playbackcommands.h"
 
@@ -72,6 +73,16 @@ void PlaybackCommandsController::init()
     registerCommand(OPEN_PLAYBACK_SETUP_COMMAND, [this]() { return showPlaybackSetup(); });
     registerCommand(RELOAD_PLAYBACK_CACHE_COMMAND, &IPlaybackController::reloadPlaybackCache);
     registerCommand(IMPORT_AUDIO_COMMAND, &IPlaybackController::importAudioTrack);
+
+    // One beat = one quarter note. Positive moves the audio later.
+    registerCommand(AUDIO_TRACK_EARLIER_COMMAND, [this]() {
+        playbackController()->shiftAudioTrackOffset(-static_cast<int>(mu::engraving::Constants::DIVISION));
+        return muse::make_ret(muse::Ret::Code::Ok);
+    });
+    registerCommand(AUDIO_TRACK_LATER_COMMAND, [this]() {
+        playbackController()->shiftAudioTrackOffset(static_cast<int>(mu::engraving::Constants::DIVISION));
+        return muse::make_ret(muse::Ret::Code::Ok);
+    });
 
     registerCommand(TOGGLE_MIXER_SECTION_COMMAND, [this](const rcommand::Params& params) { return toggleMixerSection(params); });
     registerCommand(TOGGLE_AUX_SEND_COMMAND, [this](const rcommand::Params& params) { return toggleAuxSend(params); });

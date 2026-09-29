@@ -53,6 +53,13 @@ inline static const muse::rcommand::Command RELOAD_PLAYBACK_CACHE_COMMAND("comma
 //! in sync with the score. See 音频轨/开发管理细则.md for the feature's scope.
 inline static const muse::rcommand::Command IMPORT_AUDIO_COMMAND("command://playback/import-audio");
 
+//! Line the backing track up with the score, one beat at a time. Aligning audio is done by
+//! listening -- adjust, play, adjust again -- so the step is the score's own beat division
+//! and the effect is immediate. Find them in Preferences > Shortcuts (search "audio track")
+//! to assign keys.
+inline static const muse::rcommand::Command AUDIO_TRACK_EARLIER_COMMAND("command://playback/audio-track-earlier");
+inline static const muse::rcommand::Command AUDIO_TRACK_LATER_COMMAND("command://playback/audio-track-later");
+
 inline static const muse::rcommand::Command TOGGLE_MIXER_SECTION_COMMAND("command://playback/toggle-mixer-section"); // with params
 inline static const muse::rcommand::Command TOGGLE_AUX_SEND_COMMAND("command://playback/toggle-aux-send");
 inline static const muse::rcommand::Command TOGGLE_AUX_CHANNEL_COMMAND("command://playback/toggle-aux-channel");

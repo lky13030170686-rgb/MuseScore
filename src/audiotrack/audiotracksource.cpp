@@ -124,13 +124,13 @@ void AudioTrackSource::setPositionSeconds(double seconds)
 bool AudioTrackSource::applyPendingSeek()
 {
     // Audio thread only.
-    double seconds = 0.0;
+    double scoreSeconds = 0.0;
     {
         std::lock_guard<std::mutex> lock(m_seekMutex);
         if (!m_hasPendingSeek) {
             return false;
         }
-        seconds = m_pendingSeekSeconds;
+        scoreSeconds = m_pendingSeekSeconds;
         m_hasPendingSeek = false;
     }
 
@@ -138,8 +138,23 @@ bool AudioTrackSource::applyPendingSeek()
         return false;
     }
 
+    // The engine seeks by transport position, so what arrives here is SCORE time. The file's
+    // own timeline begins at the offset.
+    const double offset = m_startOffsetSeconds.load(std::memory_order_acquire);
+    double fileSeconds = scoreSeconds - offset;
+
+    // Before the offset the file has nothing to contribute: emit silence until the transport
+    // reaches it, then start from the file's beginning. Holding the file cursor at 0 rather
+    // than letting it go negative is what makes an offset larger than the seek position
+    // behave like a delayed entry instead of seeking past the start.
+    m_pendingSilenceSeconds = 0.0;
+    if (fileSeconds < 0.0) {
+        m_pendingSilenceSeconds = -fileSeconds;
+        fileSeconds = 0.0;
+    }
+
     const double fileRate = static_cast<double>(m_reader.info().sampleRate);
-    int64_t frame = static_cast<int64_t>(std::llround(seconds * fileRate));
+    int64_t frame = static_cast<int64_t>(std::llround(fileSeconds * fileRate));
     frame = std::max<int64_t>(0, std::min<int64_t>(frame, m_reader.info().frames));
 
     m_readPos = static_cast<double>(frame);
@@ -152,12 +167,33 @@ bool AudioTrackSource::applyPendingSeek()
 
     m_reader.seekToFrame(frame);
 
+    m_scoreSeconds = scoreSeconds;
+
     {
         std::lock_guard<std::mutex> lock(m_posMutex);
-        m_publishedSeconds = static_cast<double>(frame) / fileRate;
+        m_publishedSeconds = scoreSeconds;
     }
 
     return true;
+}
+
+void AudioTrackSource::setStartOffsetSeconds(double seconds)
+{
+    const double previous = m_startOffsetSeconds.exchange(seconds, std::memory_order_acq_rel);
+    if (previous == seconds) {
+        return;
+    }
+
+    // Re-lay the audio against the position we are already at, so the offset can be adjusted
+    // while listening and the effect is heard immediately rather than at the next seek.
+    // Re-seeking through the normal channel keeps the audio thread the only writer of
+    // playback state.
+    setPositionSeconds(positionSeconds());
+}
+
+double AudioTrackSource::startOffsetSeconds() const
+{
+    return m_startOffsetSeconds.load(std::memory_order_acquire);
 }
 
 double AudioTrackSource::positionSeconds() const
@@ -316,13 +352,30 @@ samples_t AudioTrackSource::process(float* buffer, samples_t samplesPerChannel)
 
     const int64_t fileFrames = m_reader.info().frames;
 
+    // Leading silence for a track that starts later than the score (or, at the very start,
+    // for one whose file begins before it). Consumed frame-accurately so the entry lands on
+    // the right sample rather than on a block boundary -- an alignment feature that is only
+    // accurate to the audio buffer size would defeat its own purpose.
+    samples_t silentFrames = 0;
+    if (m_pendingSilenceSeconds > 0.0) {
+        const double frames = m_pendingSilenceSeconds * static_cast<double>(m_outSampleRate);
+        silentFrames = static_cast<samples_t>(std::min<double>(frames, static_cast<double>(samplesPerChannel)));
+        m_pendingSilenceSeconds -= static_cast<double>(silentFrames) / static_cast<double>(m_outSampleRate);
+        if (m_pendingSilenceSeconds < 0.0) {
+            m_pendingSilenceSeconds = 0.0;
+        }
+        if (silentFrames > 0) {
+            std::fill(buffer, buffer + static_cast<size_t>(silentFrames) * outCh, 0.f);
+        }
+    }
+
     // Single source of truth for the read cursor: m_readPos is the fractional file-frame
     // position of the sample being produced right now. Every other counter is derived
     // from it, so a refill mid-buffer cannot double-count.
     double readPos = m_readPos;
     int64_t startPos = m_cacheStartFrame;   // file frame the current cache starts at
 
-    for (samples_t i = 0; i < samplesPerChannel; ++i) {
+    for (samples_t i = silentFrames; i < samplesPerChannel; ++i) {
         float* out = buffer + i * outCh;
 
         if (readPos >= static_cast<double>(fileFrames)) {
@@ -367,9 +420,12 @@ samples_t AudioTrackSource::process(float* buffer, samples_t samplesPerChannel)
     m_cacheStartFrame = startPos;
 
     // Publish the advanced position for cross-thread readers (position()/positionSeconds()).
+    // Held in SCORE seconds: the transport has moved on by the whole block, whether that
+    // block was silence before the file's entry or audio from it.
+    m_scoreSeconds += static_cast<double>(samplesPerChannel) / static_cast<double>(m_outSampleRate);
     {
         std::lock_guard<std::mutex> lock(m_posMutex);
-        m_publishedSeconds = m_readPos / static_cast<double>(m_reader.info().sampleRate);
+        m_publishedSeconds = m_scoreSeconds;
     }
 
     return samplesPerChannel;

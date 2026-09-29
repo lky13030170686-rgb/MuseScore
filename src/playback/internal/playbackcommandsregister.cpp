@@ -201,6 +201,20 @@ static const std::vector<CommandInfo> s_commandInfos = {
         InputSchema(),
         Decoration(IconCode::Code::NONE)
     },
+    CommandInfo{
+        AUDIO_TRACK_EARLIER_COMMAND,
+        TranslatableString("playback", "Audio track: move earlier"),
+        TranslatableString("playback", "Start the backing track one beat earlier, to line it up with the score"),
+        InputSchema(),
+        Decoration(IconCode::Code::NONE)
+    },
+    CommandInfo{
+        AUDIO_TRACK_LATER_COMMAND,
+        TranslatableString("playback", "Audio track: move later"),
+        TranslatableString("playback", "Start the backing track one beat later, to line it up with the score"),
+        InputSchema(),
+        Decoration(IconCode::Code::NONE)
+    },
 
     CommandInfo{
         TOGGLE_MIXER_SECTION_COMMAND,

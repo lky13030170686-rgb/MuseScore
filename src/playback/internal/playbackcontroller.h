@@ -40,6 +40,7 @@
 #include "audio/common/audiotypes.h"
 #include "interactive/iinteractive.h"
 #include "audiotrack/iaudiowaveformservice.h"
+#include "audiotrack/audiofilesourceprovider.h"
 #include "tours/itoursservice.h"
 
 #include "drumsetloader.h"
@@ -63,6 +64,10 @@ class PlaybackController : public IPlaybackController, public muse::async::Async
     //! Prepares the waveform for a backing track so a waveform staff can draw it.
     //! Optional: absent in builds without the audiotrack module.
     muse::GlobalInject<muse::audiotrack::IAudioWaveformService> audioWaveformService;
+    //! Reaches the source object of the backing track, to line it up with the score. Injected
+    //! as the engine interface and cast down: the source is app-side, so no engine-level
+    //! interface can hand it out. See AudioFileSourceProvider::createSource.
+    muse::GlobalInject<muse::audio::engine::IAudioFileSourceProvider> audioFileSourceProvider;
 
 public:
     PlaybackController(const muse::modularity::ContextPtr& iocCtx);
@@ -259,6 +264,25 @@ private:
 
     //! Records the audio file in the project settings so saving keeps it.
     void rememberAudioTrack(const muse::io::path_t& filePath);
+
+    //! Where the audio's beginning sits in the score, in seconds. Reads the tick offset from
+    //! the project and converts it with the score's tempo map, so the value survives a tempo
+    //! change (it is anchored to the music, not to wall-clock time).
+    double audioTrackOffsetSeconds() const;
+
+    //! Pushes the offset to the source. Takes effect immediately, which is what lets the
+    //! offset be dialled in by ear while the music plays.
+    void applyAudioTrackOffset();
+
+public:
+    //! Moves the backing track relative to the score. `tickOffset` is the score position at
+    //! which the file's 0:00 sounds: positive starts the audio later, negative means the file
+    //! carries material belonging before the score's start. Persisted with the project.
+    void setAudioTrackOffset(int tickOffset);
+
+    void shiftAudioTrackOffset(int tickDelta) override;
+
+private:
 
     //! Re-adds the backing audio track recorded in the project (if any). Called after a
     //! project is opened, so a saved project shows its waveform without re-importing.

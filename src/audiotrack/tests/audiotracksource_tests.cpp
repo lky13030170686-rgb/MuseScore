@@ -318,6 +318,162 @@ TEST(AudioTrackSourceTests, MetronomePeaksLandOnBeats)
     }
 }
 
+// ---- alignment offset ----------------------------------------------------
+//
+// The engine seeks this source by TRANSPORT position, so the source is what turns that into
+// a position in the file: file = transport - offset. These tests pin the mapping by
+// comparing against the raw file bytes, the same way the seek tests above do -- a wrong
+// mapping that merely sounds "about right" would still pass a looser check.
+
+TEST(AudioTrackSourceTests, StartOffsetDelaysWhereTheFileBegins)
+{
+    AudioTrackSource src;
+    ASSERT_TRUE(src.load(testFile(SWEEP)));
+    prepareForPlayback(src, 44100, 2);
+
+    // The audio begins 2 s into the score.
+    src.setStartOffsetSeconds(2.0);
+    src.seekTo(TimePosition::fromTime(secs_t(0.0), 44100));
+
+    std::vector<float> firstBlock(512 * 2, 12345.f);
+    src.process(firstBlock.data(), 512);
+    EXPECT_FLOAT_EQ(peak(firstBlock), 0.f)
+        << "the file must not be heard before its offset has been reached";
+
+    // Consume everything up to, but not including, the entry point.
+    const samples_t remaining = static_cast<samples_t>(2.0 * 44100) - 512;
+    std::vector<float> upToEntry(static_cast<size_t>(remaining) * 2, 0.f);
+    src.process(upToEntry.data(), remaining);
+    EXPECT_FLOAT_EQ(peak(upToEntry), 0.f) << "still silent right up to the offset";
+
+    // What follows must be the file's own beginning, sample for sample.
+    const int64_t n = 256;
+    std::vector<float> afterEntry(static_cast<size_t>(n) * 2, 0.f);
+    src.process(afterEntry.data(), n);
+
+    AudioFileReader direct;
+    ASSERT_TRUE(direct.open(testFile(SWEEP)));
+    ASSERT_TRUE(direct.seekToFrame(0));
+    std::vector<float> fromFile(static_cast<size_t>(n) * 2, 0.f);
+    ASSERT_EQ(direct.readFrames(fromFile.data(), n, 2), n);
+
+    for (int64_t i = 0; i < n * 2; ++i) {
+        EXPECT_NEAR(afterEntry[i], fromFile[i], 1e-6f)
+            << "sample " << i << ": the entry must be the file's first sample, not a "
+               "block-aligned approximation of it";
+    }
+}
+
+TEST(AudioTrackSourceTests, StartOffsetShiftsWhereTheFilePlaysFrom)
+{
+    // With the audio starting 2 s into the score, the transport at 5 s is hearing the file
+    // at 3 s.
+    const double offset = 2.0;
+    const double scorePos = 5.0;
+
+    AudioTrackSource src;
+    ASSERT_TRUE(src.load(testFile(SWEEP)));
+    prepareForPlayback(src, 44100, 2);
+    src.setStartOffsetSeconds(offset);
+    src.seekTo(TimePosition::fromTime(secs_t(scorePos), 44100));
+
+    const int64_t n = 256;
+    std::vector<float> fromSource(static_cast<size_t>(n) * 2, 0.f);
+    src.process(fromSource.data(), n);
+
+    AudioFileReader direct;
+    ASSERT_TRUE(direct.open(testFile(SWEEP)));
+    ASSERT_TRUE(direct.seekToFrame(static_cast<int64_t>((scorePos - offset) * 44100)));
+    std::vector<float> fromFile(static_cast<size_t>(n) * 2, 0.f);
+    ASSERT_EQ(direct.readFrames(fromFile.data(), n, 2), n);
+
+    for (int64_t i = 0; i < n * 2; ++i) {
+        EXPECT_NEAR(fromSource[i], fromFile[i], 1e-6f) << "sample " << i;
+    }
+}
+
+TEST(AudioTrackSourceTests, NegativeStartOffsetMeansTheFileIsAlreadyUnderway)
+{
+    // A file whose beginning belongs before the score does: at the score's start it is
+    // already 2 s in. This is the count-in case, and it is the sign that a plain "delay"
+    // cannot express.
+    AudioTrackSource src;
+    ASSERT_TRUE(src.load(testFile(SWEEP)));
+    prepareForPlayback(src, 44100, 2);
+    src.setStartOffsetSeconds(-2.0);
+    src.seekTo(TimePosition::fromTime(secs_t(0.0), 44100));
+
+    const int64_t n = 256;
+    std::vector<float> fromSource(static_cast<size_t>(n) * 2, 0.f);
+    src.process(fromSource.data(), n);
+
+    AudioFileReader direct;
+    ASSERT_TRUE(direct.open(testFile(SWEEP)));
+    ASSERT_TRUE(direct.seekToFrame(static_cast<int64_t>(2.0 * 44100)));
+    std::vector<float> fromFile(static_cast<size_t>(n) * 2, 0.f);
+    ASSERT_EQ(direct.readFrames(fromFile.data(), n, 2), n);
+
+    for (int64_t i = 0; i < n * 2; ++i) {
+        EXPECT_NEAR(fromSource[i], fromFile[i], 1e-6f) << "sample " << i;
+    }
+}
+
+TEST(AudioTrackSourceTests, ChangingTheOffsetRelaysTheAudioImmediately)
+{
+    // The offset is meant to be dialled in by ear while the music plays, so a change has to
+    // take effect at once rather than at the next seek.
+    AudioTrackSource src;
+    ASSERT_TRUE(src.load(testFile(SWEEP)));
+    prepareForPlayback(src, 44100, 2);
+
+    src.seekTo(TimePosition::fromTime(secs_t(4.0), 44100));
+    std::vector<float> block(512 * 2, 0.f);
+    src.process(block.data(), 512);
+
+    // Shift the audio one second later without seeking.
+    src.setStartOffsetSeconds(1.0);
+    std::vector<float> afterShift(512 * 2, 0.f);
+    src.process(afterShift.data(), 512);
+
+    // The transport has not moved on beyond the block just consumed, so this block must come
+    // from one second earlier in the file.
+    const double expectedFilePos = (4.0 + 512.0 / 44100.0) - 1.0;
+
+    AudioFileReader direct;
+    ASSERT_TRUE(direct.open(testFile(SWEEP)));
+    ASSERT_TRUE(direct.seekToFrame(static_cast<int64_t>(std::llround(expectedFilePos * 44100))));
+    std::vector<float> fromFile(512 * 2, 0.f);
+    ASSERT_EQ(direct.readFrames(fromFile.data(), 512, 2), 512);
+
+    for (int i = 0; i < 512 * 2; ++i) {
+        EXPECT_NEAR(afterShift[i], fromFile[i], 1e-6f) << "sample " << i;
+    }
+}
+
+TEST(AudioTrackSourceTests, OffsetDefaultsToZeroSoTheTrackStartsWithTheScore)
+{
+    AudioTrackSource src;
+    ASSERT_TRUE(src.load(testFile(SWEEP)));
+    prepareForPlayback(src, 44100, 2);
+
+    EXPECT_DOUBLE_EQ(src.startOffsetSeconds(), 0.0);
+
+    src.seekTo(TimePosition::fromTime(secs_t(3.0), 44100));
+    const int64_t n = 128;
+    std::vector<float> fromSource(static_cast<size_t>(n) * 2, 0.f);
+    src.process(fromSource.data(), n);
+
+    AudioFileReader direct;
+    ASSERT_TRUE(direct.open(testFile(SWEEP)));
+    ASSERT_TRUE(direct.seekToFrame(static_cast<int64_t>(3.0 * 44100)));
+    std::vector<float> fromFile(static_cast<size_t>(n) * 2, 0.f);
+    ASSERT_EQ(direct.readFrames(fromFile.data(), n, 2), n);
+
+    for (int64_t i = 0; i < n * 2; ++i) {
+        EXPECT_NEAR(fromSource[i], fromFile[i], 1e-6f) << "sample " << i;
+    }
+}
+
 TEST(AudioTrackSourceTests, LoadFailureIsReportedNotCrashed)
 {
     AudioTrackSource src;

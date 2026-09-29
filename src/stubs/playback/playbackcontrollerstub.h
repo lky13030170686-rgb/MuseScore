@@ -90,6 +90,7 @@ public:
 
     // Backing/reference audio track: unavailable without the playback module.
     muse::Ret importAudioTrack() override;
+    void shiftAudioTrackOffset(int tickDelta) override;
     const std::vector<muse::audio::TrackId>& audioTrackIds() const override;
     muse::async::Channel<muse::audio::TrackId> audioTrackAdded() const override;
     muse::async::Channel<muse::audio::TrackId> audioTrackRemoved() const override;

@@ -95,6 +95,7 @@ public:
 
     // Backing/reference audio track
     MOCK_METHOD(muse::Ret, importAudioTrack, (), (override));
+    MOCK_METHOD(void, shiftAudioTrackOffset, (int tickDelta), (override));
     MOCK_METHOD((const std::vector<muse::audio::TrackId>&), audioTrackIds, (), (const, override));
     MOCK_METHOD(muse::async::Channel<muse::audio::TrackId>, audioTrackAdded, (), (const, override));
     MOCK_METHOD(muse::async::Channel<muse::audio::TrackId>, audioTrackRemoved, (), (const, override));
