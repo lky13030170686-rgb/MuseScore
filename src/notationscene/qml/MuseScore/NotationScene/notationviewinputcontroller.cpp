@@ -689,7 +689,7 @@ bool NotationViewInputController::beginAudioLaneDrag(const PointF& logicPos, Sta
     // score-wide average matters because measures differ in width, and because the mapping
     // restarts at every system break.
     m_audioLaneDrag.unitsPerTick = measureWidth / static_cast<double>(measure->ticks().ticks());
-    m_audioLaneDrag.appliedTicks = 0;
+    m_audioLaneDrag.pendingTicks = 0;
 
     return true;
 }
@@ -703,21 +703,28 @@ void NotationViewInputController::updateAudioLaneDrag(const PointF& logicPos)
     // Measured from the press, not accumulated: a drag that wanders and returns lands exactly
     // where it started instead of leaving a residue of rounding.
     const double deltaUnits = logicPos.x() - m_audioLaneDrag.beginPos.x();
-    const int totalTicks = static_cast<int>(std::llround(deltaUnits / m_audioLaneDrag.unitsPerTick));
+    m_audioLaneDrag.pendingTicks
+        = static_cast<int>(std::llround(deltaUnits / m_audioLaneDrag.unitsPerTick));
 
-    const int delta = totalTicks - m_audioLaneDrag.appliedTicks;
-    if (delta == 0) {
-        return;
-    }
-
-    // Moving the pointer right must move the audio later, which is what shifting by a
-    // positive number of ticks means.
-    playbackController()->shiftAudioTrackOffset(delta);
-    m_audioLaneDrag.appliedTicks = totalTicks;
+    // Deliberately NOT applied here.
+    //
+    // Applying on every move writes the project settings and relays out the whole score at
+    // the pointer's rate -- around fifty times a second. The layout is the expensive part,
+    // and doing it that often is what the crash on the following playback came from. It also
+    // bought nothing: the picture was not being refreshed by it in the first place.
+    //
+    // So a drag only decides a value, and releasing commits it once. Restoring live feedback
+    // is a separate job, and it needs the repaint path fixed first -- otherwise every one of
+    // those relayouts is paid for and still shows nothing.
 }
 
 void NotationViewInputController::endAudioLaneDrag()
 {
+    // One commit per drag, however far the pointer travelled.
+    if (m_audioLaneDrag.active && m_audioLaneDrag.pendingTicks != 0) {
+        playbackController()->shiftAudioTrackOffset(m_audioLaneDrag.pendingTicks);
+    }
+
     m_audioLaneDrag = AudioLaneDrag {};
 }
 

@@ -195,9 +195,9 @@ private:
         //! landed on, because that is the only place where the local pixel-to-time scale is
         //! known -- it differs between measures and resets at every system break.
         double unitsPerTick = 0.0;
-        //! Ticks already handed to the playback layer for this drag, so each move can send
-        //! only the difference.
-        int appliedTicks = 0;
+        //! Ticks this drag has decided on so far. Committed on release, not on every move --
+        //! see updateAudioLaneDrag() for why that is not merely an optimisation.
+        int pendingTicks = 0;
     };
 
     //! Starts dragging the audio lane if the press landed on one. Returns true when the event
