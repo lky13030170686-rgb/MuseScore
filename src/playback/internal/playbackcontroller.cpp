@@ -1886,6 +1886,22 @@ void PlaybackController::onWaveformChanged()
         score->setLayoutAll();
         score->update();
 
+        // A re-layout rebuilds the System / Measure / Segment objects, and the rest of the app
+        // learns that "the score changed" from this channel alone. Things that cache those
+        // pointers -- PlaybackCursor caches a System and a Segment and only clears them here --
+        // otherwise keep using the old ones, which is a dangling pointer. That is what made
+        // playback crash a fraction of a second after the cursor appeared: moving the waveform
+        // re-laid the score out, and the first playback after it drew the cursor through the
+        // cached System. Announcing the change is what the layout was always supposed to be
+        // accompanied by; a range covering the whole score is the honest description of a full
+        // re-layout.
+        engraving::ScoreChanges changes;
+        changes.tickFrom = 0;
+        changes.tickTo = score->lastMeasure() ? score->lastMeasure()->endTick().ticks() : 0;
+        changes.staffIdxFrom = 0;
+        changes.staffIdxTo = score->nstaves() > 0 ? score->nstaves() - 1 : 0;
+        score->changesChannel().send(changes);
+
         // Re-laying out is not the same thing as showing. The notation view redraws when the
         // notation says something changed, and nothing on the score -> view path says it: the
         // score's own "data changed" callbacks reach no view here. Without this line the new
