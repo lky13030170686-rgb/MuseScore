@@ -202,6 +202,14 @@ using namespace mu::engraving::rendering::score;
 //! of the height hides exactly the detail that is being looked for.
 static constexpr double WAVEFORM_LANE_AMPLITUDE = 0.85;
 
+//! Vertical gain applied to the peaks when drawing them.
+//!
+//! Recorded music spends most of its time well below full scale, so a trace drawn at 1:1 is a
+//! flat line with the occasional bump -- there is nothing in it to line up by eye. Amplifying
+//! and clamping is what every audio editor does for the same reason; the peaks themselves are
+//! untouched, only the picture of them.
+static constexpr double WAVEFORM_DISPLAY_GAIN = 2.5;
+
 void TLayout::layoutItem(EngravingItem* item, LayoutContext& ctx)
 {
     //DO_ASSERT(!ctx.conf().isPaletteMode());
@@ -5509,20 +5517,46 @@ void TLayout::layoutWaveformLane(StaffLines* item, LayoutContext& ctx, double x1
     const double halfHeight = laneHeight * 0.5 * WAVEFORM_LANE_AMPLITUDE;
     const double centreY = top + laneHeight * 0.5;
 
-    ll.reserve(peaks.size());
+    // Drawn as an outline, not as one vertical bar per column.
+    //
+    // Bars are what the data naturally suggests -- a (min, max) pair per column -- but with one
+    // column per unit of width they sit shoulder to shoulder and the lane reads as a solid block:
+    // for real music the two envelopes are far apart on every column, so there is nothing left to
+    // see. Joining the peaks of neighbouring columns into an upper and a lower line gives the
+    // shape instead: the outline of the wave, which is what the eye needs to line audio up with
+    // the score. The peak data is unchanged; only what is drawn from it is.
+    ll.reserve(peaks.size() * 2);
+
+    double previousX = 0.0;
+    double previousMaxY = 0.0;
+    double previousMinY = 0.0;
+
     for (size_t i = 0; i < peaks.size(); ++i) {
         const double cx = x1 + static_cast<double>(i) + 0.5;
 
-        // Peaks are -1..1; map to the lane, louder = taller.
-        const double yMax = centreY - static_cast<double>(peaks[i].max) * halfHeight;
-        const double yMin = centreY - static_cast<double>(peaks[i].min) * halfHeight;
+        // Peaks are -1..1; map to the lane, louder = taller. The gain is what makes quiet
+        // passages visible; clamping keeps a loud one from spilling out of the lane.
+        const double maxValue = std::clamp(static_cast<double>(peaks[i].max) * WAVEFORM_DISPLAY_GAIN, -1.0, 1.0);
+        const double minValue = std::clamp(static_cast<double>(peaks[i].min) * WAVEFORM_DISPLAY_GAIN, -1.0, 1.0);
 
-        if (std::abs(yMin - yMax) < 0.5) {
-            // Silent slice: keep a hairline so the lane reads as continuous.
-            ll.emplace_back(PointF(cx, centreY - 0.25), PointF(cx, centreY + 0.25));
-        } else {
-            ll.emplace_back(PointF(cx, yMax), PointF(cx, yMin));
+        const double yMax = centreY - maxValue * halfHeight;
+        const double yMin = centreY - minValue * halfHeight;
+
+        if (i > 0) {
+            // Upper envelope, then lower: two continuous lines rather than a row of bars.
+            ll.emplace_back(PointF(previousX, previousMaxY), PointF(cx, yMax));
+            ll.emplace_back(PointF(previousX, previousMinY), PointF(cx, yMin));
         }
+
+        previousX = cx;
+        previousMaxY = yMax;
+        previousMinY = yMin;
+    }
+
+    // A silent lane still has to read as a lane: without this the outline of silence is a single
+    // zero-length segment and nothing is drawn at all.
+    if (peaks.size() == 1) {
+        ll.emplace_back(PointF(previousX, previousMaxY), PointF(previousX, previousMinY));
     }
 
     item->setLines(ll);

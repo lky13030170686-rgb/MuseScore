@@ -316,9 +316,10 @@ TEST_F(AudioTrackLayoutTests, LaneDrawsOneLinePerColumn)
 
     EXPECT_FALSE(lines.empty()) << "lane stayed empty even though the provider had peaks";
 
-    // One line per pixel column, matching what WaveformRenderer produces.
-    const size_t expected = static_cast<size_t>(std::max<int64_t>(1, static_cast<int64_t>(std::floor(width))));
-    EXPECT_EQ(lines.size(), expected);
+    // The lane is drawn as an outline: each column contributes a segment to the upper envelope
+    // and one to the lower, except the first column, which has nothing to join to.
+    const size_t columns = static_cast<size_t>(std::max<int64_t>(1, static_cast<int64_t>(std::floor(width))));
+    EXPECT_EQ(lines.size(), columns > 0 ? 2 * (columns - 1) : 0);
 
     delete score;
 }
@@ -331,7 +332,7 @@ TEST_F(AudioTrackLayoutTests, LinesFollowPeakAmplitudes)
     // catches a layout that ignores the peak values (constant height) and one that halves
     // or doubles them; the absolute centre of the lane is deliberately not used, because
     // nothing in the public API pins it down.
-    const auto lineLengthFor = [](float peakMax, float peakMin) {
+    const auto spanFor = [](float peakMax, float peakMin) {
         auto provider = std::make_shared<FakeWaveformProvider>();
         provider->setFixedPeaks(peakMax, peakMin);
         ScopedProvider scoped(provider);
@@ -344,28 +345,37 @@ TEST_F(AudioTrackLayoutTests, LinesFollowPeakAmplitudes)
         score->doLayout();
 
         StaffLines* lane = firstWaveformLane(score);
-        double length = -1.0;
+        double span = -1.0;
         if (lane && !lane->lines().empty()) {
-            const LineF& line = lane->lines().front();
-            length = std::abs(line.p2().y() - line.p1().y());
+            // The outline's vertical extent: how far the trace reaches either side of the lane's
+            // centre. Measured over the whole line list rather than one segment, because the
+            // lane is now drawn as an envelope -- each segment is a step between two columns.
+            double lowest = lane->lines().front().p1().y();
+            double highest = lowest;
+            for (const LineF& line : lane->lines()) {
+                lowest = std::min(lowest, std::min(line.p1().y(), line.p2().y()));
+                highest = std::max(highest, std::max(line.p1().y(), line.p2().y()));
+            }
+            span = highest - lowest;
         }
 
         delete score;
-        return length;
+        return span;
     };
 
-    // span = |max| + |min| drives the height, so 0.8/-0.2 (span 1.0) is twice 0.4/-0.1
-    // (span 0.5), and both must be strictly positive.
-    const double full = lineLengthFor(0.8f, -0.2f);
-    const double half = lineLengthFor(0.4f, -0.1f);
+    // A taller peak pair must draw a taller outline. Not the exact 2:1 the peaks suggest: the
+    // display gain amplifies and then clamps, so the loud pair is clamped and the ratio is
+    // compressed -- which is the point of the gain, and is why only the ordering is asserted.
+    const double full = spanFor(0.8f, -0.2f);
+    const double half = spanFor(0.4f, -0.1f);
 
     ASSERT_GT(full, 0.0) << "lane produced no line for the full-amplitude peaks";
     ASSERT_GT(half, 0.0) << "lane produced no line for the half-amplitude peaks";
-    EXPECT_NEAR(full / half, 2.0, 0.02) << "line height does not scale with peak amplitude";
+    EXPECT_GT(full, half) << "outline height does not follow the peak amplitude";
 
-    // Swapping max and min must not change the height (the line spans min..max either way),
+    // Swapping max and min must not change the height (the outline spans min..max either way),
     // but a negative-vs-positive mix-up would, so pin the sign handling with one more pair.
-    const double reversed = lineLengthFor(-0.2f, 0.8f);
+    const double reversed = spanFor(-0.2f, 0.8f);
     ASSERT_GT(reversed, 0.0);
     EXPECT_NEAR(reversed, full, 0.02) << "min/max order changed the drawn height";
 }
@@ -492,20 +502,22 @@ TEST_F(AudioTrackLayoutTests, RealAudioReachesTheLane)
     ASSERT_FALSE(lines.empty()) << "real audio produced no waveform lines";
 
     // The first measure spans 0..2 s of a 120 BPM 4/4 metronome: four beats, so four clicks.
-    // Beats in this fixture are not uniform (the downbeat is louder), so the tallest line in
-    // each beat window has to be separated from its neighbours by silent columns.
-    //
-    // Rather than guessing pixel positions, count how many lines are near-silent: with four
-    // clicks in two seconds there must be silent stretches between them.
-    size_t silent = 0;
+    // The outline is flat between clicks and rises and falls at each one, so both kinds of
+    // segment have to be present: all-flat would mean the clicks were lost, all-steep would mean
+    // the silence between them was.
+    size_t flat = 0;
+    size_t steep = 0;
     for (const LineF& line : lines) {
-        if (std::abs(line.p2().y() - line.p1().y()) < 1.0) {
-            ++silent;
+        const double rise = std::abs(line.p2().y() - line.p1().y());
+        if (rise < 0.5) {
+            ++flat;
+        } else {
+            ++steep;
         }
     }
 
-    EXPECT_GT(silent, 0u) << "a click track produced no silent columns";
-    EXPECT_GT(lines.size() - silent, 0u) << "no audible columns were drawn";
+    EXPECT_GT(flat, 0u) << "a click track produced no flat stretches between the clicks";
+    EXPECT_GT(steep, 0u) << "a click track produced no rise or fall at the clicks";
 
     delete score;
 }
@@ -590,15 +602,15 @@ TEST_F(AudioTrackLayoutTests, AddingTheAudioTrackInstrumentDrawsAWaveform)
         << "the waveform lane came out blank: peaks never reached a lane created by adding "
            "the instrument";
 
-    // A blank lane would also pass a bare "not empty" check, so confirm the columns really
-    // carry the peak heights rather than a fallback hairline.
-    size_t fullHeight = 0;
+    // A blank lane would also pass a bare "not empty" check, so confirm the outline really
+    // carries the peak heights rather than sitting flat.
+    double lowest = lane->lines().front().p1().y();
+    double highest = lowest;
     for (const LineF& line : lane->lines()) {
-        if (std::abs(line.p2().y() - line.p1().y()) > 1.0) {
-            ++fullHeight;
-        }
+        lowest = std::min(lowest, std::min(line.p1().y(), line.p2().y()));
+        highest = std::max(highest, std::max(line.p1().y(), line.p2().y()));
     }
-    EXPECT_GT(fullHeight, 0u) << "every column was drawn as a flat hairline";
+    EXPECT_GT(highest - lowest, 1.0) << "the outline came out flat: the peaks never reached it";
 
     delete score;
 }
