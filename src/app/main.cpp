@@ -21,7 +21,9 @@
  */
 
 #include <csignal>
+#include <cstdarg>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <typeinfo>
 
@@ -68,6 +70,69 @@
 //! executable, or from the directory named by MUSE_SYMBOL_PATH (the build tree keeps the .pdb
 //! next to the build output, not next to the installed binary).
 #ifdef Q_OS_WIN
+//! Crash lines also go to a file next to the executable.
+//!
+//! Why: a crash report is only useful if it survives the crash, and it does not always.
+//! Started from the desktop shortcut the process has no stderr at all, and the log can be cut
+//! off mid-write when the process dies. This uses plain kernel calls (no C++ streams, no
+//! allocation, no logging) so it is safe to call from a signal handler, and it appends, so
+//! several crashes accumulate in one place: <exe dir>\dsh-crash.txt, or %TEMP% when the install
+//! directory is not writable.
+static void appendCrashFile(const char* text)
+{
+    char path[MAX_PATH] = {};
+    if (!GetModuleFileNameA(nullptr, path, MAX_PATH)) {
+        return;
+    }
+
+    char file[MAX_PATH + 32] = {};
+    const char* lastSlash = strrchr(path, '\\');
+    if (lastSlash) {
+        const size_t dirLen = static_cast<size_t>(lastSlash - path) + 1;
+        if (dirLen + 16 < sizeof(file)) {
+            memcpy(file, path, dirLen);
+            strcpy(file + dirLen, "dsh-crash.txt");
+        }
+    }
+
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    if (file[0]) {
+        handle = CreateFileA(file, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    if (handle == INVALID_HANDLE_VALUE) {
+        char temp[MAX_PATH] = {};
+        if (GetTempPathA(MAX_PATH, temp)) {
+            strncat(temp, "dsh-crash.txt", sizeof(temp) - strlen(temp) - 1);
+            handle = CreateFileA(temp, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        }
+    }
+    if (handle == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    DWORD written = 0;
+    WriteFile(handle, text, static_cast<DWORD>(strlen(text)), &written, nullptr);
+    CloseHandle(handle);
+}
+
+//! printf-style helper for the crash path: formats into a stack buffer, writes it to the crash
+//! file and to stderr. No allocation, so it is safe inside a fault handler.
+static void crashLogFmt(const char* format, ...)
+{
+    char buffer[2048] = {};
+
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer) - 1, format, args);
+    va_end(args);
+
+    fputs(buffer, stderr);
+    fflush(stderr);
+    appendCrashFile(buffer);
+}
+
 //! DbgHelp, loaded on demand rather than linked, so this stays a local change in the app entry
 //! point and does not add a library to the build. Symbols come from the .pdb next to the
 //! executable, or from the directory named by MUSE_SYMBOL_PATH (the build tree keeps the .pdb
@@ -141,8 +206,7 @@ static void printFrame(int index, DWORD64 address)
 
     DWORD64 displacement = 0;
     if (!api.fromAddr(GetCurrentProcess(), address, &displacement, symbol)) {
-        fprintf(stderr, "  #%d 0x%llX (no symbol)\n", index, static_cast<unsigned long long>(address));
-        fflush(stderr);
+        crashLogFmt("  #%d 0x%llX (no symbol)\n", index, static_cast<unsigned long long>(address));
         return;
     }
 
@@ -150,13 +214,12 @@ static void printFrame(int index, DWORD64 address)
     line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
     DWORD lineDisplacement = 0;
     if (api.getLine(GetCurrentProcess(), address, &lineDisplacement, &line)) {
-        fprintf(stderr, "  #%d 0x%llX %s+0x%llX (%s:%lu)\n", index, static_cast<unsigned long long>(address),
-                symbol->Name, static_cast<unsigned long long>(displacement), line.FileName, line.LineNumber);
+        crashLogFmt("  #%d 0x%llX %s+0x%llX (%s:%lu)\n", index, static_cast<unsigned long long>(address),
+                    symbol->Name, static_cast<unsigned long long>(displacement), line.FileName, line.LineNumber);
     } else {
-        fprintf(stderr, "  #%d 0x%llX %s+0x%llX\n", index, static_cast<unsigned long long>(address),
-                symbol->Name, static_cast<unsigned long long>(displacement));
+        crashLogFmt("  #%d 0x%llX %s+0x%llX\n", index, static_cast<unsigned long long>(address),
+                    symbol->Name, static_cast<unsigned long long>(displacement));
     }
-    fflush(stderr);
 }
 
 //! Unwinds from the faulting context. CaptureStackBackTrace starts at the handler and loses the
@@ -204,23 +267,22 @@ static LONG WINAPI logFaultingException(EXCEPTION_POINTERS* info)
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    fprintf(stderr, "fault: code=0x%08lX at 0x%llX rip=0x%llX rsp=0x%llX thread=%lu\n", code,
-            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress)),
-            static_cast<unsigned long long>(info->ContextRecord->Rip),
-            static_cast<unsigned long long>(info->ContextRecord->Rsp),
-            GetCurrentThreadId());
+    crashLogFmt("fault: code=0x%08lX at 0x%llX rip=0x%llX rsp=0x%llX thread=%lu\n", code,
+                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress)),
+                static_cast<unsigned long long>(info->ContextRecord->Rip),
+                static_cast<unsigned long long>(info->ContextRecord->Rsp),
+                GetCurrentThreadId());
     if (code == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->NumberParameters >= 2) {
-        fprintf(stderr, "  %s of address 0x%llX\n",
-                info->ExceptionRecord->ExceptionInformation[0] ? "write" : "read",
-                static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[1]));
+        crashLogFmt("  %s of address 0x%llX\n",
+                    info->ExceptionRecord->ExceptionInformation[0] ? "write" : "read",
+                    static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[1]));
     }
 
     void* frames[48] = {};
     const USHORT frameCount = CaptureStackBackTrace(0, 48, frames, nullptr);
     for (USHORT i = 0; i < frameCount; ++i) {
-        fprintf(stderr, "  raw #%u 0x%llX\n", i, static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i])));
+        crashLogFmt("  raw #%u 0x%llX\n", i, static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i])));
     }
-    fflush(stderr);
 
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -235,6 +297,15 @@ static void logCrashStack()
     }
 }
 #else
+static void crashLogFmt(const char* format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    fflush(stderr);
+}
+
 static void logCrashStack()
 {
 }
@@ -255,6 +326,11 @@ static void crashCallback(int signum)
         break;
     }
     LOGE() << "Oops! Application crashed with signal: [" << signum << "] " << signame << "-" << sigdescript;
+#ifdef Q_OS_WIN
+    crashLogFmt("signal: [%d] %s - %s (thread %lu)\n", signum, signame, sigdescript, GetCurrentThreadId());
+#else
+    crashLogFmt("signal: [%d] %s - %s\n", signum, signame, sigdescript);
+#endif
     logCrashStack();
     exit(EXIT_FAILURE);
 }
@@ -266,28 +342,24 @@ static void crashCallback(int signum)
 //! place where that crash can explain itself.
 static void terminateCallback()
 {
-    // Straight to stderr as well as the log: this runs while the process is being torn down,
-    // and the log does not always survive that. stderr is captured when the app is driven from
-    // a script, which is how this kind of crash is investigated.
-    fprintf(stderr, "terminate: uncaught exception\n");
-    fflush(stderr);
+    // To the crash file and stderr as well as the log: this runs while the process is being torn
+    // down, and the log does not always survive that. The crash file is what makes a report from
+    // a normal (shortcut) launch usable -- there is no stderr in that case.
+    crashLogFmt("terminate: uncaught exception\n");
 
     if (std::current_exception()) {
         try {
             std::rethrow_exception(std::current_exception());
         } catch (const std::exception& e) {
-            fprintf(stderr, "  type: %s\n  what(): %s\n", typeid(e).name(), e.what());
-            fflush(stderr);
+            crashLogFmt("  type: %s\n  what(): %s\n", typeid(e).name(), e.what());
             LOGE() << "  type: " << typeid(e).name();
             LOGE() << "  what(): " << e.what();
         } catch (...) {
-            fprintf(stderr, "  type: not derived from std::exception\n");
-            fflush(stderr);
+            crashLogFmt("  type: not derived from std::exception\n");
             LOGE() << "  type: not derived from std::exception";
         }
     } else {
-        fprintf(stderr, "  no active exception\n");
-        fflush(stderr);
+        crashLogFmt("  no active exception\n");
         LOGE() << "  no active exception";
     }
 
