@@ -538,3 +538,80 @@ TEST(AudioTrackSourceTests, IsSilentUnlessTheTransportIsRunning)
     src.process(exporting.data(), 512);
     EXPECT_GT(peak(exporting), 0.05f) << "offline export must include the backing track";
 }
+
+//! The transport deliberately runs a few seconds past the last measure so that synth tails can
+//! ring out, and the playhead sits at the end for that whole tail. The backing track belongs to
+//! the score, so it has to stop with the cursor instead of playing on -- that is what "the
+//! cursor finished but the music is still going" was.
+TEST(AudioTrackSourceTests, StopsAtTheScoreEndInsteadOfOutlivingTheCursor)
+{
+    AudioTrackSource src;
+    ASSERT_TRUE(src.load(testFile(TONE)));      // a sustained 440Hz tone: audible everywhere
+    prepareForPlayback(src, 44100, 2);
+
+    EXPECT_DOUBLE_EQ(src.endSeconds(), 0.0) << "no end means play to the end of the file";
+
+    // Diagnostic: an end 10ms in must silence the very first block, which tells apart "the
+    // check is not running" from "the check runs but the boundary is wrong".
+    {
+        AudioTrackSource probe;
+        ASSERT_TRUE(probe.load(testFile(TONE)));
+        prepareForPlayback(probe, 44100, 2);
+        probe.setEndSeconds(0.01);
+        probe.setPositionSeconds(0.0);
+
+        std::vector<float> firstBlock(512 * 2, 0.f);
+        probe.process(firstBlock.data(), 512);
+
+        // The cut is per frame, so the first block is only silent from 10ms on; by the second
+        // block the whole thing is past the end.
+        std::vector<float> secondBlock(512 * 2, 12345.f);
+        probe.process(secondBlock.data(), 512);
+        EXPECT_FLOAT_EQ(peak(secondBlock), 0.f)
+            << "diagnostic: past a 10ms score end the second block must be silent";
+    }
+
+    // The score ends half a second in, with the transport starting at the top.
+    src.setEndSeconds(0.5);
+    src.setPositionSeconds(0.0);
+    EXPECT_DOUBLE_EQ(src.endSeconds(), 0.5) << "the end must reach the source";
+
+    constexpr int BLOCK = 512;
+    std::vector<float> buf(BLOCK * 2, 0.f);
+
+    // Before the end the track must still be heard: 40 blocks is 0.46 s.
+    float loudest = 0.f;
+    for (int i = 0; i < 40; ++i) {
+        std::fill(buf.begin(), buf.end(), 0.f);
+        src.process(buf.data(), BLOCK);
+        loudest = std::max(loudest, peak(buf));
+    }
+    EXPECT_GT(loudest, 0.05f) << "the track must stay audible up to the score end";
+
+    // Diagnostic: where does the source think it is after those blocks?
+    EXPECT_NEAR(src.positionSeconds(), 40.0 * BLOCK / 44100.0, 0.02)
+        << "position after 40 blocks (should be ~0.464s)";
+
+    // Past it, silence. The first few blocks still straddle the end (the cut is per frame), so
+    // they are consumed first and only then is the silence asserted.
+    for (int i = 0; i < 5; ++i) {
+        std::fill(buf.begin(), buf.end(), 0.f);
+        src.process(buf.data(), BLOCK);
+    }
+
+    float pastEnd = 0.f;
+    for (int i = 0; i < 15; ++i) {
+        std::fill(buf.begin(), buf.end(), 12345.f);
+        src.process(buf.data(), BLOCK);
+        pastEnd = std::max(pastEnd, peak(buf));
+    }
+    EXPECT_FLOAT_EQ(pastEnd, 0.f)
+        << "past the end of the score the backing track must be silent, not still playing";
+
+    // Clearing the end puts it back to playing to the end of the file.
+    src.setEndSeconds(0.0);
+    src.setPositionSeconds(0.0);
+    std::fill(buf.begin(), buf.end(), 0.f);
+    src.process(buf.data(), BLOCK);
+    EXPECT_GT(peak(buf), 0.05f) << "clearing the end must restore normal playback";
+}

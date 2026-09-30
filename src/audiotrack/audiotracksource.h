@@ -96,6 +96,17 @@ public:
     void setStartOffsetSeconds(double seconds);
     double startOffsetSeconds() const;
 
+    //! The score position, in seconds, at which the backing track stops being heard.
+    //!
+    //! The transport deliberately runs a few seconds past the last measure so that synth tails
+    //! can ring out, and the playhead sits at the end for the whole of that tail. Without this
+    //! the backing track carried on after the cursor had finished, which reads as the picture
+    //! and the sound being out of sync. The track belongs to the score, so it ends with it.
+    //!
+    //! 0 means no end (play to the end of the file). Thread-safe, effective immediately.
+    void setEndSeconds(double seconds);
+    double endSeconds() const;
+
     // ISeekableAudioSource
     void seekTo(const muse::audio::TimePosition& position) override;
     muse::audio::TimePosition position() const override;
@@ -177,6 +188,10 @@ private:
     //! Score time at which the file's own 0:00 sounds. Written on the engine thread by
     //! setStartOffsetSeconds(), read on the audio thread by process().
     std::atomic<double> m_startOffsetSeconds { 0.0 };
+
+    //! Score time at which the backing track stops being heard. Written on the engine thread,
+    //! read on the audio thread. 0 means "no end": play until the file runs out.
+    std::atomic<double> m_endSeconds { 0.0 };
 
     //! Whether the transport is running. Set on the engine thread by setMode(), read on the
     //! audio thread by process(). Starts false: a source that has just been created is not

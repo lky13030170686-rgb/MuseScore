@@ -196,6 +196,16 @@ double AudioTrackSource::startOffsetSeconds() const
     return m_startOffsetSeconds.load(std::memory_order_acquire);
 }
 
+void AudioTrackSource::setEndSeconds(double seconds)
+{
+    m_endSeconds.store(seconds, std::memory_order_release);
+}
+
+double AudioTrackSource::endSeconds() const
+{
+    return m_endSeconds.load(std::memory_order_acquire);
+}
+
 double AudioTrackSource::positionSeconds() const
 {
     std::lock_guard<std::mutex> lock(m_posMutex);
@@ -375,8 +385,21 @@ samples_t AudioTrackSource::process(float* buffer, samples_t samplesPerChannel)
     double readPos = m_readPos;
     int64_t startPos = m_cacheStartFrame;   // file frame the current cache starts at
 
+    // Score position of this block's first sample, and where the track stops being heard.
+    const double blockStartScoreSeconds = m_scoreSeconds;
+    const double outRate = static_cast<double>(m_outSampleRate);
+    const double endSeconds = m_endSeconds.load(std::memory_order_acquire);
+
     for (samples_t i = silentFrames; i < samplesPerChannel; ++i) {
         float* out = buffer + i * outCh;
+
+        // The backing track belongs to the score: past the last measure there is nothing left
+        // to line up with, and the cursor has already stopped. Checked per frame rather than per
+        // block, because a block-aligned cut would be audible as a click.
+        if (endSeconds > 0.0 && blockStartScoreSeconds + static_cast<double>(i) / outRate >= endSeconds) {
+            std::fill(out, out + outCh, 0.f);
+            continue;
+        }
 
         if (readPos >= static_cast<double>(fileFrames)) {
             std::fill(out, out + outCh, 0.f);   // past EOF: silence, not an error

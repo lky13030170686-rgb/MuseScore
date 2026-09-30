@@ -1674,11 +1674,29 @@ double PlaybackController::audioTrackOffsetSeconds() const
     return score->utick2utime(tickOffset);
 }
 
+double PlaybackController::scoreEndSeconds() const
+{
+    // The same timeline the total play time is built from, minus the tail that one adds: this is
+    // the score's own end, which is where the cursor stops.
+    const engraving::Score* score = m_notation ? m_notation->score() : nullptr;
+    if (!score) {
+        return 0.0;
+    }
+
+    const engraving::Measure* lastMeasure = score->lastMeasure();
+    if (!lastMeasure) {
+        return 0.0;
+    }
+
+    return score->utick2utime(lastMeasure->endTick().ticks());
+}
+
 void PlaybackController::applyAudioTrackOffset()
 {
     if (m_audioTrackIds.empty()) {
         return;
     }
+
 
     const double seconds = audioTrackOffsetSeconds();
 
@@ -1702,6 +1720,14 @@ void PlaybackController::applyAudioTrackOffset()
 
     source->setStartOffsetSeconds(seconds);
     LOGI() << "audiotrack: alignment offset set to " << seconds << " s";
+
+    // The track also has to stop where the score stops. The transport keeps running for a few
+    // seconds past the last measure so that synth tails can ring out, and the playhead sits at
+    // the end for the whole of that tail; without an end the backing track played on after the
+    // cursor had finished, which reads as the two being out of sync.
+    const double scoreEnd = scoreEndSeconds();
+    source->setEndSeconds(scoreEnd);
+    LOGI() << "audiotrack: audio track ends at score position " << scoreEnd << " s";
 
     // The picture has to move with the sound. The waveform provider works in file time and
     // is asked in score time, so it needs the same offset; then the lane is laid out again

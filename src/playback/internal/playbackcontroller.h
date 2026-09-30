@@ -270,6 +270,11 @@ private:
     //! Whether `part` is the audio waveform lane rather than a musical part.
     static bool isAudioTrackPart(const engraving::Part* part);
 
+    //! The score's own end, in seconds: where the playhead stops, without the tail the total
+    //! play time adds for synth releases. The backing track is cut here so that it ends with
+    //! the cursor rather than outliving it.
+    double scoreEndSeconds() const;
+
     //! Points the mixer channel that belongs to the audio lane's instrument at the engine track
     //! that actually plays the file, and applies that channel's stored settings to it.
     //!
