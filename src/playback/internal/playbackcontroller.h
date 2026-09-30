@@ -270,6 +270,15 @@ private:
     //! Whether `part` is the audio waveform lane rather than a musical part.
     static bool isAudioTrackPart(const engraving::Part* part);
 
+    //! Points the mixer channel that belongs to the audio lane's instrument at the engine track
+    //! that actually plays the file, and applies that channel's stored settings to it.
+    //!
+    //! The lane is added as an instrument, so the mixer already has a channel for it -- driving
+    //! the empty instrument track the playback setup built. The sound, however, comes from a
+    //! separate file track that the mixer knew nothing about: the channel showed no level, and
+    //! its volume, mute and solo went nowhere. This is what connects the two.
+    void registerAudioTrackWithMixer(const muse::audio::TrackId& fileTrackId);
+
     //! Removes the audio lane by part id. Used when the user adds the Audio track
     //! instrument but then cancels the file chooser, so no empty lane is left behind.
     void removeAudioTrackPart(const muse::ID& partId);

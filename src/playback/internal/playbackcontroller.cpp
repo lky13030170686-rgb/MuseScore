@@ -1567,6 +1567,12 @@ void PlaybackController::addAudioTrack(const muse::io::path_t& filePath, const A
         // ready already has somewhere to draw them.
         ensureAudioWaveformStaff();
 
+        // The lane is an instrument, so the mixer already has a channel for it -- but that
+        // channel drives the empty instrument track the playback setup built, not the file
+        // track that actually makes the sound. Until the two are connected the channel shows no
+        // level and its volume, mute and solo control silence.
+        registerAudioTrackWithMixer(trackId);
+
         // Remember the file in the project, so reopening the score restores this track.
         rememberAudioTrack(muse::io::path_t(path));
 
@@ -1813,6 +1819,48 @@ bool PlaybackController::isAudioTrackPart(const Part* part)
     }
 
     return false;
+}
+
+void PlaybackController::registerAudioTrackWithMixer(const audio::TrackId& fileTrackId)
+{
+    IF_ASSERT_FAILED(playback()) {
+        return;
+    }
+
+    const notation::INotationPartsPtr parts = masterNotationParts();
+    if (!parts) {
+        return;
+    }
+
+    // The lane is added as an instrument, so there is a part for it; one lane per score, so the
+    // first one is the one.
+    InstrumentTrackId instrumentTrackId;
+    for (const Part* part : parts->partList()) {
+        if (isAudioTrackPart(part)) {
+            instrumentTrackId = InstrumentTrackId { part->id(), part->instrument()->id() };
+            break;
+        }
+    }
+
+    if (!instrumentTrackId.isValid()) {
+        LOGW() << "audiotrack: no waveform lane found, the mixer cannot control this track";
+        return;
+    }
+
+    // insert_or_assign, not insert: playback setup has already registered this instrument
+    // against the instrument track it built for it, and that entry is the one to replace.
+    m_instrumentTrackIdMap.insert_or_assign(instrumentTrackId, fileTrackId);
+    LOGI() << "audiotrack: mixer channel of part " << instrumentTrackId.partId
+           << " now drives the file track " << fileTrackId;
+
+    // Apply what the project already stores for that channel, so a reopened project sounds the
+    // way it was left, and re-apply solo/mute, which walks the same map.
+    const AudioOutputParams outParams = trackOutputParams(instrumentTrackId);
+    playback()->setControlParams(fileTrackId, trackControlParams(instrumentTrackId, outParams));
+    playback()->setFxChainParams(fileTrackId, outParams.fxChain);
+    playback()->setAuxSendsParams(fileTrackId, outParams.auxSends);
+
+    updateSoloMuteStates();
 }
 
 void PlaybackController::onPartAdded(const Part* part)
