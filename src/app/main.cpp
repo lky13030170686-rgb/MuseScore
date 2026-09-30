@@ -20,11 +20,13 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <chrono>
 #include <csignal>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <thread>
 #include <typeinfo>
 
 #include <QApplication>
@@ -267,14 +269,33 @@ static LONG WINAPI logFaultingException(EXCEPTION_POINTERS* info)
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    // The same fault is reported again and again while it is being dispatched (and once more per
+    // handler that declines it), which is how a single crash grew a 470 KB report. Only the first
+    // report of a given fault on a given thread is written.
+    static volatile LONG lastCode = 0;
+    static volatile ULONG_PTR lastAddress = 0;
+    static volatile DWORD lastThread = 0;
+    const ULONG_PTR address = reinterpret_cast<ULONG_PTR>(info->ExceptionRecord->ExceptionAddress);
+    const DWORD thread = GetCurrentThreadId();
+    if (static_cast<DWORD>(lastCode) == code && lastAddress == address && lastThread == thread) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    lastCode = static_cast<LONG>(code);
+    lastAddress = address;
+    lastThread = thread;
+
     crashLogFmt("fault: code=0x%08lX at 0x%llX rip=0x%llX rsp=0x%llX thread=%lu\n", code,
                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress)),
                 static_cast<unsigned long long>(info->ContextRecord->Rip),
                 static_cast<unsigned long long>(info->ContextRecord->Rsp),
                 GetCurrentThreadId());
     if (code == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->NumberParameters >= 2) {
-        crashLogFmt("  %s of address 0x%llX\n",
-                    info->ExceptionRecord->ExceptionInformation[0] ? "write" : "read",
+        // ExceptionInformation[0]: 0 read, 1 write, 8 execute (DEP). The distinction matters:
+        // "execute of address 0" is a call through a null function pointer, which looks nothing
+        // like a stray write but is reported by the same exception code.
+        const ULONG_PTR operation = info->ExceptionRecord->ExceptionInformation[0];
+        const char* operationName = operation == 0 ? "read" : (operation == 8 ? "execute" : "write");
+        crashLogFmt("  %s of address 0x%llX\n", operationName,
                     static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[1]));
     }
 
@@ -284,7 +305,102 @@ static LONG WINAPI logFaultingException(EXCEPTION_POINTERS* info)
         crashLogFmt("  raw #%u 0x%llX\n", i, static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i])));
     }
 
+    // CaptureStackBackTrace starts at this handler and loses the frames that matter (the SEH
+    // dispatcher sits between), which is exactly how a crash report ends up naming only
+    // _C_specific_handler and KiUserExceptionDispatcher. Walking the raw stack for words that
+    // point into executable memory recovers the call chain -- no symbol lookup here, that is
+    // done afterwards off the crash path, because loading symbols on a faulting thread breaks
+    // the app.
+    const uintptr_t* stackWords = reinterpret_cast<const uintptr_t*>(info->ContextRecord->Rsp);
+    int found = 0;
+    for (int i = 0; i < 256 && found < 48; ++i) {
+        const uintptr_t value = stackWords[i];
+        if (value < 0x10000) {
+            continue;
+        }
+
+        MEMORY_BASIC_INFORMATION region = {};
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(value), &region, sizeof(region)) != sizeof(region)) {
+            continue;
+        }
+        if (region.State != MEM_COMMIT) {
+            continue;
+        }
+
+        const DWORD protection = region.Protect & 0xFF;
+        if (protection != PAGE_EXECUTE && protection != PAGE_EXECUTE_READ
+            && protection != PAGE_EXECUTE_READWRITE && protection != PAGE_EXECUTE_WRITECOPY) {
+            continue;
+        }
+
+        // Module name plus offset into it, rather than a bare address: the offset is the same in
+        // every run of one build, so it can be symbolized afterwards with that build's .pdb even
+        // though the address cannot (ASLR moves the module).
+        HMODULE moduleBase = reinterpret_cast<HMODULE>(region.AllocationBase);
+        char modulePath[MAX_PATH] = {};
+        if (GetModuleFileNameA(moduleBase, modulePath, MAX_PATH)) {
+            const char* name = strrchr(modulePath, '\\');
+            name = name ? name + 1 : modulePath;
+            crashLogFmt("  code #%d %s+0x%llX\n", i, name,
+                        static_cast<unsigned long long>(value - reinterpret_cast<uintptr_t>(moduleBase)));
+        } else {
+            crashLogFmt("  code #%d 0x%llX\n", i, static_cast<unsigned long long>(value));
+        }
+        ++found;
+    }
+
     return EXCEPTION_CONTINUE_SEARCH;
+}
+
+//! Writes a minidump of this process.
+//!
+//! Windows only writes one for an unhandled exception, and these crash paths end in exit(), so
+//! the crashes that matter produced no dump at all -- which is exactly why the report for the
+//! null-call crash could only say "signal 11". MiniDumpNormal keeps the stacks, which is all
+//! that is needed to symbolize the call chain with the matching .pdb afterwards.
+//!
+//! Called only when the process is already dying, so the usual objection to dumping from a
+//! handler (it suspends every thread and reads their memory) costs nothing here.
+static void writeCrashDump()
+{
+    HMODULE module = LoadLibraryA("dbghelp.dll");
+    if (!module) {
+        return;
+    }
+
+    using MiniDumpWriteDumpFn = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
+                                              PMINIDUMP_EXCEPTION_INFORMATION,
+                                              PMINIDUMP_USER_STREAM_INFORMATION,
+                                              PMINIDUMP_CALLBACK_INFORMATION);
+    auto writeDump = reinterpret_cast<MiniDumpWriteDumpFn>(GetProcAddress(module, "MiniDumpWriteDump"));
+    if (!writeDump) {
+        return;
+    }
+
+    char path[MAX_PATH] = {};
+    if (!GetModuleFileNameA(nullptr, path, MAX_PATH)) {
+        return;
+    }
+    char* lastSlash = strrchr(path, '\\');
+    if (lastSlash) {
+        *(lastSlash + 1) = '\0';
+    } else {
+        path[0] = '\0';
+    }
+
+    char file[MAX_PATH + 64] = {};
+    _snprintf_s(file, sizeof(file), _TRUNCATE, "%sdsh-crash-%lu.dmp", path, GetCurrentProcessId());
+
+    HANDLE handle = CreateFileA(file, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        crashLogFmt("dump: could not create %s\n", file);
+        return;
+    }
+
+    const BOOL ok = writeDump(GetCurrentProcess(), GetCurrentProcessId(), handle, MiniDumpNormal,
+                              nullptr, nullptr, nullptr);
+    CloseHandle(handle);
+    crashLogFmt("dump: %s (%s)\n", file, ok ? "written" : "failed");
 }
 
 //! Prints a symbolized stack for the faulting thread.
@@ -297,6 +413,10 @@ static void logCrashStack()
     }
 }
 #else
+static void writeCrashDump()
+{
+}
+
 static void crashLogFmt(const char* format, ...)
 {
     va_list args;
@@ -332,6 +452,7 @@ static void crashCallback(int signum)
     crashLogFmt("signal: [%d] %s - %s\n", signum, signame, sigdescript);
 #endif
     logCrashStack();
+    writeCrashDump();
     exit(EXIT_FAILURE);
 }
 
@@ -364,6 +485,7 @@ static void terminateCallback()
     }
 
     logCrashStack();
+    writeCrashDump();
     abort();
 }
 
@@ -389,6 +511,20 @@ int main(int argc, char** argv)
     AddVectoredExceptionHandler(1 /*first*/, logFaultingException);
 #endif
 #endif
+
+    // Self-test for the crash reporting itself: with DSH_CRASH_SELFTEST=1 the app faults on
+    // purpose a few seconds in, so that "does a crash actually leave a usable report" can be
+    // answered without waiting for a real crash to happen. Nothing runs unless the variable is
+    // set, and the point of it is that a crash report which silently fails to appear is worse
+    // than no report at all.
+    if (std::getenv("DSH_CRASH_SELFTEST")) {
+        std::thread([] {
+            std::this_thread::sleep_for(std::chrono::seconds(8));
+            fprintf(stderr, "selftest: raising SIGSEGV on purpose\n");
+            fflush(stderr);
+            raise(SIGSEGV);
+        }).detach();
+    }
 
     // ====================================================
     // Setup global Qt application variables
