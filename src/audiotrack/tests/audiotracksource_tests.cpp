@@ -615,3 +615,42 @@ TEST(AudioTrackSourceTests, StopsAtTheScoreEndInsteadOfOutlivingTheCursor)
     src.process(buf.data(), BLOCK);
     EXPECT_GT(peak(buf), 0.05f) << "clearing the end must restore normal playback";
 }
+
+//! The score can change length while the track is loaded -- measures added or removed, tempo
+//! changed, repeats toggled -- so the end has to be movable rather than fixed when the track is
+//! loaded. A stale end silences the backing track early, which is what "the track must follow the
+//! full score at all times" is about.
+TEST(AudioTrackSourceTests, TheEndFollowsTheScoreWhenItGetsLonger)
+{
+    AudioTrackSource src;
+    ASSERT_TRUE(src.load(testFile(TONE)));
+    prepareForPlayback(src, 44100, 2);
+
+    constexpr int BLOCK = 512;
+    std::vector<float> buf(BLOCK * 2, 0.f);
+
+    // The score ends 0.2s in. Run well past it (30 blocks is ~0.35s) and confirm silence.
+    src.setEndSeconds(0.2);
+    src.setPositionSeconds(0.0);
+    for (int i = 0; i < 30; ++i) {
+        std::fill(buf.begin(), buf.end(), 0.f);
+        src.process(buf.data(), BLOCK);
+    }
+
+    std::fill(buf.begin(), buf.end(), 12345.f);
+    src.process(buf.data(), BLOCK);
+    EXPECT_FLOAT_EQ(peak(buf), 0.f) << "past a 0.2s score end the track must be silent";
+
+    // The score grows to 0.6s. At ~0.36s the track must be heard again -- without the update it
+    // would stay silent for the rest of the file.
+    src.setEndSeconds(0.6);
+    std::fill(buf.begin(), buf.end(), 0.f);
+    src.process(buf.data(), BLOCK);
+    EXPECT_GT(peak(buf), 0.05f) << "after the score grows the track must play again";
+
+    // And shrinking the score silences it again, at the new end.
+    src.setEndSeconds(0.3);
+    std::fill(buf.begin(), buf.end(), 12345.f);
+    src.process(buf.data(), BLOCK);
+    EXPECT_FLOAT_EQ(peak(buf), 0.f) << "after the score shrinks the track must stop at the new end";
+}

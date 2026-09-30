@@ -271,9 +271,14 @@ private:
     static bool isAudioTrackPart(const engraving::Part* part);
 
     //! The score's own end, in seconds: where the playhead stops, without the tail the total
-    //! play time adds for synth releases. The backing track is cut here so that it ends with
-    //! the cursor rather than outliving it.
+    //! play time adds for synth releases. Read from the MASTER score, because the backing track
+    //! follows the full score rather than whichever part happens to be on screen.
     double scoreEndSeconds() const;
+
+    //! Pushes the score's end onto the loaded audio source, so the backing track stops with the
+    //! cursor. Called whenever the score's length may have changed -- adding or removing measures
+    //! moves it, and a stale end would silence the track early (or late).
+    void applyAudioTrackEnd();
 
     //! Points the mixer channel that belongs to the audio lane's instrument at the engine track
     //! that actually plays the file, and applies that channel's stored settings to it.

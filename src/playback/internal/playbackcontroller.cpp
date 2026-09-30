@@ -1676,9 +1676,10 @@ double PlaybackController::audioTrackOffsetSeconds() const
 
 double PlaybackController::scoreEndSeconds() const
 {
-    // The same timeline the total play time is built from, minus the tail that one adds: this is
-    // the score's own end, which is where the cursor stops.
-    const engraving::Score* score = m_notation ? m_notation->score() : nullptr;
+    // The MASTER score, not the one on screen: the backing track belongs to the score as a whole,
+    // and a part's measures can diverge from it. The user asked for the track to follow the full
+    // score at all times, so that is what this reads.
+    const engraving::Score* score = m_masterNotation ? m_masterNotation->masterScore() : nullptr;
     if (!score) {
         return 0.0;
     }
@@ -1688,7 +1689,38 @@ double PlaybackController::scoreEndSeconds() const
         return 0.0;
     }
 
+    // The same timeline the total play time is built from, without the tail that one adds: this
+    // is the score's own end, which is where the cursor stops.
     return score->utick2utime(lastMeasure->endTick().ticks());
+}
+
+void PlaybackController::applyAudioTrackEnd()
+{
+    if (m_audioTrackIds.empty()) {
+        return;
+    }
+
+    std::shared_ptr<muse::audiotrack::AudioFileSourceProvider> provider
+        = std::dynamic_pointer_cast<muse::audiotrack::AudioFileSourceProvider>(audioFileSourceProvider());
+    if (!provider) {
+        return;
+    }
+
+    muse::audiotrack::AudioTrackSourcePtr source = provider->lastCreatedSource();
+    if (!source) {
+        return;
+    }
+
+    // Re-read on every call rather than caching: measures get added and removed, tempo changes,
+    // repeats get toggled, and the track has to end where the score now ends. Cheap enough to do
+    // whenever anything might have moved it -- a double and an atomic store.
+    const double scoreEnd = scoreEndSeconds();
+    if (source->endSeconds() == scoreEnd) {
+        return;
+    }
+
+    source->setEndSeconds(scoreEnd);
+    LOGI() << "audiotrack: audio track now ends at score position " << scoreEnd << " s";
 }
 
 void PlaybackController::applyAudioTrackOffset()
@@ -1696,7 +1728,6 @@ void PlaybackController::applyAudioTrackOffset()
     if (m_audioTrackIds.empty()) {
         return;
     }
-
 
     const double seconds = audioTrackOffsetSeconds();
 
@@ -1725,9 +1756,7 @@ void PlaybackController::applyAudioTrackOffset()
     // seconds past the last measure so that synth tails can ring out, and the playhead sits at
     // the end for the whole of that tail; without an end the backing track played on after the
     // cursor had finished, which reads as the two being out of sync.
-    const double scoreEnd = scoreEndSeconds();
-    source->setEndSeconds(scoreEnd);
-    LOGI() << "audiotrack: audio track ends at score position " << scoreEnd << " s";
+    applyAudioTrackEnd();
 
     // The picture has to move with the sound. The waveform provider works in file time and
     // is asked in score time, so it needs the same offset; then the lane is laid out again
@@ -2173,6 +2202,12 @@ void PlaybackController::setupPlayer()
     notationPlayback()->totalPlayTimeChanged().onReceive(this, [this](const audio::secs_t totalPlaybackTime) {
         currentPlayer()->setDuration(totalPlaybackTime);
         m_totalPlayTimeChanged.notify();
+
+        // The score changed length (measures added or removed, tempo, repeats toggled), so the
+        // place the backing track ends has moved with it. This is the signal that fires for all
+        // of those, and the track has to follow the full score at all times -- otherwise adding
+        // a measure silences the backing track at the old end.
+        applyAudioTrackEnd();
     });
 }
 
