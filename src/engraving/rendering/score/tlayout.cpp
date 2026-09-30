@@ -196,9 +196,11 @@ using namespace mu::engraving::rendering::score;
 
 #define LAYOUT_CALL_ITEM(item) LAYOUT_CALL() << LAYOUT_ITEM_INFO(item);
 
-//! Audio-track waveform lane: fraction of the lane's half-height the trace may use, so
-//! the waveform does not touch the lane edges.
-static constexpr double WAVEFORM_LANE_AMPLITUDE = 0.42;
+//! Audio-track waveform lane: fraction of the lane's half-height the trace may use. Kept just
+//! short of the lane edges so the waveform does not touch them, but as large as that allows --
+//! the lane is read by eye to line audio up with the score, and a trace that only uses a third
+//! of the height hides exactly the detail that is being looked for.
+static constexpr double WAVEFORM_LANE_AMPLITUDE = 0.85;
 
 void TLayout::layoutItem(EngravingItem* item, LayoutContext& ctx)
 {

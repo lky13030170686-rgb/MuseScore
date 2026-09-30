@@ -3029,7 +3029,14 @@ void TDraw::draw(const StaffLines* item, Painter* painter, const PaintOptions& o
 
     setMask(item, painter);
 
-    painter->setPen(Pen(item->curColor(opt), item->lw(), PenStyle::SolidLine, PenCapStyle::FlatCap));
+    // The waveform lane is one line per unit of width, so the staff-line pen (a tenth of a unit
+    // or so) draws it as a comb you have to squint at. A thicker pen is what turns the same data
+    // into a shape that can be read -- which is the entire point of the lane when lining audio up
+    // with the score by eye. Staff lines keep the thin pen they have always had.
+    const bool isWaveformLane = item->staff() && item->measure()
+                                && item->staff()->isWaveformStaff(item->measure()->tick());
+    const double penWidth = isWaveformLane ? 0.6 * item->spatium() : item->lw();
+    painter->setPen(Pen(item->curColor(opt), penWidth, PenStyle::SolidLine, PenCapStyle::FlatCap));
 
     // The audio waveform lane can be dragged to line the backing track up with the score.
     // While that drag is in progress the picture follows the pointer by drawing the lane
