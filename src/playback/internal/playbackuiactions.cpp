@@ -111,6 +111,23 @@ const UiActionList PlaybackUiActions::s_mainActions = {
              TranslatableString("action", "Import audio"),
              TranslatableString("action", "Add an audio file as a backing track that plays along with the score"),
              IconCode::Code::NONE
+             ),
+    //! The two offset commands were registered as commands only, so they never showed up in the
+    //! shortcut editor and could not be bound at all. They are here so "line the backing track
+    //! up by ear" can actually be done from the keyboard, one beat at a time.
+    UiAction("audio-track-earlier",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_OPENED,
+             TranslatableString("action", "Audio track: move earlier"),
+             TranslatableString("action", "Start the backing track one beat earlier, to line it up with the score"),
+             IconCode::Code::NONE
+             ),
+    UiAction("audio-track-later",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_OPENED,
+             TranslatableString("action", "Audio track: move later"),
+             TranslatableString("action", "Start the backing track one beat later, to line it up with the score"),
+             IconCode::Code::NONE
              )
 };
 

@@ -112,6 +112,8 @@ void PlaybackCommandsController::init()
             { "countin", COUNTIN_TOGGLE_COMMAND, {} },
             { "reload-playback-cache", RELOAD_PLAYBACK_CACHE_COMMAND, {} },
             { "import-audio", IMPORT_AUDIO_COMMAND, {} },
+            { "audio-track-earlier", AUDIO_TRACK_EARLIER_COMMAND, {} },
+            { "audio-track-later", AUDIO_TRACK_LATER_COMMAND, {} },
             { "clear-online-sounds-cache", CLEAR_ONLINESOUNDS_CACHE_COMMAND, {} },
             { "toggle-mixer-section", TOGGLE_MIXER_SECTION_COMMAND, mixerSectionToggle },
             { "toggle-aux-send", TOGGLE_AUX_SEND_COMMAND, make_conv({ { "auxsend-index", param<int> } }) },

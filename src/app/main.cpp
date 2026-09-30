@@ -21,6 +21,9 @@
  */
 
 #include <csignal>
+#include <cstdlib>
+#include <exception>
+#include <typeinfo>
 
 #include <QApplication>
 #include <QStyleHints>
@@ -36,6 +39,14 @@
 
 #include "log.h"
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#endif
+
 // C++20 check
 // #include <concepts>
 // #include <type_traits>
@@ -44,6 +55,191 @@
 // ========================
 
 #ifndef MUSE_MODULE_DIAGNOSTICS_CRASHPAD_CLIENT
+
+//! Prints a symbolized stack for the faulting thread.
+//!
+//! Why this exists: a bare "signal: [11]" tells you that something went wrong and nothing about
+//! where. On Windows the minidumps land in %LOCALAPPDATA%\CrashDumps, but reading them needs a
+//! debugger, which a development machine does not necessarily have. CaptureStackBackTrace plus
+//! DbgHelp gets the same information into the log the crash is already reported in.
+//!
+//! DbgHelp is loaded dynamically rather than linked, so this stays a local change in the app
+//! entry point and does not add a library to the build. Symbols come from the .pdb next to the
+//! executable, or from the directory named by MUSE_SYMBOL_PATH (the build tree keeps the .pdb
+//! next to the build output, not next to the installed binary).
+#ifdef Q_OS_WIN
+//! DbgHelp, loaded on demand rather than linked, so this stays a local change in the app entry
+//! point and does not add a library to the build. Symbols come from the .pdb next to the
+//! executable, or from the directory named by MUSE_SYMBOL_PATH (the build tree keeps the .pdb
+//! next to the build output, not next to the installed binary).
+struct DbgHelpApi
+{
+    decltype(&SymSetOptions) setOptions = nullptr;
+    decltype(&SymInitialize) initialize = nullptr;
+    decltype(&SymFromAddr) fromAddr = nullptr;
+    decltype(&SymGetLineFromAddr64) getLine = nullptr;
+    decltype(&StackWalk64) stackWalk = nullptr;
+    decltype(&SymFunctionTableAccess64) functionTableAccess = nullptr;
+    decltype(&SymGetModuleBase64) getModuleBase = nullptr;
+
+    bool valid() const
+    {
+        return setOptions && initialize && fromAddr && getLine && stackWalk && functionTableAccess && getModuleBase;
+    }
+};
+
+static DbgHelpApi& dbghelpApi()
+{
+    static DbgHelpApi api = [] {
+        DbgHelpApi a;
+        HMODULE module = LoadLibraryA("dbghelp.dll");
+        if (!module) {
+            return a;
+        }
+
+        a.setOptions = reinterpret_cast<decltype(a.setOptions)>(GetProcAddress(module, "SymSetOptions"));
+        a.initialize = reinterpret_cast<decltype(a.initialize)>(GetProcAddress(module, "SymInitialize"));
+        a.fromAddr = reinterpret_cast<decltype(a.fromAddr)>(GetProcAddress(module, "SymFromAddr"));
+        a.getLine = reinterpret_cast<decltype(a.getLine)>(GetProcAddress(module, "SymGetLineFromAddr64"));
+        a.stackWalk = reinterpret_cast<decltype(a.stackWalk)>(GetProcAddress(module, "StackWalk64"));
+        a.functionTableAccess = reinterpret_cast<decltype(a.functionTableAccess)>(GetProcAddress(module, "SymFunctionTableAccess64"));
+        a.getModuleBase = reinterpret_cast<decltype(a.getModuleBase)>(GetProcAddress(module, "SymGetModuleBase64"));
+        if (!a.valid()) {
+            return DbgHelpApi();
+        }
+
+        char exePath[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+        std::string searchPath(exePath);
+        const size_t slash = searchPath.find_last_of("\\/");
+        searchPath = slash == std::string::npos ? std::string(".") : searchPath.substr(0, slash);
+        if (const char* extra = std::getenv("MUSE_SYMBOL_PATH")) {
+            searchPath += ";";
+            searchPath += extra;
+        }
+
+        a.setOptions(SYMOPT_UNDNAME | SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS);
+        a.initialize(GetCurrentProcess(), searchPath.c_str(), TRUE);
+        return a;
+    }();
+
+    return api;
+}
+
+static void printFrame(int index, DWORD64 address)
+{
+    DbgHelpApi& api = dbghelpApi();
+    if (!api.valid()) {
+        fprintf(stderr, "  #%d 0x%llX\n", index, static_cast<unsigned long long>(address));
+        return;
+    }
+
+    char symbolBuffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(char)] = {};
+    SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBuffer);
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    symbol->MaxNameLen = MAX_SYM_NAME;
+
+    DWORD64 displacement = 0;
+    if (!api.fromAddr(GetCurrentProcess(), address, &displacement, symbol)) {
+        fprintf(stderr, "  #%d 0x%llX (no symbol)\n", index, static_cast<unsigned long long>(address));
+        fflush(stderr);
+        return;
+    }
+
+    IMAGEHLP_LINE64 line = {};
+    line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+    DWORD lineDisplacement = 0;
+    if (api.getLine(GetCurrentProcess(), address, &lineDisplacement, &line)) {
+        fprintf(stderr, "  #%d 0x%llX %s+0x%llX (%s:%lu)\n", index, static_cast<unsigned long long>(address),
+                symbol->Name, static_cast<unsigned long long>(displacement), line.FileName, line.LineNumber);
+    } else {
+        fprintf(stderr, "  #%d 0x%llX %s+0x%llX\n", index, static_cast<unsigned long long>(address),
+                symbol->Name, static_cast<unsigned long long>(displacement));
+    }
+    fflush(stderr);
+}
+
+//! Unwinds from the faulting context. CaptureStackBackTrace starts at the handler and loses the
+//! frames that matter (the SEH dispatcher sits between), so a crash that has a real caller gets
+//! its stack walked from the context the exception arrived with.
+static void logStackFromContext(CONTEXT* context)
+{
+    DbgHelpApi& api = dbghelpApi();
+    if (!api.valid()) {
+        return;
+    }
+
+    STACKFRAME64 frame = {};
+    frame.AddrPC.Offset = context->Rip;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = context->Rbp;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = context->Rsp;
+    frame.AddrStack.Mode = AddrModeFlat;
+
+    for (int i = 0; i < 64; ++i) {
+        if (!api.stackWalk(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), GetCurrentThread(), &frame, context,
+                           nullptr, api.functionTableAccess, api.getModuleBase, nullptr)) {
+            break;
+        }
+        if (frame.AddrPC.Offset == 0) {
+            break;
+        }
+        printFrame(i, frame.AddrPC.Offset);
+    }
+}
+
+//! Logs the fault itself: the signal handler cannot say where the access violation happened,
+//! this can. The exception keeps going afterwards, so the existing crash path is unchanged.
+//!
+//! Deliberately does no symbol lookup: this runs inside a fault on whatever thread faulted --
+//! including realtime audio threads -- and loading a symbol file there (SymInitialize with
+//! invadeProcess suspends every thread) is heavy enough to break the app. Addresses are logged
+//! raw and symbolized afterwards, off the crash path.
+static LONG WINAPI logFaultingException(EXCEPTION_POINTERS* info)
+{
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION
+        && code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != EXCEPTION_STACK_OVERFLOW) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    fprintf(stderr, "fault: code=0x%08lX at 0x%llX rip=0x%llX rsp=0x%llX thread=%lu\n", code,
+            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress)),
+            static_cast<unsigned long long>(info->ContextRecord->Rip),
+            static_cast<unsigned long long>(info->ContextRecord->Rsp),
+            GetCurrentThreadId());
+    if (code == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->NumberParameters >= 2) {
+        fprintf(stderr, "  %s of address 0x%llX\n",
+                info->ExceptionRecord->ExceptionInformation[0] ? "write" : "read",
+                static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[1]));
+    }
+
+    void* frames[48] = {};
+    const USHORT frameCount = CaptureStackBackTrace(0, 48, frames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        fprintf(stderr, "  raw #%u 0x%llX\n", i, static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i])));
+    }
+    fflush(stderr);
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+//! Prints a symbolized stack for the faulting thread.
+static void logCrashStack()
+{
+    void* frames[64] = {};
+    const USHORT frameCount = CaptureStackBackTrace(0, 64, frames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        printFrame(i, reinterpret_cast<DWORD64>(frames[i]));
+    }
+}
+#else
+static void logCrashStack()
+{
+}
+#endif
+
 static void crashCallback(int signum)
 {
     const char* signame = "UNKNOWN SIGNAME";
@@ -59,7 +255,44 @@ static void crashCallback(int signum)
         break;
     }
     LOGE() << "Oops! Application crashed with signal: [" << signum << "] " << signame << "-" << sigdescript;
+    logCrashStack();
     exit(EXIT_FAILURE);
+}
+
+//! An exception that nothing catches ends in std::terminate, and on Windows that leaves a
+//! minidump whose exception code (0xC0000409, fast-fail 7) says "the app called abort" and
+//! nothing about why. The type and message of the exception are still available here, and the
+//! stack is still the one that threw -- terminate runs before unwinding -- so this is the one
+//! place where that crash can explain itself.
+static void terminateCallback()
+{
+    // Straight to stderr as well as the log: this runs while the process is being torn down,
+    // and the log does not always survive that. stderr is captured when the app is driven from
+    // a script, which is how this kind of crash is investigated.
+    fprintf(stderr, "terminate: uncaught exception\n");
+    fflush(stderr);
+
+    if (std::current_exception()) {
+        try {
+            std::rethrow_exception(std::current_exception());
+        } catch (const std::exception& e) {
+            fprintf(stderr, "  type: %s\n  what(): %s\n", typeid(e).name(), e.what());
+            fflush(stderr);
+            LOGE() << "  type: " << typeid(e).name();
+            LOGE() << "  what(): " << e.what();
+        } catch (...) {
+            fprintf(stderr, "  type: not derived from std::exception\n");
+            fflush(stderr);
+            LOGE() << "  type: not derived from std::exception";
+        }
+    } else {
+        fprintf(stderr, "  no active exception\n");
+        fflush(stderr);
+        LOGE() << "  no active exception";
+    }
+
+    logCrashStack();
+    abort();
 }
 
 #endif
@@ -79,6 +312,10 @@ int main(int argc, char** argv)
     signal(SIGSEGV, crashCallback);
     signal(SIGILL, crashCallback);
     signal(SIGFPE, crashCallback);
+    std::set_terminate(terminateCallback);
+#ifdef Q_OS_WIN
+    AddVectoredExceptionHandler(1 /*first*/, logFaultingException);
+#endif
 #endif
 
     // ====================================================
