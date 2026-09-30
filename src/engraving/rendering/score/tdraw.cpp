@@ -2987,6 +2987,41 @@ void TDraw::draw(const Spacer* item, Painter* painter, const PaintOptions& opt)
     painter->drawPath(item->ldata()->path);
 }
 
+//! The shift the audio waveform lane is currently drawn with while it is being dragged, or 0
+//! when this is not the audio lane or no drag is in progress. `systemLeft`/`systemRight` come
+//! back as the bounds of the lane's own system in the item's coordinates, so the caller can
+//! keep the shifted columns inside them.
+static double audioLanePreviewShift(const StaffLines* item, double& systemLeft, double& systemRight)
+{
+    systemLeft = 0.0;
+    systemRight = 0.0;
+
+    const Score* score = item->score();
+    const Staff* staff = item->staff();
+    const Measure* measure = item->measure();
+    if (!score || !staff || !measure) {
+        return 0.0;
+    }
+
+    const double shift = score->audioLanePreviewShift();
+    if (shift == 0.0 || !staff->isWaveformStaff(measure->tick())) {
+        return 0.0;
+    }
+
+    const System* system = measure->system();
+    const Measure* first = system ? system->firstMeasure() : nullptr;
+    const Measure* last = system ? system->lastMeasure() : nullptr;
+    if (!first || !last) {
+        return 0.0;    // nothing to keep the shifted columns inside
+    }
+
+    // Measure::x() is relative to the system, so subtracting this measure's x puts the bounds
+    // in the same space as the lines, which are relative to the item, i.e. to this measure.
+    systemLeft = first->x() - measure->x();
+    systemRight = last->x() + last->width() - measure->x();
+    return shift;
+}
+
 void TDraw::draw(const StaffLines* item, Painter* painter, const PaintOptions& opt)
 {
     TRACE_DRAW_ITEM;
@@ -2995,7 +3030,34 @@ void TDraw::draw(const StaffLines* item, Painter* painter, const PaintOptions& o
     setMask(item, painter);
 
     painter->setPen(Pen(item->curColor(opt), item->lw(), PenStyle::SolidLine, PenCapStyle::FlatCap));
-    painter->drawLines(item->lines());
+
+    // The audio waveform lane can be dragged to line the backing track up with the score.
+    // While that drag is in progress the picture follows the pointer by drawing the lane
+    // shifted -- see Score::setAudioLanePreviewShift for why this is a drawing-time shift
+    // rather than a re-layout of the score.
+    double systemLeft = 0.0;
+    double systemRight = 0.0;
+    const double previewShift = audioLanePreviewShift(item, systemLeft, systemRight);
+    if (previewShift == 0.0) {
+        painter->drawLines(item->lines());
+    } else {
+        // Columns pushed out of the lane's own system are dropped instead of clipped: setting
+        // a clip here would replace the page clip the caller installed, and dropping what
+        // leaves is exactly what keeps the shifted waveform out of the page margins. Dropping
+        // per system rather than per measure keeps the waveform continuous over the barlines
+        // inside one.
+        std::vector<LineF> shifted;
+        shifted.reserve(item->lines().size());
+        for (const LineF& line : item->lines()) {
+            const double x1 = line.p1().x() + previewShift;
+            const double x2 = line.p2().x() + previewShift;
+            if (x1 < systemLeft || x2 > systemRight) {
+                continue;
+            }
+            shifted.emplace_back(PointF(x1, line.p1().y()), PointF(x2, line.p2().y()));
+        }
+        painter->drawLines(shifted);
+    }
 
     painter->restore();
 }

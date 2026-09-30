@@ -1874,8 +1874,8 @@ void PlaybackController::onWaveformChanged()
     // and painting must happen on the main thread, so hop over before touching anything.
     QMetaObject::invokeMethod(qApp, [this]() {
         // currentMasterNotation() hands back a shared_ptr, not a raw pointer.
-        const notation::IMasterNotationPtr notation = globalContext()->currentMasterNotation();
-        engraving::MasterScore* score = notation ? notation->masterScore() : nullptr;
+        const notation::IMasterNotationPtr masterNotation = globalContext()->currentMasterNotation();
+        engraving::MasterScore* score = masterNotation ? masterNotation->masterScore() : nullptr;
         if (!score) {
             return;
         }
@@ -1885,6 +1885,17 @@ void PlaybackController::onWaveformChanged()
         LOGI() << "audiotrack: waveform ready, relayouting score";
         score->setLayoutAll();
         score->update();
+
+        // Re-laying out is not the same thing as showing. The notation view redraws when the
+        // notation says something changed, and nothing on the score -> view path says it: the
+        // score's own "data changed" callbacks reach no view here. Without this line the new
+        // picture only appeared once the user nudged the window, which made a freshly imported
+        // waveform look missing and made a moved one look like the drag had done nothing.
+        // Sent to the notation that is on screen, which is the one the view listens to.
+        const notation::INotationPtr notation = globalContext()->currentNotation();
+        if (notation) {
+            notation->notationChanged().send(muse::RectF());
+        }
     }, Qt::QueuedConnection);
 }
 

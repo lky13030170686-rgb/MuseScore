@@ -482,6 +482,18 @@ public:
     void addRefresh(const RectF&);
     void clearRefreshRect() { m_updateState.refresh = RectF(); }
 
+    //! Horizontal shift, in score units, that the audio waveform lane is drawn with while the
+    //! user drags it to line the backing track up with the score. Drawing only: no layout data
+    //! is touched, and nothing is saved.
+    //!
+    //! Why it exists: a drag used to apply the alignment offset on every mouse move, and every
+    //! application re-laid out the whole score. One drag therefore ran hundreds of full
+    //! re-layouts, which left the score in no state to be played -- and the picture did not
+    //! follow the pointer either, so the cost bought nothing. A drag now only decides a value:
+    //! the lane is drawn shifted by it, and the offset is committed once, on release.
+    void setAudioLanePreviewShift(double units) { m_audioLanePreviewShift = units; }
+    double audioLanePreviewShift() const { return m_audioLanePreviewShift; }
+
     const std::vector<Part*>& parts() const;
     size_t visiblePartCount() const;
     std::vector<Part*> visibleParts() const;
@@ -1000,6 +1012,7 @@ private:
     ScoreOrder m_scoreOrder;                 // used for score ordering
     bool m_resetAutoplace = false;
     bool m_resetCrossBeams = false;
+    double m_audioLanePreviewShift = 0.0;    // transient, see setAudioLanePreviewShift()
     int m_mscVersion = Constants::MSC_VERSION;     // version of current loading *.msc file
 
     bool m_isOpen = false;

@@ -31,6 +31,7 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/audiowaveformservice_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/audiotrackinstrument_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/waveformlayout_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/waveformlanepreview_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/waveformlane_output_tests.cpp
 
     # waveformlayout_tests.cpp reads a real score. ScoreRW is the engraving suite's score
@@ -48,8 +49,11 @@ set(MODULE_TEST_LINK
 
 # waveformlayout_tests.cpp drives a real score through the engraving layout, so it needs the
 # engraving suite's configuration mock to satisfy IEngravingConfiguration.
+# The engraving directory itself is here because waveformlanepreview_tests.cpp draws through
+# TDraw, and tdraw.h includes its neighbours the way the engraving library does ("dom/...").
 set(MODULE_TEST_INCLUDE
     ${CMAKE_CURRENT_LIST_DIR}/../../engraving/tests
+    ${CMAKE_CURRENT_LIST_DIR}/../../engraving
 )
 
 set(MODULE_TEST_DATA_ROOT ${CMAKE_CURRENT_LIST_DIR})

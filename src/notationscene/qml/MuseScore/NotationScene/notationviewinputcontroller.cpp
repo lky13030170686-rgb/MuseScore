@@ -43,6 +43,8 @@
 #include "engraving/dom/staff.h"
 #include "engraving/dom/stafflines.h"
 #include "engraving/dom/measure.h"
+#include "engraving/dom/score.h"
+#include "engraving/dom/system.h"
 
 #include "notation/inotation.h"
 #include "notation/inotationelements.h" // IWYU pragma: keep
@@ -646,7 +648,37 @@ void NotationViewInputController::wheelEvent(QWheelEvent* event)
 // moves the audio, and nothing else about the lane is clickable. That keeps it out of the
 // way of normal score editing, which is what the press handler does next when this returns
 // false.
+//
+// The picture follows the pointer while the drag is in progress, but nothing is applied to
+// the score or the project until the pointer is released -- see updateAudioLaneDrag().
 // ---------------------------------------------------------------------------
+
+//! The audio lane of one system, in score units: where a drag can be seen. Only this strip is
+//! repainted per move. Falls back to the measure's own lane when the system cannot be resolved,
+//! which still covers the picture the drag draws.
+static RectF audioLaneBand(const Measure* measure, staff_idx_t staffIdx)
+{
+    const StaffLines* lane = measure ? measure->staffLines(staffIdx) : nullptr;
+    if (!lane) {
+        return RectF();
+    }
+
+    // canvasBoundingRect() is in the same space as the positions the mouse handlers work in.
+    RectF band = lane->canvasBoundingRect();
+
+    const System* system = measure->system();
+    const Measure* first = system ? system->firstMeasure() : nullptr;
+    const Measure* last = system ? system->lastMeasure() : nullptr;
+    if (!first || !last) {
+        return band;
+    }
+
+    // Measure::x() is relative to the system, so these are offsets from this measure's start,
+    // which is where the lane item's own coordinates start too.
+    const double left = first->x() - measure->x();
+    const double right = last->x() + last->width() - measure->x();
+    return RectF(band.left() + left, band.top(), right - left, band.height());
+}
 
 bool NotationViewInputController::beginAudioLaneDrag(const PointF& logicPos, Staff* hitStaff)
 {
@@ -690,6 +722,9 @@ bool NotationViewInputController::beginAudioLaneDrag(const PointF& logicPos, Sta
     // restarts at every system break.
     m_audioLaneDrag.unitsPerTick = measureWidth / static_cast<double>(measure->ticks().ticks());
     m_audioLaneDrag.pendingTicks = 0;
+    m_audioLaneDrag.score = score;
+    m_audioLaneDrag.laneBand = audioLaneBand(measure, hitStaff->idx());
+    m_audioLaneDrag.previewReach = 0.0;
 
     return true;
 }
@@ -703,19 +738,40 @@ void NotationViewInputController::updateAudioLaneDrag(const PointF& logicPos)
     // Measured from the press, not accumulated: a drag that wanders and returns lands exactly
     // where it started instead of leaving a residue of rounding.
     const double deltaUnits = logicPos.x() - m_audioLaneDrag.beginPos.x();
-    m_audioLaneDrag.pendingTicks
-        = static_cast<int>(std::llround(deltaUnits / m_audioLaneDrag.unitsPerTick));
+    const int ticks = static_cast<int>(std::llround(deltaUnits / m_audioLaneDrag.unitsPerTick));
+    if (ticks == m_audioLaneDrag.pendingTicks) {
+        return;    // still within the same tick: there is nothing new to show
+    }
 
-    // Deliberately NOT applied here.
+    m_audioLaneDrag.pendingTicks = ticks;
+
+    // Live feedback, at no layout cost.
     //
-    // Applying on every move writes the project settings and relays out the whole score at
-    // the pointer's rate -- around fifty times a second. The layout is the expensive part,
-    // and doing it that often is what the crash on the following playback came from. It also
-    // bought nothing: the picture was not being refreshed by it in the first place.
-    //
-    // So a drag only decides a value, and releasing commits it once. Restoring live feedback
-    // is a separate job, and it needs the repaint path fixed first -- otherwise every one of
-    // those relayouts is paid for and still shows nothing.
+    // The lane is drawn shifted by the offset this drag has decided on so far, which is what
+    // makes the picture follow the pointer. Nothing is re-laid out and nothing is written to
+    // the project here: applying the offset on every move re-laid out the whole score at the
+    // pointer's rate -- hundreds of full re-layouts in one drag, which left the score in no
+    // state to be played -- and it showed nothing, because the view was never told to redraw.
+    // The value is committed once, on release.
+    if (Score* score = m_audioLaneDrag.score) {
+        // Snapped to whole ticks, exactly like the value the release will commit, so the
+        // picture never promises a position the commit cannot deliver.
+        const double shift = static_cast<double>(ticks) * m_audioLaneDrag.unitsPerTick;
+        score->setAudioLanePreviewShift(shift);
+        m_audioLaneDrag.previewReach = std::max(m_audioLaneDrag.previewReach, std::abs(shift));
+        redrawAudioLaneBand();
+    }
+}
+
+void NotationViewInputController::redrawAudioLaneBand()
+{
+    // Padded by the furthest this drag has moved the lane, so the strip that gets repainted
+    // covers both where the lane is now and where an earlier frame drew it.
+    const double pad = m_audioLaneDrag.previewReach + m_audioLaneDrag.laneBand.height() * 0.5;
+    const RectF band = m_audioLaneDrag.laneBand.adjusted(-pad, -pad, pad, pad);
+
+    // An empty band is not a problem: the view falls back to repainting everything.
+    m_view->scheduleRedraw(m_view->fromLogical(band));
 }
 
 void NotationViewInputController::endAudioLaneDrag()
@@ -724,6 +780,17 @@ void NotationViewInputController::endAudioLaneDrag()
     if (m_audioLaneDrag.active && m_audioLaneDrag.pendingTicks != 0) {
         playbackController()->shiftAudioTrackOffset(m_audioLaneDrag.pendingTicks);
     }
+
+    // Hand the picture back to the real layout. This happens after the commit, and the commit
+    // asks for the re-layout before asking for a repaint, so the next paint already shows the
+    // lane where the offset put it -- clearing first would flash the old position.
+    if (m_audioLaneDrag.score) {
+        m_audioLaneDrag.score->setAudioLanePreviewShift(0.0);
+    }
+
+    // Always repaint, even when the drag ended where it started: the preview has to be taken
+    // back off the screen either way.
+    redrawAudioLaneBand();
 
     m_audioLaneDrag = AudioLaneDrag {};
 }
@@ -1299,8 +1366,8 @@ void NotationViewInputController::startDragElements(ElementType elementsType, co
 void NotationViewInputController::mouseReleaseEvent(QMouseEvent* event)
 {
     // Ends a lane drag before anything else looks at the release. The lane has no selection
-    // and no undo entry of its own: the offset is stored with the project and applied as the
-    // pointer moves, so there is nothing to commit here.
+    // and no undo entry of its own: the offset is stored with the project, and the whole drag
+    // commits as one value here.
     if (m_audioLaneDrag.active) {
         endAudioLaneDrag();
         m_mouseDownInfo.dragAction = MouseDownInfo::Nothing;

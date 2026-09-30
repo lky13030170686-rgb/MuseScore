@@ -50,6 +50,10 @@
 
 class QQuickItem;
 
+namespace mu::engraving {
+class Score;
+}
+
 namespace mu::notation {
 class IControlledView
 {
@@ -198,6 +202,15 @@ private:
         //! Ticks this drag has decided on so far. Committed on release, not on every move --
         //! see updateAudioLaneDrag() for why that is not merely an optimisation.
         int pendingTicks = 0;
+        //! The score whose lane is being dragged. It carries the transient preview shift the
+        //! lane is drawn with, and it is what gets redrawn per move.
+        engraving::Score* score = nullptr;
+        //! The whole lane of the system the press landed on, in score units: the only strip
+        //! that can change while the drag is in progress.
+        muse::RectF laneBand;
+        //! Furthest the lane has been moved in this drag. The repaint has to cover where
+        //! earlier frames drew, or dragging out and back leaves a waveform behind.
+        double previewReach = 0.0;
     };
 
     //! Starts dragging the audio lane if the press landed on one. Returns true when the event
@@ -211,6 +224,10 @@ private:
     bool beginAudioLaneDrag(const muse::PointF& logicPos, engraving::Staff* hitStaff);
     void updateAudioLaneDrag(const muse::PointF& logicPos);
     void endAudioLaneDrag();
+
+    //! Repaints the strip the dragged lane lives in -- the picture changes there and nowhere
+    //! else, and a full viewport repaint per mouse move is not free on a large score.
+    void redrawAudioLaneBand();
 
     AudioLaneDrag m_audioLaneDrag;
 
