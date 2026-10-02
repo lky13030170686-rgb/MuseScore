@@ -208,8 +208,11 @@ Item {
         for (var i = notes.length - 1; i >= 0; --i) {
             var note = notes[i]
             var pitch = (i === dragNoteIndex && dragPreviewPitch >= 0) ? dragPreviewPitch : note.pitch
-            var nx = xForTick(note.tick)
-            if (x < nx || x > nx + noteWidth(note)) {
+
+            //! NOTE: the note is grabbable over the union of its two extents. The played bar can sit
+            //!       entirely outside the notated block (a note pushed late, or played much longer),
+            //!       and it would then be impossible to grab back.
+            if (!hitHorizontally(note, x)) {
                 continue
             }
             var ny = yForPitch(pitch)
@@ -218,6 +221,24 @@ Item {
             }
         }
         return -1
+    }
+
+    function hitHorizontally(note, x) {
+        var nx = xForTick(note.tick)
+        if (x >= nx && x <= nx + noteWidth(note)) {
+            return true
+        }
+
+        if (!note.hasPlayOverride) {
+            return false
+        }
+
+        var px = xForTick(note.playTick)
+        return x >= px && x <= px + playedWidth(note)
+    }
+
+    function playedWidth(note) {
+        return Math.max(2, note.playDurationTicks * pixelsPerTick - 1)
     }
 
     function velocityAt(x) {
@@ -709,18 +730,16 @@ Item {
 
                 onPressed: function(mouse) {
                     var index = root.noteIndexAt(mouse.x, mouse.y)
-                    //! NOTE: kept in on purpose - the piano roll has no automated UI test, so when a
-                    //!       drag "does nothing" this line is what tells you whether the hit test
-                    //!       found the note or the press never reached the mouse area at all.
-                    console.log("MidiEditorView: press at", mouse.x, mouse.y, "-> note", index,
-                                "| notes", root.notes.length, "pitchRange", root.lowestPitch, "-", root.highestPitch,
-                                "rowHeight", root.rowHeight, "scrollY", root.scrollY,
-                                "mouseArea", width, "x", height)
-                    if (root.notes.length > 0) {
-                        var n0 = root.notes[0]
-                        console.log("MidiEditorView: first note tick", n0.tick, "pitch", n0.pitch,
-                                    "=> rect x", root.xForTick(n0.tick), "y", root.yForPitch(n0.pitch),
-                                    "w", root.noteWidth(n0), "h", root.noteHeight())
+
+                    if (index < 0) {
+                        //! NOTE: only the miss is logged, so normal use stays quiet while a "the drag
+                        //!       does nothing" report can still be diagnosed from the log file.
+                        //!       `console.warn` on purpose: MuseScore records Qt warnings, not plain
+                        //!       console.log output, so a log() here would never reach the log file.
+                        console.warn("MidiEditorView: press missed at", mouse.x, mouse.y,
+                                     "| notes", root.notes.length, "pitchRange", root.lowestPitch, "-", root.highestPitch,
+                                     "rowHeight", root.rowHeight, "scrollY", root.scrollY,
+                                     "mouseArea", width, "x", height)
                     }
 
                     root.dragNoteIndex = index
@@ -736,8 +755,11 @@ Item {
                         root.dragPreviewPlayDuration = grabbed.playDurationTicks
 
                         //! NOTE: which part of the block was grabbed decides what the drag edits.
-                        var grabbedX = root.xForTick(grabbed.tick)
-                        var grabbedW = root.noteWidth(grabbed)
+                        //!       The edge test uses the PLAYED bar, not the notated block: that bar is
+                        //!       what the user sees on top and aims at, and the two only coincide when
+                        //!       the note has no override at all.
+                        var grabbedX = root.xForTick(grabbed.playTick)
+                        var grabbedW = root.playedWidth(grabbed)
                         var edge = Math.max(4, Math.min(8, grabbedW * 0.25))
                         if (mouse.x >= grabbedX + grabbedW - edge) {
                             root.dragMode = root.dragModePlayLength
