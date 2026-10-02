@@ -28,6 +28,7 @@ using namespace mu::appshell;
 
 static const QString HOME_PAGE("musescore://home");
 static const QString NOTATION_PAGE("musescore://notation");
+static const QString MIDI_PAGE("musescore://midi");
 static const QString PUBLISH_PAGE("musescore://publish");
 static const QString DEVTOOLS_PAGE("musescore://devtools");
 
@@ -89,6 +90,8 @@ void MainToolBarModel::load()
     m_items.clear();
     m_items << buildItem(muse::qtrc("appshell", "Home"), HOME_PAGE);
     m_items << buildItem(muse::qtrc("appshell", "Score"), NOTATION_PAGE);
+    //! NOTE: our addition - the MIDI (piano roll) page, a sibling of Score, sharing its data.
+    m_items << buildItem(muse::qtrc("appshell", "MIDI"), MIDI_PAGE);
     m_items << buildItem(muse::qtrc("appshell", "Publish"), PUBLISH_PAGE);
 
     if (globalConfiguration()->devModeEnabled()) {

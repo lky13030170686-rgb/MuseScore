@@ -32,6 +32,7 @@ import MuseScore.AppShell
 
 import "./HomePage"
 import "./NotationPage"
+import "./MidiEditorPage"
 import "./PublishPage"
 import "./DevTools"
 
@@ -102,6 +103,10 @@ DockWindow {
         },
 
         NotationPage {
+            topToolbarKeyNavSec: topToolbarKeyNavSec
+        },
+
+        MidiEditorPage {
             topToolbarKeyNavSec: topToolbarKeyNavSec
         },
 

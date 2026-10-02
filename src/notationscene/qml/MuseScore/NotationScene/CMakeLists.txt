@@ -64,6 +64,10 @@ qt_add_qml_module(notationscene_qml
         internal/undoredotoolbarmodel.h
         loopmarker.cpp
         loopmarker.h
+        midieditor/midieditormodel.cpp
+        midieditor/midieditormodel.h
+        midieditor/midieditornotes.cpp
+        midieditor/midieditornotes.h
         notationautomationcontroller.h
         notationautomationcontroller.cpp
         notationcontextmenumodel.cpp
@@ -192,6 +196,7 @@ qt_add_qml_module(notationscene_qml
         internal/SearchPopup.qml
         internal/SelectionFilterSection.qml
         internal/VoicesPopup.qml
+        MidiEditorView.qml
         NotationToolBar.qml
         NotationView.qml
         NoteInputBar.qml
@@ -314,6 +319,7 @@ fixup_qml_module_dependencies(notationscene_qml)
 target_include_directories(notationscene_qml PRIVATE
     elementpopups
     internal
+    midieditor
     percussionpanel
     pianokeyboard
     selectionfilter

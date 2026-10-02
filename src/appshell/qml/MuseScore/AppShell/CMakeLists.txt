@@ -74,6 +74,7 @@ qt_add_qml_module(appshell_qml
         HomePage/HomePage.qml
         HomePage/PluginsPage.qml
         MainToolBar.qml
+        MidiEditorPage/MidiEditorPage.qml
         NotationPage/NotationPage.qml
         NotationPage/NotationStatusBar.qml
         platform/AppButtonBackground.qml
@@ -157,5 +158,6 @@ qt_add_resources(appshell_qml appshell_qml_resources
 target_include_directories(appshell_qml PRIVATE
     DevTools/Settings
     FirstLaunchSetup
+    MidiEditorPage
     PublishPage
 )
