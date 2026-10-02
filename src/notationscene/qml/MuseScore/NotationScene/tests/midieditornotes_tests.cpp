@@ -346,6 +346,7 @@ TEST_F(MidiEditorNotesTests, PlayedTimingSurvivesSaveAndReload)
     QFile::remove(savedPath);
 
     int touched = 0;
+    int ownVelocity = 0;
 
     {
         MasterScore* score = ScoreRW::readScore(TEST_SCORE_PATH);
@@ -353,15 +354,27 @@ TEST_F(MidiEditorNotesTests, PlayedTimingSurvivesSaveAndReload)
 
         //! Give every note a played timing that is unmistakably different from the notated one:
         //! a quarter of the note later, half as long, and every other one quieter.
+        //!
+        //! Every THIRD note additionally gets its own velocity (an override that stops it from
+        //! following the dynamic marks), so a score kept with MUSE_MIDIEDITOR_KEEP_SCORE shows both
+        //! states of the velocity lane: faint bars that follow the dynamics, and solid ones that do
+        //! not.
+        int index = 0;
         for (const MidiNoteItem& item : collectMidiNotes(score)) {
             const int start = item.tick + item.durationTicks / 4;
             const int duration = std::max(1, item.durationTicks / 2);
             if (applyNotePlayOverride(score, item.note, start, duration, touched % 2 == 0 ? 50 : 100)) {
                 ++touched;
             }
+
+            if (index % 3 == 1 && applyNoteVelocity(score, item.note, index % 2 ? 110 : 40)) {
+                ++ownVelocity;
+            }
+            ++index;
         }
 
         EXPECT_GT(touched, 0) << "no note accepted a played override";
+        EXPECT_GT(ownVelocity, 0) << "no note accepted an own velocity";
 
         ASSERT_TRUE(ScoreRW::saveScore(score, savedPath)) << "could not save the score";
         delete score;
@@ -377,6 +390,7 @@ TEST_F(MidiEditorNotesTests, PlayedTimingSurvivesSaveAndReload)
 
     int withOverride = 0;
     int withQuieter = 0;
+    int withOwnVelocity = 0;
     for (const MidiNoteItem& item : again) {
         if (item.hasPlayOverride) {
             ++withOverride;
@@ -384,10 +398,14 @@ TEST_F(MidiEditorNotesTests, PlayedTimingSurvivesSaveAndReload)
         if (item.playVelocityPercent != 100) {
             ++withQuieter;
         }
+        if (item.hasVelocityOverride) {
+            ++withOwnVelocity;
+        }
     }
 
     EXPECT_EQ(withOverride, touched) << "the played timing was lost on save/reload";
     EXPECT_GT(withQuieter, 0) << "the velocity multiplier was lost on save/reload";
+    EXPECT_EQ(withOwnVelocity, ownVelocity) << "an own velocity was lost on save/reload";
 
     delete reloaded;
 }
