@@ -95,6 +95,23 @@ Item {
     property int dragPreviewPitch: -1
     property real dragStartY: 0
 
+    //! What the current drag edits. Dorico draws the played extent over the notated one; grabbing the
+    //! right edge of a block edits the played length, Shift+dragging edits the played start, and a
+    //! plain drag still edits the pitch.
+    readonly property int dragModePitch: 0
+    readonly property int dragModePlayStart: 1
+    readonly property int dragModePlayLength: 2
+    property int dragMode: 0
+
+    property real dragStartX: 0
+    property int dragStartPlayStart: 0
+    property int dragStartPlayDuration: 0
+    property int dragPreviewPlayStart: 0
+    property int dragPreviewPlayDuration: 0
+
+    //! Drag snapping for the played layer, in ticks (1/32 of a whole note at 480 ticks per quarter).
+    readonly property int playSnapTicks: 60
+
     property int hoveredNoteIndex: -1
 
     property int velocityDragTick: -1
@@ -244,6 +261,8 @@ Item {
         color: root.panelColor
 
         Text {
+            id: titleLabel
+
             anchors.left: parent.left
             anchors.leftMargin: 12
             anchors.verticalCenter: parent.verticalCenter
@@ -253,6 +272,19 @@ Item {
                   : qsTrc("notationscene", "MIDI editor")
 
             color: root.textColor
+            font: ui.theme.bodyFont
+        }
+
+        Text {
+            anchors.left: titleLabel.right
+            anchors.leftMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+
+            visible: root.hasScore
+
+            text: qsTrc("notationscene", "Drag the right edge of a note = played length · Shift+drag = played start")
+
+            color: root.dimTextColor
             font: ui.theme.bodyFont
         }
 
@@ -613,10 +645,33 @@ Item {
 
                         var nw = root.noteWidth(note)
 
+                        //! NOTE: Dorico's distinction, in one block: the notated extent is drawn as an
+                        //!       outline and the played extent as a solid bar on top of it. A note the
+                        //!       user never touched has both at the same place, so it stays a plain
+                        //!       solid block exactly as before.
+                        var draggingPlay = (n === root.dragNoteIndex && root.dragMode !== root.dragModePitch)
+                        var showingPlay = note.hasPlayOverride || draggingPlay
+                        var playStart = draggingPlay ? root.dragPreviewPlayStart : note.playTick
+                        var playDuration = draggingPlay ? root.dragPreviewPlayDuration : note.playDurationTicks
+
                         ctx.fillStyle = root.staffColor(note.staffIndex)
-                        ctx.globalAlpha = previewing ? 0.6 : 0.95
-                        ctx.fillRect(nx, ny, nw, nh)
-                        ctx.globalAlpha = 1.0
+
+                        if (!showingPlay) {
+                            ctx.globalAlpha = previewing ? 0.6 : 0.95
+                            ctx.fillRect(nx, ny, nw, nh)
+                            ctx.globalAlpha = 1.0
+                        } else {
+                            ctx.globalAlpha = 0.45
+                            ctx.lineWidth = 1
+                            ctx.strokeStyle = root.staffColor(note.staffIndex)
+                            ctx.strokeRect(nx + 0.5, ny + 0.5, Math.max(1, nw - 1), Math.max(1, nh - 1))
+
+                            var px = root.xForTick(playStart)
+                            var pw = Math.max(2, playDuration * root.pixelsPerTick - 1)
+                            ctx.globalAlpha = previewing ? 0.6 : 0.95
+                            ctx.fillRect(px, ny + 1, pw, Math.max(1, nh - 2))
+                            ctx.globalAlpha = 1.0
+                        }
 
                         if (n === root.hoveredNoteIndex || previewing) {
                             ctx.strokeStyle = root.cursorColor
@@ -670,9 +725,28 @@ Item {
 
                     root.dragNoteIndex = index
                     if (index >= 0) {
-                        root.dragStartPitch = root.notes[index].pitch
+                        var grabbed = root.notes[index]
+                        root.dragStartPitch = grabbed.pitch
                         root.dragPreviewPitch = root.dragStartPitch
                         root.dragStartY = mouse.y
+                        root.dragStartX = mouse.x
+                        root.dragStartPlayStart = grabbed.playTick
+                        root.dragStartPlayDuration = grabbed.playDurationTicks
+                        root.dragPreviewPlayStart = grabbed.playTick
+                        root.dragPreviewPlayDuration = grabbed.playDurationTicks
+
+                        //! NOTE: which part of the block was grabbed decides what the drag edits.
+                        var grabbedX = root.xForTick(grabbed.tick)
+                        var grabbedW = root.noteWidth(grabbed)
+                        var edge = Math.max(4, Math.min(8, grabbedW * 0.25))
+                        if (mouse.x >= grabbedX + grabbedW - edge) {
+                            root.dragMode = root.dragModePlayLength
+                        } else if (mouse.modifiers & Qt.ShiftModifier) {
+                            root.dragMode = root.dragModePlayStart
+                        } else {
+                            root.dragMode = root.dragModePitch
+                        }
+
                         gridCanvas.requestPaint()
                     }
                 }
@@ -691,25 +765,58 @@ Item {
                         return
                     }
 
-                    var deltaRows = Math.round((mouse.y - root.dragStartY) / root.rowHeight)
-                    var pitch = root.clamp(root.dragStartPitch - deltaRows, 0, 127)
-                    if (pitch !== root.dragPreviewPitch) {
-                        root.dragPreviewPitch = pitch
+                    if (root.dragMode === root.dragModePitch) {
+                        var deltaRows = Math.round((mouse.y - root.dragStartY) / root.rowHeight)
+                        var pitch = root.clamp(root.dragStartPitch - deltaRows, 0, 127)
+                        if (pitch !== root.dragPreviewPitch) {
+                            root.dragPreviewPitch = pitch
+                            gridCanvas.requestPaint()
+                        }
+                        return
+                    }
+
+                    //! NOTE: the played layer snaps to `playSnapTicks`, so a drag lands on musical
+                    //!       positions instead of on pixel noise.
+                    var snap = root.playSnapTicks
+                    var deltaTicks = Math.round((mouse.x - root.dragStartX) / root.pixelsPerTick / snap) * snap
+
+                    if (root.dragMode === root.dragModePlayStart) {
+                        var start = Math.max(0, root.dragStartPlayStart + deltaTicks)
+                        if (start !== root.dragPreviewPlayStart) {
+                            root.dragPreviewPlayStart = start
+                            gridCanvas.requestPaint()
+                        }
+                        return
+                    }
+
+                    var duration = Math.max(snap, root.dragStartPlayDuration + deltaTicks)
+                    if (duration !== root.dragPreviewPlayDuration) {
+                        root.dragPreviewPlayDuration = duration
                         gridCanvas.requestPaint()
                     }
                 }
 
                 onReleased: function(mouse) {
-                    console.log("MidiEditorView: release, dragNote", root.dragNoteIndex,
-                                "startPitch", root.dragStartPitch, "previewPitch", root.dragPreviewPitch)
-                    if (root.dragNoteIndex >= 0 && root.dragPreviewPitch >= 0
-                            && root.dragPreviewPitch !== root.dragStartPitch) {
-                        //! NOTE: the single submission of the whole drag.
-                        root.model.setNotePitch(root.dragNoteIndex, root.dragPreviewPitch)
+                    if (root.dragNoteIndex >= 0 && root.dragNoteIndex < root.notes.length) {
+                        var released = root.notes[root.dragNoteIndex]
+
+                        if (root.dragMode === root.dragModePitch) {
+                            if (root.dragPreviewPitch >= 0 && root.dragPreviewPitch !== root.dragStartPitch) {
+                                //! NOTE: the single submission of the whole drag.
+                                root.model.setNotePitch(root.dragNoteIndex, root.dragPreviewPitch)
+                            }
+                        } else if (root.dragPreviewPlayStart !== released.playTick
+                                   || root.dragPreviewPlayDuration !== released.playDurationTicks) {
+                            root.model.setNotePlayOverride(root.dragNoteIndex,
+                                                           root.dragPreviewPlayStart,
+                                                           root.dragPreviewPlayDuration,
+                                                           released.playVelocityPercent)
+                        }
                     }
 
                     root.dragNoteIndex = -1
                     root.dragPreviewPitch = -1
+                    root.dragMode = root.dragModePitch
                     gridCanvas.requestPaint()
                 }
 

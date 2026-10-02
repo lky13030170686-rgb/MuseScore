@@ -198,6 +198,80 @@ TEST_F(MidiEditorNotesTests, ApplyingToNothingIsHarmless)
 {
     EXPECT_FALSE(applyNotePitch(nullptr, nullptr, 60));
     EXPECT_FALSE(applyNoteVelocity(m_score, nullptr, 64));
+    EXPECT_FALSE(applyNotePlayOverride(m_score, nullptr, 0, 480, 100));
     EXPECT_TRUE(collectMidiNotes(nullptr).empty());
     EXPECT_TRUE(collectMidiMeasures(nullptr).empty());
+}
+
+//! The played layer: what the piano roll writes into `Note::playEvents()`.
+TEST_F(MidiEditorNotesTests, PlayedTimingIsWrittenThroughThePlayEventsOfTheNote)
+{
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_FALSE(items.empty());
+
+    Note* note = items.front().note;
+    const int originalTick = items.front().tick;
+    const int originalDuration = items.front().durationTicks;
+
+    ASSERT_FALSE(items.front().hasPlayOverride) << "a fresh score has nothing to show as played";
+
+    //! Play it a quarter of the note later and half as long.
+    const int startTick = originalTick + originalDuration / 4;
+    const int durationTicks = originalDuration / 2;
+
+    EXPECT_TRUE(applyNotePlayOverride(m_score, note, startTick, durationTicks, 100));
+
+    const MidiNoteItem* played = findItem(collectMidiNotes(m_score), note);
+    ASSERT_NE(played, nullptr);
+
+    EXPECT_TRUE(played->hasPlayOverride);
+    EXPECT_EQ(played->tick, originalTick) << "the notated position must not move";
+    EXPECT_EQ(played->durationTicks, originalDuration) << "the notated length must not move";
+    EXPECT_EQ(played->playTick, startTick);
+    EXPECT_EQ(played->playDurationTicks, durationTicks);
+    EXPECT_EQ(played->playVelocityPercent, 100);
+
+    EXPECT_FALSE(note->playEvents().empty());
+    EXPECT_EQ(note->playEvents().front().ontime(), 250);
+    EXPECT_EQ(note->playEvents().front().len(), 500);
+
+    m_score->undoRedo(true, nullptr);
+
+    const MidiNoteItem* undone = findItem(collectMidiNotes(m_score), note);
+    ASSERT_NE(undone, nullptr);
+    EXPECT_FALSE(undone->hasPlayOverride);
+    EXPECT_EQ(undone->playTick, originalTick);
+    EXPECT_EQ(undone->playDurationTicks, originalDuration);
+}
+
+TEST_F(MidiEditorNotesTests, TheVelocityMultiplierIsCarriedToo)
+{
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_FALSE(items.empty());
+
+    Note* note = items.front().note;
+
+    ASSERT_TRUE(applyNotePlayOverride(m_score, note, items.front().tick, items.front().durationTicks, 50));
+
+    const MidiNoteItem* played = findItem(collectMidiNotes(m_score), note);
+    ASSERT_NE(played, nullptr);
+    EXPECT_TRUE(played->hasPlayOverride);
+    EXPECT_EQ(played->playVelocityPercent, 50);
+}
+
+//! Writing the neutral values again is "no change", not an edit - this is what keeps an untouched
+//! score from silently gaining an override.
+TEST_F(MidiEditorNotesTests, WritingTheNeutralOverrideChangesNothing)
+{
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_FALSE(items.empty());
+
+    Note* note = items.front().note;
+
+    EXPECT_FALSE(applyNotePlayOverride(m_score, note,
+                                       items.front().tick, items.front().durationTicks, 100));
+
+    const MidiNoteItem* played = findItem(collectMidiNotes(m_score), note);
+    ASSERT_NE(played, nullptr);
+    EXPECT_FALSE(played->hasPlayOverride);
 }

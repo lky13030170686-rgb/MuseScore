@@ -21,11 +21,16 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+
 #include "mpe/events.h"
 
 #include "../dom/chord.h"
 #include "../dom/note.h"
 #include "../dom/sig.h"
+
+#include "global/realfn.h"
 
 #include "utils/arrangementutils.h"
 #include "utils/pitchutils.h"
@@ -121,6 +126,54 @@ struct NominalNoteCtx {
         chordCtx(ctx),
         articulations(ctx.commonArticulations)
     {
+        applyPlayEventsOverride(note, ctx);
+    }
+
+    //! NOTE: [our addition] Honour the per-note playback overrides written by the MIDI (piano roll)
+    //! page - `NoteEvent::ontime`, `len` and `velocityMultiplier`.
+    //!
+    //! Until now the only reader of `Note::playEvents()` was the legacy MIDI export
+    //! (compatmidirenderinternal.cpp), so editing those values had no audible effect on playback at
+    //! all. That is exactly upstream issue #20235 ("Play durations altered via the Piano Roll Editor
+    //! are not conveyed from MS3.6/3.7 to MuseScore 4.1"). Reading them here makes the played timing
+    //! and velocity follow.
+    //!
+    //! The score reader may already fill the list in, but then it holds the neutral default
+    //! (ontime 0, len NOTE_LENGTH, velocityMultiplier 1.0), which this function leaves alone: the
+    //! timestamp/duration are only recomputed when they actually differ, and the dynamic level only
+    //! when the multiplier differs from 1.0. So a score nobody edited in the piano roll renders
+    //! exactly what the notation says - the same as before this change.
+    void applyPlayEventsOverride(const Note* note, const RenderingContext& ctx)
+    {
+        const NoteEventList& events = note->playEvents();
+        if (events.empty() || !ctx.score) {
+            return;
+        }
+
+        const NoteEvent& event = events.front();
+
+        // ontime/len are thousandths of the nominal note length, the same unit the legacy renderer
+        // uses: on = tick1 + (ticks * ontime) / 1000, off = on + (ticks * len) / 1000.
+        if (event.play() && ctx.nominalDurationTicks > 0) {
+            const int nominalTicks = ctx.nominalDurationTicks;
+            const int shiftTicks = (nominalTicks * event.ontime()) / 1000;
+            const int lenTicks = std::max(1, (nominalTicks * event.len()) / 1000);
+
+            if (shiftTicks != 0 || lenTicks != nominalTicks) {
+                const muse::mpe::TimestampAndDuration tnD = timestampAndDurationFromStartAndDurationTicks(
+                    ctx.score, ctx.nominalPositionStartTick + shiftTicks, lenTicks, ctx.positionTickOffset);
+                timestamp = tnD.timestamp;
+                duration = tnD.duration;
+            }
+        }
+
+        if (!muse::RealIsNull(event.velocityMultiplier() - NoteEvent::DEFAULT_VELOCITY_MULTIPLIER)) {
+            const long long scaled = std::llround(static_cast<double>(dynamicLevel) * event.velocityMultiplier());
+            dynamicLevel = static_cast<muse::mpe::dynamic_level_t>(
+                std::clamp(scaled,
+                           static_cast<long long>(muse::mpe::MIN_DYNAMIC_LEVEL),
+                           static_cast<long long>(muse::mpe::MAX_DYNAMIC_LEVEL)));
+        }
     }
 };
 

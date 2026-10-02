@@ -41,6 +41,14 @@ struct MidiNoteItem {
     int velocity = 0;       //!< as shown in the roll: an unset velocity (0) is shown as 64
     int staffIndex = 0;
     int voice = 0;
+
+    //! The "played" layer (`Note::playEvents()`): where the note actually sounds and for how long.
+    //! When `hasPlayOverride` is false the played values equal the notated ones and the roll draws a
+    //! plain block. Dorico makes the same distinction between played and notated durations.
+    bool hasPlayOverride = false;
+    int playTick = 0;
+    int playDurationTicks = 0;
+    int playVelocityPercent = 100;      //!< velocityMultiplier in percent; 100 means untouched
 };
 
 //! The span of one measure, used for the bar lines and the measure numbers of the ruler.
@@ -65,6 +73,14 @@ bool applyNotePitch(engraving::Score* score, engraving::Note* note, int pitch);
 
 //! Writes a velocity back into the score, through the same property the Properties panel writes.
 bool applyNoteVelocity(engraving::Score* score, engraving::Note* note, int velocity);
+
+//! Writes the "played" timing of a note - the piano roll's played layer, i.e. `ontime` and `len` of
+//! the first `NoteEvent`. `startTick` and `durationTicks` are absolute ticks; `velocityPercent` is
+//! the velocity multiplier in percent (100 = untouched). Uses the existing `ChangeNoteEventList`
+//! undo command, so it is undoable and does not invent a second data model.
+//! Returns false when nothing changes.
+bool applyNotePlayOverride(engraving::Score* score, engraving::Note* note,
+                           int startTick, int durationTicks, int velocityPercent);
 
 //! The default velocity shown for a note the user has never given an explicit velocity.
 int midiDisplayVelocity(int userVelocity);

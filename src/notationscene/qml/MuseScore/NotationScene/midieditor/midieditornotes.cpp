@@ -23,12 +23,14 @@
 #include "midieditornotes.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "translation.h"
 
 #include "engraving/dom/chord.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/note.h"
+#include "engraving/dom/noteevent.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/segment.h"
 #include "engraving/editing/editnote.h"
@@ -41,9 +43,46 @@ namespace mu::notation {
 //!       set a velocity", and is shown as 64 so that the lane does not look empty.
 static constexpr int DEFAULT_VELOCITY = 64;
 
+//! `NoteEvent::ontime` / `len` are thousandths of the nominal note length (see noteevent.h), which
+//! is exactly the unit the legacy MIDI renderer uses: on = tick + (ticks * ontime) / 1000.
+static constexpr int NOTE_EVENT_UNIT = 1000;
+
 int midiDisplayVelocity(int userVelocity)
 {
     return userVelocity == 0 ? DEFAULT_VELOCITY : userVelocity;
+}
+
+//! Reads the "played" layer of a note. Without an override the played values are the notated ones.
+static void readPlayOverride(const Note* note, int nominalTicks, bool& hasOverride,
+                             int& playTick, int& playDurationTicks, int& playVelocityPercent)
+{
+    const int noteTick = note->tick().ticks();
+
+    hasOverride = false;
+    playTick = noteTick;
+    playDurationTicks = nominalTicks;
+    playVelocityPercent = 100;
+
+    const NoteEventList& events = note->playEvents();
+    if (events.empty()) {
+        return;
+    }
+
+    const NoteEvent& event = events.front();
+
+    const int shiftTicks = (nominalTicks * event.ontime()) / NOTE_EVENT_UNIT;
+    const int lenTicks = std::max(1, (nominalTicks * event.len()) / NOTE_EVENT_UNIT);
+    const int velocityPercent = int(std::lround(event.velocityMultiplier() * 100.0));
+
+    playTick = noteTick + shiftTicks;
+    playDurationTicks = lenTicks;
+    playVelocityPercent = velocityPercent;
+
+    //! NOTE: the score reader hands us a neutral event for every note, so "has an event" is not the
+    //!       same as "the user changed something". Only a real difference is worth drawing.
+    hasOverride = shiftTicks != 0
+                  || lenTicks != nominalTicks
+                  || velocityPercent != 100;
 }
 
 std::vector<MidiNoteItem> collectMidiNotes(const Score* score)
@@ -82,6 +121,9 @@ std::vector<MidiNoteItem> collectMidiNotes(const Score* score)
                     entry.velocity = midiDisplayVelocity(note->userVelocity());
                     entry.staffIndex = int(note->staffIdx());
                     entry.voice = int(note->voice());
+
+                    readPlayOverride(note, durationTicks, entry.hasPlayOverride,
+                                     entry.playTick, entry.playDurationTicks, entry.playVelocityPercent);
 
                     result.push_back(entry);
                 }
@@ -147,6 +189,49 @@ bool applyNoteVelocity(Score* score, Note* note, int velocity)
         flags = PropertyFlags::UNSTYLED;
     }
     note->undoChangeProperty(Pid::USER_VELOCITY, PropertyValue(velocity), flags);
+    score->endCmd();
+
+    return true;
+}
+
+bool applyNotePlayOverride(Score* score, Note* note, int startTick, int durationTicks, int velocityPercent)
+{
+    if (!score || !note || !note->chord()) {
+        return false;
+    }
+
+    const int nominalTicks = note->chord()->actualTicks().ticks();
+    if (nominalTicks <= 0) {
+        return false;
+    }
+
+    const int noteTick = note->tick().ticks();
+    const int ontime = ((startTick - noteTick) * NOTE_EVENT_UNIT) / nominalTicks;
+    const int len = std::max(1, (durationTicks * NOTE_EVENT_UNIT) / nominalTicks);
+    const double velocityMultiplier = std::max(0.0, velocityPercent / 100.0);
+
+    //! NOTE: copy - `ChangeNoteEventList` takes the new list by value, so the command owns it and
+    //!       undo never depends on a pointer that a later reallocation could invalidate (that is why
+    //!       this is preferred over `ChangeNoteEvent`).
+    NoteEventList events = note->playEvents();
+    if (events.empty()) {
+        events.push_back(NoteEvent());
+    }
+
+    if (events.front().ontime() == ontime
+        && events.front().len() == len
+        && std::abs(events.front().velocityMultiplier() - velocityMultiplier) < 1e-9) {
+        return false;
+    }
+
+    events.front().setOntime(ontime);
+    events.front().setLen(len);
+    events.front().setVelocityMultiplier(velocityMultiplier);
+
+    score->startCmd(TranslatableString("midieditor", "Change played timing"));
+    //! NOTE: reuse the engraving undo command instead of writing our own; it also switches the
+    //!       chord's play event type to User, which is what makes the value survive saving.
+    score->undo(new ChangeNoteEventList(note, events));
     score->endCmd();
 
     return true;

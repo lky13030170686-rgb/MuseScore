@@ -169,6 +169,10 @@ void MidiEditorModel::reload()
         note["velocity"] = entry.velocity;
         note["staffIndex"] = entry.staffIndex;
         note["voice"] = entry.voice;
+        note["hasPlayOverride"] = entry.hasPlayOverride;
+        note["playTick"] = entry.playTick;
+        note["playDurationTicks"] = entry.playDurationTicks;
+        note["playVelocityPercent"] = entry.playVelocityPercent;
         m_notes << note;
 
         lowest = std::min(lowest, entry.pitch);
@@ -225,6 +229,15 @@ void MidiEditorModel::setNotePitch(int row, int pitch)
 void MidiEditorModel::setNoteVelocity(int row, int velocity)
 {
     if (!applyNoteVelocity(currentScore(), noteAt(row), velocity)) {
+        return;
+    }
+
+    reload();
+}
+
+void MidiEditorModel::setNotePlayOverride(int row, int startTick, int durationTicks, int velocityPercent)
+{
+    if (!applyNotePlayOverride(currentScore(), noteAt(row), startTick, durationTicks, velocityPercent)) {
         return;
     }
 

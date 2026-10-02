@@ -88,6 +88,10 @@ public:
     Q_INVOKABLE void setNotePitch(int row, int pitch);
     Q_INVOKABLE void setNoteVelocity(int row, int velocity);
 
+    //! The "played" layer: where the note actually sounds (tick) and for how long, plus the velocity
+    //! multiplier in percent. Absolute ticks, so the view does not need to know about thousandths.
+    Q_INVOKABLE void setNotePlayOverride(int row, int startTick, int durationTicks, int velocityPercent);
+
 signals:
     void scoreChanged();
     void playbackTickChanged();
