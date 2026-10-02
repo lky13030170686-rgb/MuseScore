@@ -42,6 +42,14 @@ struct MidiNoteItem {
     int staffIndex = 0;
     int voice = 0;
 
+    //! Whether this note carries its OWN velocity (Properties `Pid::USER_VELOCITY`).
+    //!
+    //! This is what makes "tweak one note" possible without touching the engine's driving logic: an
+    //! own velocity becomes `ExpressionContext::velocityOverride`, which the synthesisers prefer over
+    //! the dynamic level. A note WITHOUT one keeps following the dynamic marks (pp/ff, hairpins).
+    //! So this flag is exactly "this note no longer follows the dynamics".
+    bool hasVelocityOverride = false;
+
     //! The "played" layer (`Note::playEvents()`): where the note actually sounds and for how long.
     //! When `hasPlayOverride` is false the played values equal the notated ones and the roll draws a
     //! plain block. Dorico makes the same distinction between played and notated durations.
@@ -72,6 +80,9 @@ std::vector<MidiMeasureItem> collectMidiMeasures(const engraving::Score* score);
 bool applyNotePitch(engraving::Score* score, engraving::Note* note, int pitch);
 
 //! Writes a velocity back into the score, through the same property the Properties panel writes.
+//!
+//! `velocity` may be 0, which means "no own velocity" - the note goes back to following the dynamic
+//! marks of the score. That is the only way to undo a per-note tweak, so it is allowed on purpose.
 bool applyNoteVelocity(engraving::Score* score, engraving::Note* note, int velocity);
 
 //! Writes the "played" timing of a note - the piano roll's played layer, i.e. `ontime` and `len` of

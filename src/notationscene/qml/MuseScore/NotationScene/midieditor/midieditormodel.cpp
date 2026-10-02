@@ -167,6 +167,7 @@ void MidiEditorModel::reload()
         note["durationTicks"] = entry.durationTicks;
         note["pitch"] = entry.pitch;
         note["velocity"] = entry.velocity;
+        note["hasVelocityOverride"] = entry.hasVelocityOverride;
         note["staffIndex"] = entry.staffIndex;
         note["voice"] = entry.voice;
         note["hasPlayOverride"] = entry.hasPlayOverride;

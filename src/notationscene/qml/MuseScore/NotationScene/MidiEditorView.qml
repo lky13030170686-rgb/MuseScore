@@ -303,7 +303,7 @@ Item {
 
             visible: root.hasScore
 
-            text: qsTrc("notationscene", "Drag the right edge of a note = played length · Shift+drag = played start")
+            text: qsTrc("notationscene", "Drag the right edge of a note = played length · Shift+drag = played start · velocity bar: drag = own velocity, right-click = follow dynamics")
 
             color: root.dimTextColor
             font: ui.theme.bodyFont
@@ -931,11 +931,22 @@ Item {
                         var x = root.xForTick(note.tick)
                         var barH = Math.max(1, (note.velocity / 127) * (h - 4))
                         var active = root.velocityDragging && root.velocityDragTick === note.tick
+                        var own = note.hasVelocityOverride
 
+                        //! NOTE: a thin, faint bar means "this note has no velocity of its own, so it
+                        //!       follows the dynamic marks (pp/ff, hairpins)" - which is the default
+                        //!       for almost every note. A thick solid bar means the note was given its
+                        //!       own velocity here, overriding the dynamics. Right-click clears it.
                         ctx.fillStyle = active ? root.cursorColor : root.staffColor(note.staffIndex)
-                        ctx.globalAlpha = active ? 1.0 : 0.8
-                        ctx.fillRect(x, h - barH, 3, barH)
+                        ctx.globalAlpha = active ? 1.0 : (own ? 0.9 : 0.3)
+                        ctx.fillRect(own || active ? x - 0.5 : x + 0.5, h - barH, own || active ? 4 : 2, barH)
                         ctx.globalAlpha = 1.0
+
+                        // a small cap so an overridden note is recognisable even when short
+                        if (own) {
+                            ctx.fillStyle = root.cursorColor
+                            ctx.fillRect(x - 0.5, h - barH - 2, 4, 2)
+                        }
                     }
 
                     ctx.strokeStyle = root.gridColor
@@ -951,8 +962,32 @@ Item {
 
             MouseArea {
                 anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+
+                //! NOTE: right-click clears the per-note velocity, so the note goes back to following
+                //!       the dynamic marks. Without this a tweak would be one-way.
+                onClicked: function(mouse) {
+                    if (mouse.button !== Qt.RightButton) {
+                        return
+                    }
+
+                    var tick = root.velocityAt(mouse.x)
+                    if (tick < 0) {
+                        return
+                    }
+
+                    for (var i = root.notes.length - 1; i >= 0; --i) {
+                        if (root.notes[i].tick === tick && root.notes[i].hasVelocityOverride) {
+                            root.model.setNoteVelocity(i, 0)
+                        }
+                    }
+                }
 
                 onPressed: function(mouse) {
+                    if (mouse.button !== Qt.LeftButton) {
+                        return
+                    }
+
                     var tick = root.velocityAt(mouse.x)
                     if (tick < 0) {
                         return
@@ -969,7 +1004,7 @@ Item {
                 }
 
                 onReleased: function(mouse) {
-                    if (!root.velocityDragging) {
+                    if (mouse.button !== Qt.LeftButton || !root.velocityDragging) {
                         return
                     }
 

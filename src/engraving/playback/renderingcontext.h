@@ -173,6 +173,15 @@ struct NominalNoteCtx {
                 std::clamp(scaled,
                            static_cast<long long>(muse::mpe::MIN_DYNAMIC_LEVEL),
                            static_cast<long long>(muse::mpe::MAX_DYNAMIC_LEVEL)));
+
+            //! NOTE: a note that carries its own velocity gets `ExpressionContext::velocityOverride`
+            //! built from `userVelocityFraction`, and the synthesisers prefer that override over the
+            //! dynamic level - so scaling only the dynamic level would leave the played velocity
+            //! untouched and the multiplier would be silently ignored. Scale the override too, so
+            //! the two ways of adjusting one note's loudness compose instead of fighting.
+            if (!muse::RealIsNull(userVelocityFraction)) {
+                userVelocityFraction = std::clamp(userVelocityFraction * static_cast<float>(event.velocityMultiplier()), 0.f, 1.f);
+            }
         }
     }
 };

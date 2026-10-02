@@ -265,6 +265,55 @@ TEST_F(MidiEditorNotesTests, TheVelocityMultiplierIsCarriedToo)
     EXPECT_EQ(played->playVelocityPercent, 50);
 }
 
+/*!
+ * "Keep the dynamics in charge, but let me tweak one note."
+ *
+ * Setting a velocity gives the note its own one (which overrides the dynamic marks in playback);
+ * setting it back to 0 hands the note to the dynamics again. The second half is what makes the tweak
+ * undoable - and the roll shows which of the two states a note is in.
+ */
+TEST_F(MidiEditorNotesTests, AnOwnVelocityCanBeSetAndClearedAgain)
+{
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_FALSE(items.empty());
+
+    Note* note = items.front().note;
+
+    ASSERT_FALSE(items.front().hasVelocityOverride) << "a fresh note must follow the dynamics";
+
+    ASSERT_TRUE(applyNoteVelocity(m_score, note, 100));
+
+    const MidiNoteItem* own = findItem(collectMidiNotes(m_score), note);
+    ASSERT_NE(own, nullptr);
+    EXPECT_TRUE(own->hasVelocityOverride) << "the note should no longer follow the dynamics";
+    EXPECT_EQ(own->velocity, 100);
+
+    //! And back to following the dynamics.
+    ASSERT_TRUE(applyNoteVelocity(m_score, note, 0));
+
+    const MidiNoteItem* freed = findItem(collectMidiNotes(m_score), note);
+    ASSERT_NE(freed, nullptr);
+    EXPECT_FALSE(freed->hasVelocityOverride) << "clearing must hand the note back to the dynamics";
+    EXPECT_EQ(freed->velocity, 64) << "an unset velocity is still SHOWN as 64";
+    EXPECT_EQ(note->userVelocity(), 0);
+
+    //! Undo has to bring the tweak back.
+    m_score->undoRedo(true, nullptr);
+
+    const MidiNoteItem* undone = findItem(collectMidiNotes(m_score), note);
+    ASSERT_NE(undone, nullptr);
+    EXPECT_TRUE(undone->hasVelocityOverride);
+    EXPECT_EQ(undone->velocity, 100);
+}
+
+TEST_F(MidiEditorNotesTests, ClearingAnAlreadyClearVelocityChangesNothing)
+{
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_FALSE(items.empty());
+
+    EXPECT_FALSE(applyNoteVelocity(m_score, items.front().note, 0));
+}
+
 //! Writing the neutral values again is "no change", not an edit - this is what keeps an untouched
 //! score from silently gaining an override.
 TEST_F(MidiEditorNotesTests, WritingTheNeutralOverrideChangesNothing)

@@ -286,3 +286,86 @@ TEST_F(Engraving_NotePlaybackOverrideTests, ADegenerateLengthStillProducesAValid
 
     delete score;
 }
+
+/*!
+ * The per-note velocity path.
+ *
+ * `Pid::USER_VELOCITY` does NOT feed the dynamic level - it becomes
+ * `ExpressionContext::velocityOverride`, which every synthesiser prefers over the dynamic level.
+ * That is precisely what makes "keep the dynamics in charge, but tweak a single note" possible, and
+ * these tests pin both directions of it: setting it takes over, clearing it hands control back.
+ */
+TEST_F(Engraving_NotePlaybackOverrideTests, AnOwnVelocityBecomesAVelocityOverride)
+{
+    Score* score = readSingleNoteScore();
+    ASSERT_TRUE(score);
+
+    Chord* chord = singleChordOf(score);
+    ASSERT_TRUE(chord);
+
+    Note* note = chord->notes().front();
+    ASSERT_TRUE(note);
+
+    //! Nothing set: the note follows the dynamic marks, so there must be no override.
+    ASSERT_FALSE(renderFirstEvent(chord, score).expressionCtx().velocityOverride.has_value())
+        << "a note with no own velocity must not override the dynamics";
+
+    note->setUserVelocity(100);
+
+    const mpe::NoteEvent event = renderFirstEvent(chord, score);
+    ASSERT_TRUE(event.expressionCtx().velocityOverride.has_value());
+    EXPECT_NEAR(event.expressionCtx().velocityOverride.value(), 100.f / 127.f, 0.01f);
+
+    //! Clearing it again has to hand the note back to the dynamics - otherwise a tweak would be
+    //! one-way, which is exactly what the MIDI page's right-click is for.
+    note->setUserVelocity(0);
+
+    EXPECT_FALSE(renderFirstEvent(chord, score).expressionCtx().velocityOverride.has_value())
+        << "clearing the own velocity must return the note to the dynamic marks";
+
+    delete score;
+}
+
+//! The velocity override is stronger than the dynamic level, so the played-length multiplier has to
+//! reach it as well - otherwise it would be silently ignored on a note that has its own velocity.
+TEST_F(Engraving_NotePlaybackOverrideTests, TheMultiplierAlsoReachesAnOwnVelocity)
+{
+    Score* score = readSingleNoteScore();
+    ASSERT_TRUE(score);
+
+    Chord* chord = singleChordOf(score);
+    ASSERT_TRUE(chord);
+
+    Note* note = chord->notes().front();
+    ASSERT_TRUE(note);
+    note->setUserVelocity(100);
+
+    setOverride(chord, 0, mu::engraving::NoteEvent::NOTE_LENGTH, 0.5);
+
+    const mpe::NoteEvent event = renderFirstEvent(chord, score);
+
+    ASSERT_TRUE(event.expressionCtx().velocityOverride.has_value());
+    EXPECT_NEAR(event.expressionCtx().velocityOverride.value(), (100.f / 127.f) * 0.5f, 0.01f);
+
+    delete score;
+}
+
+//! ...and with no own velocity the multiplier keeps working through the dynamic level as before.
+TEST_F(Engraving_NotePlaybackOverrideTests, TheMultiplierStillWorksWithoutAnOwnVelocity)
+{
+    Score* score = readSingleNoteScore();
+    ASSERT_TRUE(score);
+
+    Chord* chord = singleChordOf(score);
+    ASSERT_TRUE(chord);
+
+    const mpe::dynamic_level_t plain = renderFirstEvent(chord, score).expressionCtx().nominalDynamicLevel;
+
+    setOverride(chord, 0, mu::engraving::NoteEvent::NOTE_LENGTH, 0.5);
+
+    const mpe::NoteEvent event = renderFirstEvent(chord, score);
+    EXPECT_FALSE(event.expressionCtx().velocityOverride.has_value());
+    EXPECT_LT(event.expressionCtx().nominalDynamicLevel, plain);
+
+    delete score;
+}

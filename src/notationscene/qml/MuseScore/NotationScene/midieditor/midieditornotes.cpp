@@ -119,6 +119,7 @@ std::vector<MidiNoteItem> collectMidiNotes(const Score* score)
                     entry.durationTicks = durationTicks;
                     entry.pitch = note->pitch();
                     entry.velocity = midiDisplayVelocity(note->userVelocity());
+                    entry.hasVelocityOverride = note->userVelocity() != 0;
                     entry.staffIndex = int(note->staffIdx());
                     entry.voice = int(note->voice());
 
@@ -175,7 +176,9 @@ bool applyNoteVelocity(Score* score, Note* note, int velocity)
         return false;
     }
 
-    velocity = std::clamp(velocity, 1, 127);
+    //! NOTE: 0 is allowed on purpose: it means "back to following the dynamic marks". Clamping to 1
+    //!       would make a per-note tweak impossible to undo (see the header).
+    velocity = std::clamp(velocity, 0, 127);
     if (velocity == note->userVelocity()) {
         return false;
     }
