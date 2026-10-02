@@ -2537,6 +2537,11 @@ void TWrite::write(const NoteEvent* item, XmlWriter& xml, WriteContext&)
     xml.tag("pitch", item->pitch(), 0);
     xml.tag("ontime", item->ontime(), 0);
     xml.tag("len", item->len(), NoteEvent::NOTE_LENGTH);
+    //! NOTE: [our addition] The velocity multiplier used to be written nowhere, so a value set in the
+    //! piano roll was silently lost on save - and could never reach the MIDI export either. It is
+    //! written only when it differs from the default, so existing files keep their exact shape and
+    //! older readers simply ignore the element.
+    xml.tag("velocityMultiplier", item->velocityMultiplier(), NoteEvent::DEFAULT_VELOCITY_MULTIPLIER);
     xml.endElement();
 }
 

@@ -21,6 +21,12 @@
  */
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
+#include <QDir>
+#include <QFile>
+#include <QtGlobal>
+
 #include "engraving/dom/masterscore.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/score.h"
@@ -274,4 +280,65 @@ TEST_F(MidiEditorNotesTests, WritingTheNeutralOverrideChangesNothing)
     const MidiNoteItem* played = findItem(collectMidiNotes(m_score), note);
     ASSERT_NE(played, nullptr);
     EXPECT_FALSE(played->hasPlayOverride);
+}
+
+//! The played layer has to survive saving - otherwise the piano roll would silently lose the user's
+//! work, and the values would never reach the MIDI export either.
+//!
+//! Set MUSE_MIDIEDITOR_KEEP_SCORE to keep the saved score, so the real application can be pointed at
+//! it: that is how the played-vs-notated drawing is looked at end to end (same idea as
+//! MUSE_AUDIOTRACK_KEEP_SCORE in the audio track tests).
+TEST_F(MidiEditorNotesTests, PlayedTimingSurvivesSaveAndReload)
+{
+    const bool keepScore = qEnvironmentVariableIsSet("MUSE_MIDIEDITOR_KEEP_SCORE");
+    const QString savedPath = keepScore
+                              ? QDir::tempPath() + QStringLiteral("/dsh-midieditor-played.mscx")
+                              : QDir::tempPath() + QStringLiteral("/dsh-midieditor-played-roundtrip.mscx");
+    QFile::remove(savedPath);
+
+    int touched = 0;
+
+    {
+        MasterScore* score = ScoreRW::readScore(TEST_SCORE_PATH);
+        ASSERT_TRUE(score);
+
+        //! Give every note a played timing that is unmistakably different from the notated one:
+        //! a quarter of the note later, half as long, and every other one quieter.
+        for (const MidiNoteItem& item : collectMidiNotes(score)) {
+            const int start = item.tick + item.durationTicks / 4;
+            const int duration = std::max(1, item.durationTicks / 2);
+            if (applyNotePlayOverride(score, item.note, start, duration, touched % 2 == 0 ? 50 : 100)) {
+                ++touched;
+            }
+        }
+
+        EXPECT_GT(touched, 0) << "no note accepted a played override";
+
+        ASSERT_TRUE(ScoreRW::saveScore(score, savedPath)) << "could not save the score";
+        delete score;
+    }
+
+    ASSERT_TRUE(QFile::exists(savedPath)) << "the saved score is not on disk";
+
+    MasterScore* reloaded = ScoreRW::readScore(savedPath, /*isAbsolutePath*/ true);
+    ASSERT_TRUE(reloaded) << "could not reopen the saved score";
+
+    const std::vector<MidiNoteItem> again = collectMidiNotes(reloaded);
+    ASSERT_FALSE(again.empty());
+
+    int withOverride = 0;
+    int withQuieter = 0;
+    for (const MidiNoteItem& item : again) {
+        if (item.hasPlayOverride) {
+            ++withOverride;
+        }
+        if (item.playVelocityPercent != 100) {
+            ++withQuieter;
+        }
+    }
+
+    EXPECT_EQ(withOverride, touched) << "the played timing was lost on save/reload";
+    EXPECT_GT(withQuieter, 0) << "the velocity multiplier was lost on save/reload";
+
+    delete reloaded;
 }

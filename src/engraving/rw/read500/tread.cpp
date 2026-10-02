@@ -3492,6 +3492,10 @@ void TRead::read(NoteEvent* item, XmlReader& e, ReadContext&)
             item->setOntime(e.readInt());
         } else if (tag == "len") {
             item->setLen(e.readInt());
+        } else if (tag == "velocityMultiplier") {
+            //! NOTE: [our addition] Written by the writer since the piano roll can edit per-note
+            //! playback velocity; older files simply do not carry the element.
+            item->setVelocityMultiplier(e.readDouble());
         } else {
             e.unknown();
         }
