@@ -106,6 +106,47 @@ int applyNoteVelocities(engraving::Score* score, const std::vector<std::pair<eng
 bool applyNotePlayOverride(engraving::Score* score, engraving::Note* note,
                            int startTick, int durationTicks, int velocityPercent);
 
+//! One point of the Dynamics automation curve of a staff: a tick, and a level in 0..1.
+struct MidiAutomationPoint {
+    int tick = 0;
+    double value = 0.0;
+
+    //! True when the point is the user's own, i.e. the lane may remove it again. False when the score
+    //! derived it from an engraving item - a Dynamic mark, a hairpin - because those are regenerated on
+    //! every rebuild, so removing one is not the lane's to do.
+    //! Only meaningful when READ back; a write always writes an authored point.
+    bool authored = true;
+};
+
+//! The Dynamics automation curve of one staff, in tick order - what a crescendo, a diminuendo or an
+//! fp really is.
+//!
+//! NOTE: this is not a second curve of our own. It is the one the notation page draws next to the
+//! mixer, addressed with the same key (`AutomationCurveKey::staff(Dynamics, staff->id())`), and the one
+//! `MuseSamplerSequencer::loadDynamicEvents()` plays - so both pages edit one thing rather than two.
+//!
+//! Deliberately a free function taking a plain `Score*`, for the same reason `collectMidiNotes` is one:
+//! it needs no IoC context, so "both pages address the same curve" is pinned by a unit test instead of
+//! by a comment.
+std::vector<MidiAutomationPoint> collectAutomationPoints(const engraving::Score* score, int staffIndex);
+
+//! Writes points of that curve as ONE undoable command - one notification for the whole stroke, for the
+//! reason spelled out at `applyNoteVelocities`.
+//!
+//! A point that already holds that value is left alone; when nothing at all changes, nothing is written,
+//! because a stroke that changes nothing must not cost an undo step either. Returns how many points were
+//! written.
+int applyAutomationPoints(engraving::Score* score, int staffIndex, const std::vector<MidiAutomationPoint>& points);
+
+//! Removes the point at `tick`, if it is the user's own.
+//!
+//! A point the score derived from a Dynamic mark or a hairpin is NOT removable: the score regenerates it
+//! on the next rebuild, so erasing it here would look like a dead gesture - and would take the mark's own
+//! shape away until that rebuild. The notation page's lane refuses exactly the same points
+//! (NotationAutomationController::requestRemovePoint), and the two pages must not disagree about what is
+//! the user's to delete. Returns false when nothing was removed.
+bool eraseAutomationPoint(engraving::Score* score, int staffIndex, int tick);
+
 //! The default velocity shown for a note the user has never given an explicit velocity.
 int midiDisplayVelocity(int userVelocity);
 }

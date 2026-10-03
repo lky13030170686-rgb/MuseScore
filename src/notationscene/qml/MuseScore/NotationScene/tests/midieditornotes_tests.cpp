@@ -29,9 +29,13 @@
 #include <QFile>
 #include <QtGlobal>
 
+#include "engraving/automation/automationdata.h"
+#include "engraving/automation/automationtypes.h"
+#include "engraving/automation/internal/automationrw.h"
 #include "engraving/dom/masterscore.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/score.h"
+#include "engraving/dom/staff.h"
 #include "engraving/tests/utils/scorerw.h"
 
 #include "notationscene/qml/MuseScore/NotationScene/midieditor/midieditornotes.h"
@@ -69,6 +73,26 @@ public:
 
     MasterScore* m_score = nullptr;
 };
+
+//! The key the NOTATION page addresses the Dynamics curve of a staff with: written out here the way
+//! NotationAutomationController::curveKeyFor does it, independently of the code under test. If the piano
+//! roll ever drifted to a key of its own, the two pages would quietly edit two different curves - and
+//! this is what would catch it.
+static AutomationCurveKey notationPageKey(const MasterScore* score, size_t staffIdx)
+{
+    return AutomationCurveKey::staff(AutomationType::Dynamics, score->staff(staffIdx)->id());
+}
+
+static const MidiAutomationPoint* findAutomationPoint(const std::vector<MidiAutomationPoint>& points, int tick)
+{
+    for (const MidiAutomationPoint& point : points) {
+        if (point.tick == tick) {
+            return &point;
+        }
+    }
+
+    return nullptr;
+}
 
 //! The roll must describe exactly the notes the score has - this is what "the MIDI page and the
 //! notation page share one data source" means, and it is what a copy-based implementation breaks.
@@ -488,4 +512,196 @@ TEST_F(MidiEditorNotesTests, PlayedTimingSurvivesSaveAndReload)
     EXPECT_EQ(withOwnVelocity, ownVelocity) << "an own velocity was lost on save/reload";
 
     delete reloaded;
+}
+
+// ── the Dynamics automation curve, i.e. what a crescendo really is ───────────────────────────────
+//
+// NOTE: the app initialises the automation of every score it loads (EngravingProject::load calls
+//       MasterScore::initAutomation), and the generated part of the curve only exists afterwards - so
+//       each test below does the same before touching the curve.
+
+//! What the lane paints is a run of points, and what it reads back has to be exactly that - through the
+//! notation page's own key, because the crescendo drawn here is the one drawn there.
+TEST_F(MidiEditorNotesTests, ADrawnCurveIsReadBackAndIsTheCurveTheNotationPageReads)
+{
+    m_score->initAutomation();
+
+    const std::vector<MidiAutomationPoint> drawn { { 240, 0.25 }, { 960, 0.5 }, { 1680, 0.75 } };
+    EXPECT_EQ(applyAutomationPoints(m_score, 0, drawn), int(drawn.size()));
+
+    const std::vector<MidiAutomationPoint> read = collectAutomationPoints(m_score, 0);
+    ASSERT_FALSE(read.empty());
+
+    //! In tick order: the curve is a function of time, and the lane draws it as one line.
+    for (size_t i = 1; i < read.size(); ++i) {
+        EXPECT_LT(read[i - 1].tick, read[i].tick) << "the curve came back out of order";
+    }
+
+    for (const MidiAutomationPoint& point : drawn) {
+        const MidiAutomationPoint* written = findAutomationPoint(read, point.tick);
+        ASSERT_NE(written, nullptr) << "no point was written at tick " << point.tick;
+        EXPECT_DOUBLE_EQ(written->value, point.value);
+        EXPECT_TRUE(written->authored) << "a point the lane wrote is the user's own";
+    }
+
+    //! The SAME points, found under the key the notation page reads.
+    const AutomationCurve& shared = m_score->automationData()->curve(notationPageKey(m_score, 0));
+    for (const MidiAutomationPoint& point : drawn) {
+        const AutomationCurve::const_iterator it = shared.find(point.tick);
+        ASSERT_NE(it, shared.end()) << "the notation page cannot see the point at tick " << point.tick;
+        EXPECT_DOUBLE_EQ(double(it->second.value.outValue), point.value)
+            << "the two pages are not looking at one curve";
+    }
+}
+
+//! A stroke is ONE undo step, for the reason a velocity stroke is: every command notifies the whole
+//! score, and the subscribers rebuild things that cost O(score).
+TEST_F(MidiEditorNotesTests, AStrokeOfTheCurveIsASingleUndoStep)
+{
+    m_score->initAutomation();
+
+    //! The score's own marks already put points on this curve, so compare against the curve as it was
+    //! rather than against "empty".
+    const std::vector<MidiAutomationPoint> before = collectAutomationPoints(m_score, 0);
+
+    std::vector<MidiAutomationPoint> stroke;
+    for (int tick = 120; tick <= 1800; tick += 120) {
+        stroke.push_back(MidiAutomationPoint { tick, 0.1 + double(tick) / 2400.0 });
+    }
+
+    ASSERT_EQ(applyAutomationPoints(m_score, 0, stroke), int(stroke.size()));
+
+    for (const MidiAutomationPoint& point : stroke) {
+        const MidiAutomationPoint* written = findAutomationPoint(collectAutomationPoints(m_score, 0), point.tick);
+        ASSERT_NE(written, nullptr) << "no point was written at tick " << point.tick;
+    }
+
+    m_score->undoRedo(true, nullptr);
+
+    const std::vector<MidiAutomationPoint> undone = collectAutomationPoints(m_score, 0);
+    ASSERT_EQ(undone.size(), before.size()) << "one undo did not take the whole stroke back";
+    for (size_t i = 0; i < before.size(); ++i) {
+        EXPECT_EQ(undone[i].tick, before[i].tick);
+        EXPECT_DOUBLE_EQ(undone[i].value, before[i].value);
+        EXPECT_EQ(undone[i].authored, before[i].authored);
+    }
+}
+
+//! A stroke that changes nothing must not cost an undo step - otherwise Ctrl+Z would appear to do
+//! nothing, which is worse than a wasted rebuild.
+TEST_F(MidiEditorNotesTests, AStrokeOfTheCurveThatChangesNothingCostsNoUndoStep)
+{
+    m_score->initAutomation();
+
+    const std::vector<MidiAutomationPoint> drawn { { 240, 0.3 }, { 720, 0.6 } };
+    EXPECT_EQ(applyAutomationPoints(m_score, 0, drawn), int(drawn.size()));
+
+    EXPECT_EQ(applyAutomationPoints(m_score, 0, drawn), 0) << "an unchanged stroke was written again";
+
+    //! Nothing was pushed in between, so this one undo takes the FIRST write back.
+    m_score->undoRedo(true, nullptr);
+
+    const std::vector<MidiAutomationPoint> undone = collectAutomationPoints(m_score, 0);
+    EXPECT_EQ(findAutomationPoint(undone, 240), nullptr)
+        << "the stroke is still there, so an empty command was pushed";
+    EXPECT_EQ(findAutomationPoint(undone, 720), nullptr);
+}
+
+//! A dynamic mark and a crescendo put points on the curve themselves. They are shown - the lane has to
+//! show what the synthesiser follows - but they are not the lane's to delete: the score regenerates
+//! them, so erasing one would look like a dead gesture. The notation page's lane refuses the same ones.
+TEST_F(MidiEditorNotesTests, APointThatCameFromAMarkIsShownButIsNotTheLanesToRemove)
+{
+    m_score->initAutomation();
+
+    const MidiAutomationPoint* generated = nullptr;
+    for (const MidiAutomationPoint& point : collectAutomationPoints(m_score, 0)) {
+        if (!point.authored) {
+            generated = &point;
+            break;
+        }
+    }
+
+    //! The fixture carries a `pp` and a crescendo hairpin, so the score must have generated points.
+    ASSERT_NE(generated, nullptr) << "the score generated no point for its dynamic mark / hairpin";
+
+    const int tick = generated->tick;
+    const double markValue = generated->value;
+
+    EXPECT_FALSE(eraseAutomationPoint(m_score, 0, tick)) << "the mark's own point was removed";
+    EXPECT_NE(findAutomationPoint(collectAutomationPoints(m_score, 0), tick), nullptr)
+        << "the mark's own point is gone";
+
+    //! Drawing over it takes it over: from then on it is the user's, and can be taken back.
+    const double drawn = markValue > 0.5 ? 0.05 : 0.95;
+    EXPECT_EQ(applyAutomationPoints(m_score, 0, { { tick, drawn } }), 1);
+
+    const MidiAutomationPoint* taken = findAutomationPoint(collectAutomationPoints(m_score, 0), tick);
+    ASSERT_NE(taken, nullptr);
+    EXPECT_TRUE(taken->authored) << "a point the user drew over is still the mark's";
+    EXPECT_DOUBLE_EQ(taken->value, drawn);
+
+    EXPECT_TRUE(eraseAutomationPoint(m_score, 0, tick)) << "the user's own point must be removable";
+    EXPECT_EQ(findAutomationPoint(collectAutomationPoints(m_score, 0), tick), nullptr);
+}
+
+TEST_F(MidiEditorNotesTests, TheCurveClampsItsValuesAndIgnoresWhatIsNotAPoint)
+{
+    m_score->initAutomation();
+
+    EXPECT_EQ(applyAutomationPoints(m_score, 0, { { 100, 5.0 }, { 200, -3.0 } }), 2);
+
+    const std::vector<MidiAutomationPoint> read = collectAutomationPoints(m_score, 0);
+    const MidiAutomationPoint* high = findAutomationPoint(read, 100);
+    const MidiAutomationPoint* low = findAutomationPoint(read, 200);
+    ASSERT_NE(high, nullptr);
+    ASSERT_NE(low, nullptr);
+    EXPECT_DOUBLE_EQ(high->value, 1.0) << "the level is a 0..1 fraction";
+    EXPECT_DOUBLE_EQ(low->value, 0.0);
+
+    //! A negative tick is not a point in time, and a staff that does not exist is not a curve.
+    EXPECT_EQ(applyAutomationPoints(m_score, 0, { { -1, 0.5 } }), 0);
+    EXPECT_EQ(applyAutomationPoints(m_score, 7, { { 100, 0.5 } }), 0);
+    EXPECT_TRUE(collectAutomationPoints(m_score, 7).empty());
+    EXPECT_FALSE(eraseAutomationPoint(m_score, 7, 0));
+
+    //! And nothing at all is a no-op rather than a crash.
+    EXPECT_EQ(applyAutomationPoints(nullptr, 0, { { 100, 0.5 } }), 0);
+    EXPECT_TRUE(collectAutomationPoints(nullptr, 0).empty());
+    EXPECT_FALSE(eraseAutomationPoint(nullptr, 0, 100));
+    EXPECT_EQ(applyAutomationPoints(m_score, 0, {}), 0);
+}
+
+//! What the lane draws is what the score FILE keeps. The saver writes the curve with
+//! `writeGenerated = false` (MscSaver), so the user's own points go in and the marks' generated ones are
+//! left out - they are rebuilt from the marks on the next load, and writing them as well would put a
+//! second, stale copy of the same crescendo in the file.
+TEST_F(MidiEditorNotesTests, ADrawnCurveIsWhatTheScoreFileKeeps)
+{
+    m_score->initAutomation();
+
+    const std::vector<MidiAutomationPoint> drawn { { 240, 0.125 }, { 1440, 0.875 } };
+    ASSERT_EQ(applyAutomationPoints(m_score, 0, drawn), int(drawn.size()));
+
+    //! Exactly the call the saver makes when it writes a score.
+    const muse::ByteArray saved = AutomationRW::write(*m_score->automationData(), /*writeGenerated*/ false);
+    ASSERT_FALSE(saved.empty()) << "a drawn curve never reached the file";
+
+    AutomationData loaded;
+    AutomationRW::read(loaded, saved);
+
+    const AutomationCurve& curve = loaded.curve(notationPageKey(m_score, 0));
+    for (const MidiAutomationPoint& point : drawn) {
+        const AutomationCurve::const_iterator it = curve.find(point.tick);
+        ASSERT_NE(it, curve.end()) << "the point at tick " << point.tick << " was lost with the score";
+        EXPECT_DOUBLE_EQ(double(it->second.value.outValue), point.value)
+            << "the point at tick " << point.tick << " came back changed";
+    }
+
+    for (const MidiAutomationPoint& point : collectAutomationPoints(m_score, 0)) {
+        if (!point.authored) {
+            EXPECT_EQ(curve.find(point.tick), curve.end())
+                << "a generated point was written to the file at tick " << point.tick;
+        }
+    }
 }

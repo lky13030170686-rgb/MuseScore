@@ -27,12 +27,15 @@
 
 #include "translation.h"
 
+#include "engraving/automation/automationdata.h"
+#include "engraving/automation/automationtypes.h"
 #include "engraving/dom/chord.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/noteevent.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/segment.h"
+#include "engraving/dom/staff.h"
 #include "engraving/editing/editnote.h"
 
 using namespace mu::engraving;
@@ -273,6 +276,156 @@ bool applyNotePlayOverride(Score* score, Note* note, int startTick, int duration
     //! NOTE: reuse the engraving undo command instead of writing our own; it also switches the
     //!       chord's play event type to User, which is what makes the value survive saving.
     score->undo(new ChangeNoteEventList(note, events));
+    score->endCmd();
+
+    return true;
+}
+
+//! The Dynamics curve key of one staff, built the way the notation page builds it
+//! (NotationAutomationController::curveKeyFor -> ScoreAutomationController::resolveKeys), so that the
+//! two pages address ONE curve. A staff index outside the score yields an invalid key, and every entry
+//! point below treats that as "do nothing".
+static AutomationCurveKey dynamicsKey(const Score* score, int staffIndex)
+{
+    if (!score || staffIndex < 0 || size_t(staffIndex) >= score->nstaves()) {
+        return {};
+    }
+
+    const Staff* staff = score->staff(size_t(staffIndex));
+    if (!staff) {
+        return {};
+    }
+
+    return AutomationCurveKey::staff(AutomationType::Dynamics, staff->id());
+}
+
+//! Whether the lane may edit this point at all. The score's own answer is "not if I generated it, and
+//! not if it belongs to an engraving item" - see NotationAutomationController::requestRemovePoint.
+static bool isAuthoredPoint(const AutomationPoint& point)
+{
+    return !point.generated && !point.itemId.has_value();
+}
+
+std::vector<MidiAutomationPoint> collectAutomationPoints(const Score* score, int staffIndex)
+{
+    std::vector<MidiAutomationPoint> result;
+
+    const AutomationCurveKey key = dynamicsKey(score, staffIndex);
+    if (!score || !key.isValid()) {
+        return result;
+    }
+
+    const AutomationDataConstPtr data = score->automationData();
+    if (!data) {
+        return result;
+    }
+
+    const AutomationCurve& curve = data->curve(key);
+    result.reserve(curve.size());
+
+    for (const auto& [tick, point] : curve) {
+        MidiAutomationPoint item;
+        item.tick = tick;
+        item.value = double(point.value.outValue);
+        item.authored = isAuthoredPoint(point);
+        result.push_back(item);
+    }
+
+    return result;
+}
+
+int applyAutomationPoints(Score* score, int staffIndex, const std::vector<MidiAutomationPoint>& points)
+{
+    const AutomationCurveKey key = dynamicsKey(score, staffIndex);
+    if (!score || !key.isValid() || points.empty()) {
+        return 0;
+    }
+
+    //! The curve as it stands, so that a point which already holds the value can be left alone. Reading
+    //! it is what keeps a stroke that changes nothing from pushing an undo step that does nothing - and
+    //! from clobbering an arrival shape the point may carry.
+    const AutomationDataConstPtr data = score->automationData();
+    const AutomationCurve* curve = data ? &data->curve(key) : nullptr;
+
+    AutomationPointEdits edits;
+    edits.reserve(points.size());
+
+    for (const MidiAutomationPoint& point : points) {
+        if (point.tick < 0) {
+            continue;
+        }
+
+        const real_t value = real_t::make(std::clamp(point.value, 0.0, 1.0));
+
+        if (curve) {
+            const AutomationCurve::const_iterator it = curve->find(point.tick);
+            if (it != curve->end() && it->second.value.outValue == value) {
+                continue;
+            }
+        }
+
+        AutomationPoint written;
+        //! NOTE: engraving's AutomationPoint wraps the mpe one - the value lives one level down.
+        written.value.outValue = value;
+
+        //! `inValue` is left at ArrivalFromPrevious (the default), which is what makes a run of points
+        //! read as one continuous move - the shape of a crescendo - rather than as steps.
+        //!
+        //! `generated` stays false and no `itemId` is set: this is the user's own point now, exactly like
+        //! a point added on the notation page (NotationAutomationController::requestAddPoint). Being
+        //! authored is also what makes it win over a generated point at the same tick - the score's
+        //! generation step leaves an authored point alone.
+
+        edits.push_back({ point.tick, AutomationPointEdit::SetPoint { written } });
+    }
+
+    if (edits.empty()) {
+        return 0;
+    }
+
+    //! ONE command for the whole stroke - see applyNoteVelocities for why that matters. It goes through
+    //! the score's own undoable automation command, so it undoes and saves like the same edit made on
+    //! the notation page.
+    //!
+    //! ⚠️ The command has to be OPEN when that call is made: `Score::undo()` (cmd.cpp) applies a command
+    //! immediately and then DISCARDS it when no transaction is open, so an edit made outside one changes
+    //! the curve and leaves nothing to undo - the stroke would be un-undoable. The notation page wraps
+    //! this very call in a transaction for the same reason (NotationAutomation::editPoints).
+    score->startCmd(TranslatableString("midieditor", "Draw dynamics curve"));
+    score->editAutomationPoints(key, edits);
+    score->endCmd();
+
+    return int(edits.size());
+}
+
+bool eraseAutomationPoint(Score* score, int staffIndex, int tick)
+{
+    const AutomationCurveKey key = dynamicsKey(score, staffIndex);
+    if (!score || !key.isValid() || tick < 0) {
+        return false;
+    }
+
+    const AutomationDataConstPtr data = score->automationData();
+    if (!data) {
+        return false;
+    }
+
+    const AutomationCurve& curve = data->curve(key);
+    const AutomationCurve::const_iterator it = curve.find(tick);
+    if (it == curve.end()) {
+        return false;
+    }
+
+    //! The mark's point, not the lane's - see the note on the declaration.
+    if (!isAuthoredPoint(it->second)) {
+        return false;
+    }
+
+    AutomationPointEdits edits { { tick, AutomationPointEdit::ErasePoint {} } };
+
+    //! In a command, for the reason spelled out in applyAutomationPoints.
+    score->startCmd(TranslatableString("midieditor", "Remove dynamics point"));
+    score->editAutomationPoints(key, edits);
     score->endCmd();
 
     return true;

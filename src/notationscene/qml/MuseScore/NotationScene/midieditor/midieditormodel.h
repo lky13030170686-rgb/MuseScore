@@ -35,8 +35,6 @@
 
 #include "notation/inotation.h"
 
-#include "engraving/automation/automationtypes.h"
-
 #include "midieditornotes.h"
 
 namespace mu::engraving {
@@ -101,7 +99,9 @@ public:
     //! what a crescendo, a diminuendo or an fp inside a single note is, and it is the same curve the
     //! notation page draws next to the mixer, so the two stay one thing rather than two.
     //!
-    //! Returns a list of { tick, value } with value in 0..1.
+    //! Returns a list of { tick, value, authored } with value in 0..1. `authored` is false for a point
+    //! the score derived from a Dynamic mark or a hairpin - those cannot be removed from here, exactly
+    //! as the notation page's lane refuses them.
     Q_INVOKABLE QVariantList automationPoints(int staffIndex) const;
 
     //! Writes one point of that curve. Goes through the score's own undoable automation command, so
@@ -112,7 +112,7 @@ public:
     //! the same reason the velocity brush needs one: every command notifies the whole score.
     Q_INVOKABLE void setAutomationPoints(int staffIndex, const QVariantList& points);
 
-    //! Removes the point at that tick, if there is one.
+    //! Removes the point at that tick, if there is one and it is the user's own.
     Q_INVOKABLE void removeAutomationPoint(int staffIndex, int tick);
 
     //! The "played" layer: where the note actually sounds (tick) and for how long, plus the velocity
@@ -140,10 +140,6 @@ private:
 
     engraving::Score* currentScore() const;
     engraving::Note* noteAt(int row) const;
-
-    //! The automation curve key for one staff's Dynamics curve, or an invalid key when there is no
-    //! such staff.
-    engraving::AutomationCurveKey dynamicsKey(int staffIndex) const;
 
     std::vector<MidiNoteItem> m_entries;
     QVariantList m_notes;

@@ -456,7 +456,8 @@ Item {
     function automationCurveToDraw() {
         var drawn = []
         for (var p = 0; p < automationPoints.length; ++p) {
-            drawn.push({ "tick": automationPoints[p].tick, "value": automationPoints[p].value })
+            drawn.push({ "tick": automationPoints[p].tick, "value": automationPoints[p].value,
+                         "authored": automationPoints[p].authored })
         }
 
         for (var key in automationTrail) {
@@ -465,12 +466,15 @@ Item {
             for (var d = 0; d < drawn.length; ++d) {
                 if (drawn[d].tick === trailTick) {
                     drawn[d].value = automationTrail[key]
+                    //! The stroke is the user's, whoever owned the point before: writing it makes the
+                    //! model's point an authored one, so draw it that way right away.
+                    drawn[d].authored = true
                     replaced = true
                     break
                 }
             }
             if (!replaced) {
-                drawn.push({ "tick": trailTick, "value": automationTrail[key] })
+                drawn.push({ "tick": trailTick, "value": automationTrail[key], "authored": true })
             }
         }
 
@@ -478,11 +482,18 @@ Item {
         return drawn
     }
 
-    //! The point nearest to x, or -1. Only points close enough to aim at count as a hit.
+    //! The point nearest to x, or -1. Only points close enough to aim at count as a hit, and only the
+    //! user's own points are targets at all: a point the score derived from a Dynamic mark or a hairpin
+    //! is put back by the next rebuild, so removing it is not the lane's to do - the model refuses it
+    //! too (and the notation page's lane refuses the same points).
     function automationPointNear(x) {
         var best = -1
         var bestDist = 8
         for (var i = 0; i < automationPoints.length; ++i) {
+            if (!automationPoints[i].authored) {
+                continue
+            }
+
             var dist = Math.abs(xForTick(automationPoints[i].tick) - x)
             if (dist <= bestDist) {
                 bestDist = dist
@@ -1409,7 +1420,13 @@ Item {
                             for (var q = 0; q < drawn.length; ++q) {
                                 ctx.beginPath()
                                 ctx.arc(root.xForTick(drawn[q].tick), root.yForAutomationValue(drawn[q].value, h), 3, 0, 2 * Math.PI)
-                                ctx.fill()
+                                if (drawn[q].authored) {
+                                    ctx.fill()
+                                } else {
+                                    //! A point that came from a Dynamic mark or a hairpin, hollow: it is
+                                    //! shown, but it is the mark's - the lane cannot take it away.
+                                    ctx.stroke()
+                                }
                             }
                         }
                     }
