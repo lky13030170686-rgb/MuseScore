@@ -326,6 +326,10 @@ QVariantList MidiEditorModel::automationPoints(int staffIndex) const
         item["tick"] = point.tick;
         item["value"] = point.value;
         item["authored"] = point.authored;
+        item["hasEase"] = point.hasEase;
+        item["controlT"] = point.controlT;
+        item["controlValue"] = point.controlValue;
+        item["arrival"] = point.arrival;
         result << item;
     }
 
@@ -369,6 +373,20 @@ void MidiEditorModel::removeAutomationPoint(int staffIndex, int tick)
 {
     mutateOnce([this, staffIndex, tick]() {
         eraseAutomationPoint(currentScore(), staffIndex, tick);
+    });
+}
+
+void MidiEditorModel::setAutomationPointEase(int staffIndex, int tick, double t, double value)
+{
+    mutateOnce([this, staffIndex, tick, t, value]() {
+        applyAutomationPointEase(currentScore(), staffIndex, tick, t, value);
+    });
+}
+
+void MidiEditorModel::moveAutomationPoint(int staffIndex, int fromTick, int toTick, double value)
+{
+    mutateOnce([this, staffIndex, fromTick, toTick, value]() {
+        applyAutomationPointMove(currentScore(), staffIndex, fromTick, toTick, value);
     });
 }
 

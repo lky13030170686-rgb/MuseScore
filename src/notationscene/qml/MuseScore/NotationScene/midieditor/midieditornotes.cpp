@@ -328,6 +328,17 @@ std::vector<MidiAutomationPoint> collectAutomationPoints(const Score* score, int
         item.tick = tick;
         item.value = double(point.value.outValue);
         item.authored = isAuthoredPoint(point);
+
+        //! 到达段的弯折控制（二次贝塞尔的弯折点）；`ArrivalFromPrevious` 的点没有它。
+        if (const std::optional<AutomationPoint::Ease> bend = ease(point)) {
+            item.hasEase = true;
+            item.controlT = double(bend->t);
+            item.controlValue = double(bend->value);
+            item.arrival = double(std::get<AutomationPoint::ExplicitArrival>(point.value.inValue).value);
+        } else {
+            item.arrival = item.value;
+        }
+
         result.push_back(item);
     }
 
@@ -368,13 +379,17 @@ int applyAutomationPoints(Score* score, int staffIndex, const std::vector<MidiAu
         //! NOTE: engraving's AutomationPoint wraps the mpe one - the value lives one level down.
         written.value.outValue = value;
 
-        //! `inValue` is left at ArrivalFromPrevious (the default), which is what makes a run of points
-        //! read as one continuous move - the shape of a crescendo - rather than as steps.
+        //! ⚠️ 到达值必须写 `ExplicitArrival { 自己的值, Ease::none() }`，**不能**留默认的
+        //! `ArrivalFromPrevious`：后者的含义是"到达值 = 前一个点的值"，于是这一段是**平的**，
+        //! 值在点处**跳变** —— 一串这样的点画出来是**阶梯**，不是渐强（2026-10-03 用户实测后
+        //! 要求改成贝塞尔控制，根子就在这里）。写显式的到达值，这一段才是"从前一点的值斜到本点"
+        //! ✓ 与记谱页新增点完全一致（NotationAutomationController::requestAddPoint 也是这么写的）。
         //!
+        //! `Ease::none()` = 弯折点在段中点且不弯 = 直线；用户拖手柄才会换成别的弯折点。
         //! `generated` stays false and no `itemId` is set: this is the user's own point now, exactly like
-        //! a point added on the notation page (NotationAutomationController::requestAddPoint). Being
-        //! authored is also what makes it win over a generated point at the same tick - the score's
-        //! generation step leaves an authored point alone.
+        //! a point added on the notation page. Being authored is also what makes it win over a generated
+        //! point at the same tick - the score's generation step leaves an authored point alone.
+        written.value.inValue = AutomationPoint::ExplicitArrival { value, AutomationPoint::Ease::none() };
 
         edits.push_back({ point.tick, AutomationPointEdit::SetPoint { written } });
     }
@@ -425,6 +440,93 @@ bool eraseAutomationPoint(Score* score, int staffIndex, int tick)
 
     //! In a command, for the reason spelled out in applyAutomationPoints.
     score->startCmd(TranslatableString("midieditor", "Remove dynamics point"));
+    score->editAutomationPoints(key, edits);
+    score->endCmd();
+
+    return true;
+}
+
+bool applyAutomationPointEase(Score* score, int staffIndex, int tick, double t, double value)
+{
+    const AutomationCurveKey key = dynamicsKey(score, staffIndex);
+    if (!score || !key.isValid() || tick < 0) {
+        return false;
+    }
+
+    const AutomationDataConstPtr data = score->automationData();
+    if (!data) {
+        return false;
+    }
+
+    const AutomationCurve& curve = data->curve(key);
+    const AutomationCurve::const_iterator it = curve.find(tick);
+    if (it == curve.end()) {
+        return false;
+    }
+
+    const AutomationPoint::Ease bend { real_t::make(std::clamp(t, 0.0, 1.0)),
+                                       real_t::make(std::clamp(value, 0.0, 1.0)) };
+    const std::optional<AutomationPoint::Ease> currentBend = ease(it->second);
+    if (currentBend.has_value() && *currentBend == bend) {
+        return false;   // 弯折点没变：不写，也不压一个空的撤销步
+    }
+
+    AutomationPoint written = it->second;
+
+    //! 到达值取哪一个，是这里唯一的判断：
+    //!  * 原本就显式写过（渐强线的终点、记谱页编辑过的点）→ **保留它**，只换弯折 —— 别把上游
+    //!    或记谱页的语义丢掉；
+    //!  * 原本是 `ArrivalFromPrevious`（一段"平的"跳变）→ 升级成"到达本点的值"，这样拖手柄
+    //!    才真的把这一段变成弯的；否则这一段的 range 是 0，怎么弯都是平的（白拖）。
+    const real_t arrival = currentBend.has_value()
+                           ? std::get<AutomationPoint::ExplicitArrival>(written.value.inValue).value
+                           : written.value.outValue;
+    written.value.inValue = AutomationPoint::ExplicitArrival { arrival, bend };
+
+    AutomationPointEdits edits { { tick, AutomationPointEdit::SetPoint { written } } };
+
+    score->startCmd(TranslatableString("midieditor", "Bend dynamics curve"));
+    score->editAutomationPoints(key, edits);
+    score->endCmd();
+
+    return true;
+}
+
+bool applyAutomationPointMove(Score* score, int staffIndex, int fromTick, int toTick, double value)
+{
+    const AutomationCurveKey key = dynamicsKey(score, staffIndex);
+    if (!score || !key.isValid() || fromTick < 0 || toTick < 0) {
+        return false;
+    }
+
+    const AutomationDataConstPtr data = score->automationData();
+    if (!data) {
+        return false;
+    }
+
+    const AutomationCurve& curve = data->curve(key);
+    const AutomationCurve::const_iterator it = curve.find(fromTick);
+    if (it == curve.end()) {
+        return false;
+    }
+
+    const real_t movedValue = real_t::make(std::clamp(value, 0.0, 1.0));
+    if (fromTick == toTick && it->second.value.outValue == movedValue) {
+        return false;   // 原地没动：不写
+    }
+
+    AutomationPoint moved = it->second;
+    //! 到达值就是"这一段结束在本点的值"，值一改它就得跟着改 —— 否则拖动一个点会把**上一段**
+    //! 的形状弄拧（那段会停在旧值上）。原本显式写过的保留它的弯折，只换值。
+    if (const std::optional<AutomationPoint::Ease> bend = ease(moved)) {
+        moved.value.inValue = AutomationPoint::ExplicitArrival { movedValue, *bend };
+    }
+    moved.value.outValue = movedValue;
+
+    //! 上游的 MovePoint：写到新 tick，并把原 tick 上的点删掉。
+    AutomationPointEdits edits { { toTick, AutomationPointEdit::MovePoint { moved, fromTick } } };
+
+    score->startCmd(TranslatableString("midieditor", "Move dynamics point"));
     score->editAutomationPoints(key, edits);
     score->endCmd();
 

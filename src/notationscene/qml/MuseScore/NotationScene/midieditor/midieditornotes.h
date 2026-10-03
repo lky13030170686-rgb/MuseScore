@@ -116,6 +116,25 @@ struct MidiAutomationPoint {
     //! every rebuild, so removing one is not the lane's to do.
     //! Only meaningful when READ back; a write always writes an authored point.
     bool authored = true;
+
+    //! 该点"到达段"的弯折控制 —— 上游 `AutomationPoint::Ease`，也就是**二次贝塞尔曲线的弯折点**：
+    //! `controlT` 是弯折位置（沿这一段的横向比例 0..1），`controlValue` 是弯折处的纵向比例 0..1
+    //! （相对该段起止值）。`muse::mpe::evaluateAt()` 把一段拆成两条在弯折点相切的二次贝塞尔弧，
+    //! 所以 `{0.5, 0.5}` = 直线，`{0.3, 0.8}` = 先慢后快的那种弯。
+    //!
+    //! `hasEase == false` 表示这一点是 `ArrivalFromPrevious`（到达值等于前一点，即连续斜坡、无弯折）。
+    //! 只有 `hasEase` 为真时才写 `ExplicitArrival` —— 这样"没动过曲率的点"在文件里形状不变。
+    //! 与 `authored` 一样，**只在读回时有意义**。
+    bool hasEase = false;
+    double controlT = 0.5;
+    double controlValue = 0.5;
+
+    //! 该点的"到达值"（`ExplicitArrival::value`）—— **到达这一点的那个段结束时的值**。
+    //! 上游求值 `evaluateAt(point, prevOut, t)` 用的就是它（`ArrivalFromPrevious` 时取 prevOut）。
+    //! QML 要复刻同一份公式来画曲线，所以必须把这个值给出去：否则屏幕上的线与合成器听到的
+    //! 不是同一条（"看到的 ≠ 听到的"是这类编辑器最难查的一类 bug）。
+    //! `hasEase == false` 时这个字段没有意义。
+    double arrival = 0.0;
 };
 
 //! The Dynamics automation curve of one staff, in tick order - what a crescendo, a diminuendo or an
@@ -146,6 +165,22 @@ int applyAutomationPoints(engraving::Score* score, int staffIndex, const std::ve
 //! (NotationAutomationController::requestRemovePoint), and the two pages must not disagree about what is
 //! the user's to delete. Returns false when nothing was removed.
 bool eraseAutomationPoint(engraving::Score* score, int staffIndex, int tick);
+
+//! 把某个点的"到达段"弯折控制写成 `ExplicitArrival { outValue, Ease { t, value } }` ——
+//! 也就是拖手柄调曲率。点的出值（`outValue`）保持不变，只有弯折点变。
+//!
+//! `t` / `value` 都夹到 0..1；`t` 贴到 0 或 1 时上游按"无弯折"处理（见 `muse::mpe::evaluateAt`），
+//! 所以这里不做特殊处理，交给同一个求值函数。
+//! 点不存在、不是本谱表的曲线、或值没变时返回 false（**不写**、不压撤销步）。
+bool applyAutomationPointEase(engraving::Score* score, int staffIndex, int tick, double t, double value);
+
+//! 把一个点移到另一个 tick（可同时改值），走上游的 `MovePoint`：目标 tick 上的点被它取代，
+//! 原 tick 上的点消失 —— 这就是"拖动控制点"。
+//! `fromTick` 上没有点时返回 false（不写）。
+//! NOTE: 名字与 `applyAutomationPoints` / `applyAutomationPointEase` 同族，**刻意不叫
+//!       `moveAutomationPoint`** —— 模型里有同名成员函数，成员会遮蔽外层同名自由函数，
+//!       在成员函数体里调用时重载解析直接失败（编译期就报，不会静默）。
+bool applyAutomationPointMove(engraving::Score* score, int staffIndex, int fromTick, int toTick, double value);
 
 //! The default velocity shown for a note the user has never given an explicit velocity.
 int midiDisplayVelocity(int userVelocity);

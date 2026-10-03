@@ -99,21 +99,29 @@ public:
     //! what a crescendo, a diminuendo or an fp inside a single note is, and it is the same curve the
     //! notation page draws next to the mixer, so the two stay one thing rather than two.
     //!
-    //! Returns a list of { tick, value, authored } with value in 0..1. `authored` is false for a point
-    //! the score derived from a Dynamic mark or a hairpin - those cannot be removed from here, exactly
-    //! as the notation page's lane refuses them.
+    //! Returns a list of { tick, value, authored, hasEase, controlT, controlValue } with the values in
+    //! 0..1. `authored` is false for a point the score derived from a Dynamic mark or a hairpin - those
+    //! cannot be removed from here, exactly as the notation page's lane refuses them.
+    //! `hasEase` / `controlT` / `controlValue` are the arrival segment's bend - the quadratic Bezier
+    //! control the lane draws as a draggable handle (`muse::mpe::AutomationPoint::Ease`).
     Q_INVOKABLE QVariantList automationPoints(int staffIndex) const;
 
     //! Writes one point of that curve. Goes through the score's own undoable automation command, so
     //! it undoes and saves exactly like the same edit made on the notation page.
     Q_INVOKABLE void setAutomationPoint(int staffIndex, int tick, double value);
 
-    //! Writes a whole stroke at once, from a list of { tick, value }. One command for the batch, for
-    //! the same reason the velocity brush needs one: every command notifies the whole score.
+    //! Writes a whole set of points at once, from a list of { tick, value }. One command for the batch,
+    //! for the same reason the velocity brush needs one: every command notifies the whole score.
     Q_INVOKABLE void setAutomationPoints(int staffIndex, const QVariantList& points);
 
     //! Removes the point at that tick, if there is one and it is the user's own.
     Q_INVOKABLE void removeAutomationPoint(int staffIndex, int tick);
+
+    //! 拖手柄：把该点"到达段"的弯折控制改成 (t, value) —— 这就是二次贝塞尔曲线的手柄。
+    Q_INVOKABLE void setAutomationPointEase(int staffIndex, int tick, double t, double value);
+
+    //! 拖控制点：把它移到另一个 tick（可同时改值）。
+    Q_INVOKABLE void moveAutomationPoint(int staffIndex, int fromTick, int toTick, double value);
 
     //! The "played" layer: where the note actually sounds (tick) and for how long, plus the velocity
     //! multiplier in percent. Absolute ticks, so the view does not need to know about thousandths.

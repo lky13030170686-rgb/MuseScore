@@ -98,6 +98,20 @@ static const MidiAutomationPoint* findAutomationPoint(const std::vector<MidiAuto
     return nullptr;
 }
 
+//! engraving 的曲线元素是 mpe 的 `AutomationPoint` **外面包了一层**（多 `itemId` / `generated`），
+//! 所以剥掉那层就能直接用上游的求值函数 —— 这正是播放侧做的事
+//! （`PlaybackContext::dynamicLevelLayers()` 也是把 `point.value` 放进 mpe 的 map）。
+//! 测试里求值一律走这条路，避免"自己复刻一份公式"而测出假结果。
+static muse::mpe::AutomationCurve<int> playableCurve(const AutomationCurve& curve)
+{
+    muse::mpe::AutomationCurve<int> result;
+    for (const auto& [tick, point] : curve) {
+        result.insert_or_assign(tick, point.value);
+    }
+
+    return result;
+}
+
 //! The roll must describe exactly the notes the score has - this is what "the MIDI page and the
 //! notation page share one data source" means, and it is what a copy-based implementation breaks.
 TEST_F(MidiEditorNotesTests, DescribesTheVeryNotesTheScoreHas)
@@ -750,4 +764,98 @@ TEST_F(MidiEditorNotesTests, ADrawnCurveIsWhatTheScoreFileKeeps)
                 << "a generated point was written to the file at tick " << point.tick;
         }
     }
+}
+
+//! 新增的点必须是"从前一点斜到本点"（`ExplicitArrival`），**不能**是 `ArrivalFromPrevious` ——
+//! 后者的含义是"到达值 = 前一个点的值"，于是每一段是**平的**、值在点处跳变，一串这样的点
+//! 画出来是**阶梯**而不是渐强。
+//!
+//! 2026-10-03 用户要求把交互换成贝塞尔控制，根子就在这里：刷出来的曲线是台阶。
+TEST_F(MidiEditorNotesTests, ADrawnPointSlopesIntoTheNextOneInsteadOfStepping)
+{
+    m_score->initAutomation();
+
+    const std::vector<MidiAutomationPoint> drawn { { 0, 0.2 }, { 1920, 0.8 } };
+    ASSERT_EQ(applyAutomationPoints(m_score, 0, drawn), int(drawn.size()));
+
+    const AutomationCurve& curve = m_score->automationData()->curve(notationPageKey(m_score, 0));
+    ASSERT_EQ(curve.size(), 2u);
+
+    //! 段中点：斜坡应当是 0.5；若是阶梯，会一直停在 0.2 直到下一个点。
+    EXPECT_NEAR(double(muse::mpe::evaluateCurveAt(playableCurve(curve), 960)), 0.5, 0.01)
+        << "新增点之间不是斜坡 —— 又写回阶梯了";
+
+    for (const auto& [tick, point] : curve) {
+        EXPECT_TRUE(std::holds_alternative<AutomationPoint::ExplicitArrival>(point.value.inValue))
+            << "tick " << tick << " 又被写成了 ArrivalFromPrevious（阶梯）";
+    }
+}
+
+//! 拖手柄 = 改二次贝塞尔的弯折点（`Ease`）。写进去、读得回来、形状真的变了、一次撤销能还原。
+TEST_F(MidiEditorNotesTests, TheHandleBendsTheSegmentAndUndoStraightensIt)
+{
+    m_score->initAutomation();
+
+    const std::vector<MidiAutomationPoint> drawn { { 0, 0.2 }, { 1920, 0.8 } };
+    ASSERT_EQ(applyAutomationPoints(m_score, 0, drawn), int(drawn.size()));
+
+    const AutomationCurveKey key = notationPageKey(m_score, 0);
+    const double straightAtMid
+        = double(muse::mpe::evaluateCurveAt(playableCurve(m_score->automationData()->curve(key)), 960));
+    EXPECT_NEAR(straightAtMid, 0.5, 0.01) << "起点状态应当是一条直线";
+
+    // [WHEN] 把弯折点拖到 (t = 0.3, value = 0.8)：前 30% 走完 80% 的行程 = 先快后慢
+    EXPECT_TRUE(applyAutomationPointEase(m_score, 0, 1920, 0.3, 0.8));
+
+    // [THEN] 读回来带着这个弯折
+    const MidiAutomationPoint* bent = findAutomationPoint(collectAutomationPoints(m_score, 0), 1920);
+    ASSERT_NE(bent, nullptr);
+    EXPECT_TRUE(bent->hasEase);
+    EXPECT_NEAR(bent->controlT, 0.3, 1e-6);
+    EXPECT_NEAR(bent->controlValue, 0.8, 1e-6);
+
+    // [AND] 形状真的变了：t = 0.3 处已经到 0.68（= 0.2 + 0.8 × 0.6），直线在同处只有 0.38
+    const muse::mpe::AutomationCurve<int> bentCurve = playableCurve(m_score->automationData()->curve(key));
+    EXPECT_NEAR(double(muse::mpe::evaluateCurveAt(bentCurve, 576)), 0.68, 0.02);
+    EXPECT_GT(double(muse::mpe::evaluateCurveAt(bentCurve, 960)), straightAtMid)
+        << "先快后慢的弯折，中点应当比直线更高";
+
+    // [AND] 一次撤销回到直线：`Ease::none()` 就是弯折点落在段中点且不弯（{0.5, 0.5}），
+    //      所以这里看的是"弯折回到 none + 形状回到直线"，而不是 hasEase 变 false
+    //      （`hasEase` 只表示 inValue 是显式到达，直线也是显式的）。
+    m_score->undoRedo(true, nullptr);
+    const MidiAutomationPoint* straight = findAutomationPoint(collectAutomationPoints(m_score, 0), 1920);
+    ASSERT_NE(straight, nullptr);
+    EXPECT_NEAR(straight->controlT, 0.5, 1e-6) << "撤销之后弯折位置没有回到中点";
+    EXPECT_NEAR(straight->controlValue, 0.5, 1e-6) << "撤销之后弯折幅度没有回到直线";
+    EXPECT_NEAR(double(muse::mpe::evaluateCurveAt(
+                    playableCurve(m_score->automationData()->curve(key)), 960)), 0.5, 0.01)
+        << "撤销之后曲线形状没有回到直线";
+}
+
+//! 拖控制点 = 移动它（tick + 值），旧 tick 上的点消失，一次撤销能还原。
+TEST_F(MidiEditorNotesTests, AControlPointCanBeMoved)
+{
+    m_score->initAutomation();
+
+    ASSERT_EQ(applyAutomationPoints(m_score, 0, { { 0, 0.2 }, { 1920, 0.8 } }), 2);
+
+    EXPECT_TRUE(applyAutomationPointMove(m_score, 0, 1920, 1440, 0.9));
+
+    const std::vector<MidiAutomationPoint> after = collectAutomationPoints(m_score, 0);
+    EXPECT_EQ(findAutomationPoint(after, 1920), nullptr) << "旧位置上的点没有被移走";
+    const MidiAutomationPoint* moved = findAutomationPoint(after, 1440);
+    ASSERT_NE(moved, nullptr);
+    EXPECT_NEAR(moved->value, 0.9, 1e-6);
+
+    //! 原地不动、以及不存在的点：都不写（不压空的撤销步）。
+    EXPECT_FALSE(applyAutomationPointMove(m_score, 0, 1440, 1440, 0.9));
+    EXPECT_FALSE(applyAutomationPointMove(m_score, 0, 999, 1200, 0.5));
+    EXPECT_FALSE(applyAutomationPointEase(m_score, 0, 999, 0.3, 0.7));
+
+    m_score->undoRedo(true, nullptr);
+
+    const std::vector<MidiAutomationPoint> undone = collectAutomationPoints(m_score, 0);
+    EXPECT_NE(findAutomationPoint(undone, 1920), nullptr) << "撤销没有把点移回去";
+    EXPECT_EQ(findAutomationPoint(undone, 1440), nullptr);
 }

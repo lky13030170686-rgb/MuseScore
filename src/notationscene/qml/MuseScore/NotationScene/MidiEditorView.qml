@@ -53,15 +53,25 @@ Item {
     //! diminuendo or an fp is. Both need a left-drag in the same strip, hence a mode.
     property bool automationMode: false
 
-    //! The Dynamics automation of the selected staff, as { tick, value } with value in 0..1. Read
-    //! from the model rather than bound, because it is a Q_INVOKABLE - it is refreshed whenever the
-    //! score or the selected staff changes.
+    //! The Dynamics automation of the selected staff, as
+    //! { tick, value, authored, hasEase, controlT, controlValue, arrival } with the values in 0..1.
+    //! Read from the model rather than bound, because it is a Q_INVOKABLE - it is refreshed whenever
+    //! the score or the selected staff changes.
     property var automationPoints: []
 
-    //! The stroke being drawn, { tick: value }, kept locally until the button comes up so that a drag
-    //! is one command rather than one per mouse move.
-    property var automationTrail: ({})
-    property bool automationDragging: false
+    //! 正在拖的控制点（它的 tick，-1 = 没在拖）与拖动中的预览值。拖动中**只预览**、松手才提交一次。
+    property int automationDragTick: -1
+    property int automationDragPreviewTick: -1
+    property real automationDragPreviewValue: 0
+
+    //! 正在拖的弯折手柄（它所属段的后一个点的 tick，-1 = 没在拖）与预览的弯折点。
+    //! 手柄调的是 `AutomationPoint::Ease` —— 二次贝塞尔曲线的弯折位置/幅度。
+    property int automationBendTick: -1
+    property real automationBendPreviewT: 0.5
+    property real automationBendPreviewValue: 0.5
+
+    //! 按下时记下的谱表：拖动中切换谱表不能把这次编辑落到新谱表上（与力度画笔同一条纪律）。
+    property int automationDragStaff: -1
 
     readonly property real keyboardWidth: 70
     //! The lane is a single strip, Cubase-style - NOT one band per staff. Bands looked tidy with two
@@ -418,27 +428,6 @@ Item {
         return clamp(1.0 - (y - 2) / Math.max(1, lane - 4), 0.0, 1.0)
     }
 
-    function automationValueAt(tick) {
-        if (automationTrail.hasOwnProperty(tick)) {
-            return automationTrail[tick]
-        }
-        for (var i = 0; i < automationPoints.length; ++i) {
-            if (automationPoints[i].tick === tick) {
-                return automationPoints[i].value
-            }
-        }
-        return -1
-    }
-
-    //! One stroke of the curve: remembers the value at the tick under the pointer. Nothing is written
-    //! yet - the whole stroke is submitted once, on release.
-    function paintAutomationAt(x, y) {
-        var tick = snapTick(tickForX(x))
-        var trail = automationTrail
-        trail[tick] = automationValueForY(y)
-        automationTrail = trail
-    }
-
     //! The tick a drawn point lands on. The automation is a time curve, so it snaps like the played
     //! layer does - on the same grid, so a point drawn here lines up with the notes.
     function snapTick(tick) {
@@ -451,41 +440,251 @@ Item {
         return 2 + (1.0 - v) * (laneHeight - 4)
     }
 
-    //! The stored curve merged with the stroke in progress, sorted by tick - the stroke wins while it
-    //! is being drawn, so the line follows the pointer.
-    function automationCurveToDraw() {
-        var drawn = []
-        for (var p = 0; p < automationPoints.length; ++p) {
-            drawn.push({ "tick": automationPoints[p].tick, "value": automationPoints[p].value,
-                         "authored": automationPoints[p].authored })
+    //! 一段的值 —— 与 `muse::mpe::evaluateAt()` **同式**：把 [前一点, 本点] 拆成两条在弯折点
+    //! (`controlT`, `controlValue`) 相切的二次贝塞尔弧；`Ease::none()`（{0.5, 0.5}）退化成直线。
+    //!
+    //! ⚠️ 这里照抄那份公式而不是"画个差不多"：屏幕上看到的必须就是合成器听到的那条线，
+    //!    否则会出现最难查的一类 bug —— 看着是渐强、听着是台阶。
+    function automationSegmentValue(prevValue, point, t) {
+        //! `ArrivalFromPrevious` 的到达值就是前一点的值（这一段是平的），显式到达则用它自己的。
+        var thisIn = point.hasEase ? point.arrival : prevValue
+        var range = thisIn - prevValue
+
+        var bent = point.hasEase
+                   && !(Math.abs(point.controlT - 0.5) < 1e-9 && Math.abs(point.controlValue - 0.5) < 1e-9)
+        if (!bent || point.controlT <= 0 || point.controlT >= 1) {
+            return clamp(prevValue + range * t, 0.0, 1.0)
         }
 
-        for (var key in automationTrail) {
-            var trailTick = Number(key)
-            var replaced = false
-            for (var d = 0; d < drawn.length; ++d) {
-                if (drawn[d].tick === trailTick) {
-                    drawn[d].value = automationTrail[key]
-                    //! The stroke is the user's, whoever owned the point before: writing it makes the
-                    //! model's point an authored one, so draw it that way right away.
-                    drawn[d].authored = true
-                    replaced = true
-                    break
+        var quadratic = function(s, p0, p1, p2) {
+            var u = 1.0 - s
+            return clamp(u * u * p0 + 2.0 * u * s * p1 + s * s * p2, 0.0, 1.0)
+        }
+
+        var fraction = clamp(point.controlValue, 0.0, 1.0)
+        var bendValue = prevValue + fraction * range
+        var lo = Math.min(prevValue, thisIn)
+        var hi = Math.max(prevValue, thisIn)
+        var halfSlope = 0.5 * range
+        var remainder = 1.0 - point.controlT
+        var q1 = clamp(bendValue - point.controlT * halfSlope, lo, hi)
+
+        if (t <= point.controlT) {
+            return quadratic(t / point.controlT, prevValue, q1, bendValue)
+        }
+
+        var q2 = clamp(bendValue + remainder * halfSlope, lo, hi)
+        return quadratic((t - point.controlT) / remainder, bendValue, q2, thisIn)
+    }
+
+    //! 画曲线用的点列表：模型里的点 + 拖动中的预览（拖点改位置/值、拖手柄改弯折），按 tick 排序。
+    //! 预览必须参与绘制，否则拖动时画面纹丝不动（维护手册 §4.8 记过这个坑）。
+    function automationPointsForDraw() {
+        var drawn = []
+
+        for (var i = 0; i < automationPoints.length; ++i) {
+            var source = automationPoints[i]
+            var item = {
+                "tick": source.tick,
+                "value": source.value,
+                "authored": source.authored,
+                "hasEase": source.hasEase,
+                "controlT": source.controlT,
+                "controlValue": source.controlValue,
+                "arrival": source.arrival
+            }
+
+            if (automationDragTick >= 0 && source.tick === automationDragTick) {
+                item.tick = automationDragPreviewTick
+                item.value = automationDragPreviewValue
+                //! 值改了，到达值跟着改 —— 这一段"结束在本点的值"，与模型里的写法一致。
+                if (item.hasEase) {
+                    item.arrival = automationDragPreviewValue
                 }
             }
-            if (!replaced) {
-                drawn.push({ "tick": trailTick, "value": automationTrail[key], "authored": true })
+
+            if (automationBendTick >= 0 && source.tick === automationBendTick) {
+                item.hasEase = true
+                item.controlT = automationBendPreviewT
+                item.controlValue = automationBendPreviewValue
+                //! 原本是 `ArrivalFromPrevious`（平的段）的点，一旦拖手柄就升级成"到达本点的值"，
+                //! 这样这一段才真的弯得起来（range 为 0 的段怎么弯都是平的）。看的是**模型里**的标志。
+                if (!source.hasEase) {
+                    item.arrival = item.value
+                }
             }
+
+            drawn.push(item)
         }
 
         drawn.sort(function(a, b) { return a.tick - b.tick })
         return drawn
     }
 
-    //! The point nearest to x, or -1. Only points close enough to aim at count as a hit, and only the
-    //! user's own points are targets at all: a point the score derived from a Dynamic mark or a hairpin
-    //! is put back by the next rebuild, so removing it is not the lane's to do - the model refuses it
-    //! too (and the notation page's lane refuses the same points).
+    //! 某个 tick 处的曲线值（含拖动预览），没有点时返回 -1。
+    function automationValueAtTick(tick) {
+        return automationValueInList(automationPointsForDraw(), tick)
+    }
+
+    //! 列表版求值。绘制循环用这个：列表取一次，逐像素只做求值 ——
+    //! 若每个像素都调 `automationValueAtTick`，就会每个像素重建并排序一遍点列表（白烧 CPU）。
+    //! 第一个点之前保持第一个点的值 —— 与 `evaluateCurveAt` 的"向前保持"语义一致。
+    function automationValueInList(list, tick) {
+        if (list.length === 0) {
+            return -1
+        }
+
+        if (tick <= list[0].tick) {
+            return list[0].value
+        }
+
+        for (var i = 1; i < list.length; ++i) {
+            if (tick <= list[i].tick) {
+                var span = list[i].tick - list[i - 1].tick
+                if (span <= 0) {
+                    return list[i].value
+                }
+
+                return automationSegmentValue(list[i - 1].value, list[i], (tick - list[i - 1].tick) / span)
+            }
+        }
+
+        return list[list.length - 1].value
+    }
+
+    //! 第 i 段（list[i-1] → list[i]）的弯折手柄位置：横向在段的 controlT 处、纵向在该处的值上。
+    //! 返回 { x, y, tick, prevTick, prevValue, arrival }，或 null（这一段是平的，弯折没有意义）。
+    function automationHandleAt(list, i) {
+        if (i < 1 || i >= list.length) {
+            return null
+        }
+
+        var point = list[i]
+        var prev = list[i - 1]
+        var thisIn = point.hasEase ? point.arrival : prev.value
+        if (Math.abs(thisIn - prev.value) < 1e-9) {
+            return null   // 平的段：没有弯折可言，也就不给手柄
+        }
+
+        var t = point.hasEase ? clamp(point.controlT, 0.0, 1.0) : 0.5
+        var fraction = point.hasEase ? clamp(point.controlValue, 0.0, 1.0) : 0.5
+
+        return {
+            "x": xForTick(prev.tick) + (xForTick(point.tick) - xForTick(prev.tick)) * t,
+            "y": yForAutomationValue(prev.value + fraction * (thisIn - prev.value), velocityCanvas.height),
+            "tick": point.tick,
+            "prevTick": prev.tick,
+            "prevValue": prev.value,
+            "arrival": thisIn
+        }
+    }
+
+    //! 命中的控制点（返回它的 tick，-1 = 没命中）。点在**两个方向**上都要够近 —— 只看 x 会在
+    //! 密集的段里抓错点（值差得远的两个点可能 x 很接近）。
+    function automationHitPoint(x, y) {
+        var list = automationPointsForDraw()
+        var best = -1
+        var bestDist = 10
+
+        for (var i = 0; i < list.length; ++i) {
+            var dx = xForTick(list[i].tick) - x
+            var dy = yForAutomationValue(list[i].value, velocityCanvas.height) - y
+            var dist = Math.sqrt(dx * dx + dy * dy)
+            if (dist <= bestDist) {
+                bestDist = dist
+                best = list[i].tick
+            }
+        }
+
+        return best
+    }
+
+    //! 命中的弯折手柄：返回它所属段的后一个点的 tick，-1 = 没命中。
+    function automationHitHandle(x, y) {
+        var list = automationPointsForDraw()
+        var best = -1
+        var bestDist = 10
+
+        for (var i = 1; i < list.length; ++i) {
+            var handle = automationHandleAt(list, i)
+            if (handle === null) {
+                continue
+            }
+
+            var dx = handle.x - x
+            var dy = handle.y - y
+            var dist = Math.sqrt(dx * dx + dy * dy)
+            if (dist <= bestDist) {
+                bestDist = dist
+                best = handle.tick
+            }
+        }
+
+        return best
+    }
+
+    //! 模型里某个 tick 上的点（**不含**拖动预览），没有则 null。
+    function automationPointAt(tick) {
+        for (var i = 0; i < automationPoints.length; ++i) {
+            if (automationPoints[i].tick === tick) {
+                return automationPoints[i]
+            }
+        }
+
+        return null
+    }
+
+    //! 某个点"到达段"的两端与到达值（**模型里的值**，不含预览 —— 预览正是要反算的东西）。
+    //! 返回 { prevTick, prevValue, arrival }；平的段（两端值相同）返回 null：那种段没有弯折可言。
+    function automationBendSegment(tick) {
+        var prev = null
+        var point = null
+
+        for (var i = 0; i < automationPoints.length; ++i) {
+            if (automationPoints[i].tick < tick) {
+                prev = automationPoints[i]
+            } else if (automationPoints[i].tick === tick) {
+                point = automationPoints[i]
+            }
+        }
+
+        if (prev === null || point === null) {
+            return null
+        }
+
+        var arrival = point.hasEase ? point.arrival : point.value
+        if (Math.abs(arrival - prev.value) < 1e-9) {
+            return null
+        }
+
+        return { "prevTick": prev.tick, "prevValue": prev.value, "arrival": arrival }
+    }
+
+    //! 把手柄拖到的位置反算成弯折点 (t, value)：横向落在段内的比例、纵向落在 prevValue..arrival
+    //! 之间的比例。`t` 夹在 0.05..0.95 —— 上游把贴到 0/1 的 t 当成"没有弯折"，拖到边上会突然失效。
+    function automationBendFromPointer(x, y, tick) {
+        var segment = automationBendSegment(tick)
+        if (segment === null) {
+            return null
+        }
+
+        var prevX = xForTick(segment.prevTick)
+        var thisX = xForTick(tick)
+        if (thisX - prevX < 1) {
+            return null
+        }
+
+        return {
+            "t": clamp((x - prevX) / (thisX - prevX), 0.05, 0.95),
+            "value": clamp((automationValueForY(y) - segment.prevValue)
+                           / (segment.arrival - segment.prevValue), 0.0, 1.0)
+        }
+    }
+
+    //! The point nearest to x, or -1. Used by right-click, which only ever removes the user's own
+    //! points: one the score derived from a Dynamic mark or a hairpin is put back by the next rebuild,
+    //! so removing it is not the lane's to do - the model refuses it too (and the notation page's lane
+    //! refuses the same points).
     function automationPointNear(x) {
         var best = -1
         var bestDist = 8
@@ -514,9 +713,20 @@ Item {
             velocityPending = false
             velocityTrail = ({})
         }
+        //! 曲线这边同理：模型回话说明编辑已经落到数据里，预览该让位 —— 留着会画出一个"幽灵点"。
+        automationDragTick = -1
+        automationBendTick = -1
+        automationDragStaff = -1
         //! The automation is a Q_INVOKABLE, not a property, so it has to be re-read rather than
         //! bound - and it changes whenever the score does (the notation page edits the same curve).
         reloadAutomation()
+        repaintAll()
+    }
+    onAutomationModeChanged: {
+        //! 换模式时把拖动状态清干净：留着会让下一次进入 Curve 模式时凭空多出一个预览点。
+        automationDragTick = -1
+        automationBendTick = -1
+        automationDragStaff = -1
         repaintAll()
     }
     onStaffCountChanged: {
@@ -772,11 +982,22 @@ Item {
                 }
 
                 MouseArea {
+                    id: automationToggleArea
+
                     anchors.fill: parent
+                    hoverEnabled: true
                     onClicked: {
                         root.automationMode = !root.automationMode
                         root.reloadAutomation()
                     }
+                }
+
+                ToolTip {
+                    //! 交互是"控制点 + 手柄"，不是刷 —— 一句话说明，省得用户先乱刷一通。
+                    text: qsTrc("notationscene", "Click to add a point, drag a point to move it, "
+                                + "drag the square handle to bend the curve, right-click to remove")
+                    visible: automationToggleArea.containsMouse
+                    delay: 600
                 }
             }
 
@@ -1398,33 +1619,76 @@ Item {
                     //! The staff's Dynamics automation - the curve a crescendo, a diminuendo or an fp
                     //! inside a note actually is. Drawn over the bars, because it is what the
                     //! synthesiser follows.
+                    //!
+                    //! 画法：**按像素采样求值**（`automationValueAtTick`，与播放同一份贝塞尔公式），
+                    //! 而不是把控制点连成折线 —— 折线会把"弯"画成"折"，看到的就不是听到的那条。
                     if (root.automationMode) {
-                        var drawn = root.automationCurveToDraw()
+                        var drawn = root.automationPointsForDraw()
 
                         if (drawn.length > 0) {
                             ctx.strokeStyle = root.cursorColor
                             ctx.lineWidth = 2
                             ctx.beginPath()
-                            for (var s = 0; s < drawn.length; ++s) {
-                                var sx = root.xForTick(drawn[s].tick)
-                                var sy = root.yForAutomationValue(drawn[s].value, h)
-                                if (s === 0) {
-                                    ctx.moveTo(sx, sy)
+
+                            var started = false
+                            for (var px = 0; px <= w; px += 2) {
+                                var curveValue = root.automationValueInList(drawn, root.tickForX(px))
+                                if (curveValue < 0) {
+                                    continue
+                                }
+
+                                var cy = root.yForAutomationValue(curveValue, h)
+                                if (started) {
+                                    ctx.lineTo(px, cy)
                                 } else {
-                                    ctx.lineTo(sx, sy)
+                                    ctx.moveTo(px, cy)
+                                    started = true
                                 }
                             }
                             ctx.stroke()
 
-                            ctx.fillStyle = root.cursorColor
+                            //! 每个"斜坡段"的弯折手柄：画成小方块，并用细虚线连到段的两端。
+                            //! 它拖的是 `AutomationPoint::Ease`，也就是这条二次贝塞尔的弯折点。
+                            ctx.save()
+                            ctx.setLineDash([3, 3])
+                            ctx.lineWidth = 1
+                            for (var i = 1; i < drawn.length; ++i) {
+                                var handle = root.automationHandleAt(drawn, i)
+                                if (handle === null) {
+                                    continue
+                                }
+
+                                ctx.strokeStyle = root.gridColor
+                                ctx.beginPath()
+                                ctx.moveTo(root.xForTick(handle.prevTick),
+                                           root.yForAutomationValue(handle.prevValue, h))
+                                ctx.lineTo(handle.x, handle.y)
+                                ctx.lineTo(root.xForTick(handle.tick),
+                                           root.yForAutomationValue(handle.arrival, h))
+                                ctx.stroke()
+                            }
+                            ctx.restore()
+
+                            for (var k = 1; k < drawn.length; ++k) {
+                                var bend = root.automationHandleAt(drawn, k)
+                                if (bend === null) {
+                                    continue
+                                }
+
+                                ctx.fillStyle = root.cursorColor
+                                ctx.fillRect(bend.x - 3, bend.y - 3, 6, 6)
+                            }
+
+                            //! 控制点：用户的实心，记号的空心（记号生成的点不给删，画成空心区分）。
                             for (var q = 0; q < drawn.length; ++q) {
                                 ctx.beginPath()
                                 ctx.arc(root.xForTick(drawn[q].tick), root.yForAutomationValue(drawn[q].value, h), 3, 0, 2 * Math.PI)
                                 if (drawn[q].authored) {
+                                    ctx.fillStyle = root.cursorColor
                                     ctx.fill()
                                 } else {
-                                    //! A point that came from a Dynamic mark or a hairpin, hollow: it is
-                                    //! shown, but it is the mark's - the lane cannot take it away.
+                                    ctx.strokeStyle = root.cursorColor
+                                    ctx.lineWidth = 2
                                     ctx.stroke()
                                 }
                             }
@@ -1482,13 +1746,40 @@ Item {
                         return
                     }
 
-                    //! Curve mode: draw the staff's Dynamics automation instead of a single note's
-                    //! velocity. Nothing is written yet - the stroke is submitted on release.
+                    //! Curve mode: 控制点 + 手柄，**不是**刷。
+                    //!   1) 命中手柄  → 拖弯折点（改曲率）
+                    //!   2) 命中控制点 → 拖它（改 tick / 值）
+                    //!   3) 都没命中   → 在空白处新增一个控制点（立即提交，单击即生效）
                     if (root.automationMode) {
-                        root.automationTrail = ({})
-                        root.automationDragging = true
-                        root.paintAutomationAt(mouse.x, mouse.y)
-                        velocityCanvas.requestPaint()
+                        root.automationDragStaff = root.currentStaff
+
+                        var bendTick = root.automationHitHandle(mouse.x, mouse.y)
+                        if (bendTick >= 0) {
+                            var segment = root.automationBendSegment(bendTick)
+                            if (segment !== null) {
+                                root.automationBendTick = bendTick
+                                var point = root.automationPointAt(bendTick)
+                                root.automationBendPreviewT = point !== null && point.hasEase ? point.controlT : 0.5
+                                root.automationBendPreviewValue = point !== null && point.hasEase ? point.controlValue : 0.5
+                                velocityCanvas.requestPaint()
+                                return
+                            }
+                        }
+
+                        var hitTick = root.automationHitPoint(mouse.x, mouse.y)
+                        if (hitTick >= 0) {
+                            var hit = root.automationPointAt(hitTick)
+                            root.automationDragTick = hitTick
+                            root.automationDragPreviewTick = hitTick
+                            root.automationDragPreviewValue = hit !== null ? hit.value : 0
+                            velocityCanvas.requestPaint()
+                            return
+                        }
+
+                        root.model.setAutomationPoints(root.currentStaff, [{
+                            "tick": root.snapTick(root.tickForX(mouse.x)),
+                            "value": root.automationValueForY(mouse.y)
+                        }])
                         return
                     }
 
@@ -1509,8 +1800,20 @@ Item {
                 }
 
                 onPositionChanged: function(mouse) {
-                    if (root.automationDragging) {
-                        root.paintAutomationAt(mouse.x, mouse.y)
+                    if (root.automationBendTick >= 0) {
+                        var bent = root.automationBendFromPointer(mouse.x, mouse.y, root.automationBendTick)
+                        if (bent !== null) {
+                            root.automationBendPreviewT = bent.t
+                            root.automationBendPreviewValue = bent.value
+                        }
+                        velocityCanvas.requestPaint()
+                        return
+                    }
+
+                    if (root.automationDragTick >= 0) {
+                        //! 拖动中必须有预览值参与绘制 —— 否则按住期间画面纹丝不动（§4.8 的老坑）。
+                        root.automationDragPreviewTick = root.snapTick(root.tickForX(mouse.x))
+                        root.automationDragPreviewValue = root.automationValueForY(mouse.y)
                         velocityCanvas.requestPaint()
                         return
                     }
@@ -1529,26 +1832,31 @@ Item {
                         return
                     }
 
-                    if (root.automationDragging) {
-                        //! One last stroke at the release position, so the value under the pointer is
-                        //! the value that gets stored.
-                        root.paintAutomationAt(mouse.x, mouse.y)
+                    //! Curve mode：一次手势 = 一个命令（拖动中只预览，松手才提交）。
+                    if (root.automationBendTick >= 0) {
+                        var bendTick = root.automationBendTick
+                        var bendT = root.automationBendPreviewT
+                        var bendValue = root.automationBendPreviewValue
+                        var bendStaff = root.automationDragStaff
 
-                        var drawn = root.automationTrail
-                        root.automationDragging = false
-                        root.automationTrail = ({})
+                        root.automationBendTick = -1
+                        root.automationDragStaff = -1
 
-                        //! ONE submission for the whole stroke - the same lesson the velocity brush
-                        //! taught: one command per point would notify the whole score per point.
-                        var points = []
-                        for (var key in drawn) {
-                            points.push({ "tick": Number(key), "value": drawn[key] })
-                        }
+                        root.model.setAutomationPointEase(bendStaff, bendTick, bendT, bendValue)
+                        velocityCanvas.requestPaint()
+                        return
+                    }
 
-                        if (points.length > 0) {
-                            root.model.setAutomationPoints(root.currentStaff, points)
-                        }
+                    if (root.automationDragTick >= 0) {
+                        var fromTick = root.automationDragTick
+                        var toTick = root.automationDragPreviewTick
+                        var movedValue = root.automationDragPreviewValue
+                        var dragStaff = root.automationDragStaff
 
+                        root.automationDragTick = -1
+                        root.automationDragStaff = -1
+
+                        root.model.moveAutomationPoint(dragStaff, fromTick, toTick, movedValue)
                         velocityCanvas.requestPaint()
                         return
                     }
