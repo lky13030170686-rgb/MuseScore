@@ -22,6 +22,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <utility>
+#include <vector>
 
 #include <QDir>
 #include <QFile>
@@ -120,6 +122,58 @@ TEST_F(MidiEditorNotesTests, EveryNoteCarriesAStaffIndexTheLaneCanAddress)
 
     EXPECT_FALSE(used.empty());
     EXPECT_LE(int(used.size()), staffCount);
+}
+
+//! A brush stroke has to be ONE undo step, and that is not a nicety.
+//!
+//! Every startCmd/endCmd pair notifies the whole score, and the subscribers to that notification
+//! rebuild things that cost O(score) - the notation view repaints, the playback events are rebuilt.
+//! One command per note therefore made drawing over N notes cost N full-score rebuilds, which is
+//! exactly why drawing more notes took proportionally longer. The observable form of "one command"
+//! is that a single undo takes the whole batch back.
+TEST_F(MidiEditorNotesTests, ABatchOfVelocitiesIsASingleUndoStep)
+{
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_GE(items.size(), 2) << "this test needs at least two notes";
+
+    std::vector<std::pair<mu::engraving::Note*, int> > changes;
+    for (size_t i = 0; i < items.size(); ++i) {
+        changes.emplace_back(items[i].note, 40 + int(i));
+    }
+
+    EXPECT_EQ(applyNoteVelocities(m_score, changes), int(changes.size()));
+
+    for (size_t i = 0; i < changes.size(); ++i) {
+        EXPECT_EQ(changes[i].first->userVelocity(), 40 + int(i));
+    }
+
+    m_score->undoRedo(true, nullptr);
+
+    for (const MidiNoteItem& item : items) {
+        EXPECT_EQ(item.note->userVelocity(), 0)
+            << "one undo left a note behind, so the batch was not written as a single command";
+    }
+}
+
+//! A batch that changes nothing must not notify the score at all - a stroke over notes that already
+//! hold those values would otherwise still cost a full rebuild.
+TEST_F(MidiEditorNotesTests, ABatchThatChangesNothingWritesNothing)
+{
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_FALSE(items.empty());
+
+    std::vector<std::pair<mu::engraving::Note*, int> > same;
+    for (const MidiNoteItem& item : items) {
+        same.emplace_back(item.note, item.note->userVelocity());
+    }
+
+    EXPECT_EQ(applyNoteVelocities(m_score, same), 0);
+
+    //! And a null entry must not crash or count.
+    std::vector<std::pair<mu::engraving::Note*, int> > withNull;
+    withNull.emplace_back(nullptr, 100);
+    EXPECT_EQ(applyNoteVelocities(m_score, withNull), 0);
+    EXPECT_EQ(applyNoteVelocities(nullptr, same), 0);
 }
 
 //! Every rectangle must land inside the score timeline.

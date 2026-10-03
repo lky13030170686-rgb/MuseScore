@@ -261,8 +261,12 @@ void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVarian
         return;
     }
 
-    const bool wasSuppressed = m_rebuildSuppressed;
-    m_rebuildSuppressed = true;
+    //! Collect first, then write: applyNoteVelocities() wraps the whole stroke in ONE command, so the
+    //! score is notified once instead of once per note. The notification is what costs - its
+    //! subscribers repaint the notation view and rebuild the playback events, both O(score) - and
+    //! that is why drawing more notes used to take proportionally longer.
+    std::vector<std::pair<Note*, int> > changes;
+    changes.reserve(size_t(rows.size()));
 
     std::vector<int> appliedRows;
     std::vector<int> appliedValues;
@@ -271,20 +275,22 @@ void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVarian
 
     for (int i = 0; i < rows.size(); ++i) {
         const int row = rows[i].toInt();
-        const int velocity = velocities[i].toInt();
         if (row < 0 || row >= int(m_entries.size())) {
             continue;
         }
 
-        if (applyNoteVelocity(score, noteAt(row), velocity)) {
-            appliedRows.push_back(row);
-            appliedValues.push_back(velocity);
-        }
+        //! Kept side by side: skipping an out-of-range row would otherwise shift the two lists apart.
+        changes.emplace_back(noteAt(row), velocities[i].toInt());
+        appliedRows.push_back(row);
+        appliedValues.push_back(velocities[i].toInt());
     }
 
+    const bool wasSuppressed = m_rebuildSuppressed;
+    m_rebuildSuppressed = true;
+    const int changed = applyNoteVelocities(score, changes);
     m_rebuildSuppressed = wasSuppressed;
 
-    if (appliedRows.empty()) {
+    if (changed == 0) {
         return;
     }
 
@@ -294,7 +300,7 @@ void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVarian
     //!       feel. The maps still have to be re-emitted so the view sees the new values.
     for (size_t i = 0; i < appliedRows.size(); ++i) {
         const int row = appliedRows[i];
-        const int velocity = appliedValues[i];
+        const int velocity = std::clamp(appliedValues[i], 0, 127);
 
         m_entries[size_t(row)].velocity = midiDisplayVelocity(velocity);
         m_entries[size_t(row)].hasVelocityOverride = (velocity > 0);

@@ -170,20 +170,11 @@ bool applyNotePitch(Score* score, Note* note, int pitch)
     return true;
 }
 
-bool applyNoteVelocity(Score* score, Note* note, int velocity)
+//! The write itself, with NO command of its own - so a batch can wrap many of them in one.
+//! `velocity` may be 0 on purpose: that means "no own velocity", i.e. the note goes back to
+//! following the dynamic marks. Clamping to 1 would make a per-note tweak impossible to undo.
+static void writeNoteVelocity(Note* note, int velocity)
 {
-    if (!score || !note) {
-        return false;
-    }
-
-    //! NOTE: 0 is allowed on purpose: it means "back to following the dynamic marks". Clamping to 1
-    //!       would make a per-note tweak impossible to undo (see the header).
-    velocity = std::clamp(velocity, 0, 127);
-    if (velocity == note->userVelocity()) {
-        return false;
-    }
-
-    score->startCmd(TranslatableString("midieditor", "Change velocity"));
     //! NOTE: the same property the Properties panel writes (Pid::USER_VELOCITY), so the two stay
     //!       interchangeable. The propertyFlags handling is copied from
     //!       PropertiesPanelAbstractModel::setPropertyValue.
@@ -191,10 +182,57 @@ bool applyNoteVelocity(Score* score, Note* note, int velocity)
     if (flags == PropertyFlags::STYLED) {
         flags = PropertyFlags::UNSTYLED;
     }
-    note->undoChangeProperty(Pid::USER_VELOCITY, PropertyValue(velocity), flags);
+    note->undoChangeProperty(Pid::USER_VELOCITY, PropertyValue(std::clamp(velocity, 0, 127)), flags);
+}
+
+bool applyNoteVelocity(Score* score, Note* note, int velocity)
+{
+    if (!score || !note) {
+        return false;
+    }
+
+    if (std::clamp(velocity, 0, 127) == note->userVelocity()) {
+        return false;
+    }
+
+    score->startCmd(TranslatableString("midieditor", "Change velocity"));
+    writeNoteVelocity(note, velocity);
     score->endCmd();
 
     return true;
+}
+
+int applyNoteVelocities(Score* score, const std::vector<std::pair<Note*, int> >& changes)
+{
+    if (!score) {
+        return 0;
+    }
+
+    //! Only the notes that really change are worth touching - and if none do, the score must not be
+    //! notified at all.
+    std::vector<std::pair<Note*, int> > pending;
+    pending.reserve(changes.size());
+    for (const std::pair<Note*, int>& change : changes) {
+        if (change.first && std::clamp(change.second, 0, 127) != change.first->userVelocity()) {
+            pending.push_back(change);
+        }
+    }
+
+    if (pending.empty()) {
+        return 0;
+    }
+
+    //! ONE command for the whole batch. Every startCmd/endCmd pair notifies the score, and the
+    //! subscribers to that notification rebuild things that cost O(score) - the notation view
+    //! repaints, the playback events are rebuilt. One command per note therefore made a brush stroke
+    //! over N notes cost N full-score rebuilds: that is the lag, and this is the fix.
+    score->startCmd(TranslatableString("midieditor", "Draw velocities"));
+    for (const std::pair<Note*, int>& change : pending) {
+        writeNoteVelocity(change.first, change.second);
+    }
+    score->endCmd();
+
+    return int(pending.size());
 }
 
 bool applyNotePlayOverride(Score* score, Note* note, int startTick, int durationTicks, int velocityPercent)

@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <utility>
 #include <vector>
 
 namespace mu::engraving {
@@ -84,6 +85,18 @@ bool applyNotePitch(engraving::Score* score, engraving::Note* note, int pitch);
 //! `velocity` may be 0, which means "no own velocity" - the note goes back to following the dynamic
 //! marks of the score. That is the only way to undo a per-note tweak, so it is allowed on purpose.
 bool applyNoteVelocity(engraving::Score* score, engraving::Note* note, int velocity);
+
+//! One velocity write for each pair, all under a SINGLE command.
+//!
+//! This is what a brush stroke needs, and the difference is not cosmetic. Every `startCmd`/`endCmd`
+//! pair notifies the whole score, and the subscribers to that notification rebuild things that cost
+//! O(score) - the notation view repaints, the playback events are rebuilt. Opening one command per
+//! note therefore made a stroke over N notes cost N full-score rebuilds, which is exactly why
+//! drawing more notes took proportionally longer. One command means one notification.
+//!
+//! A pair whose note already has that velocity is skipped, so the count returned may be smaller than
+//! the number of pairs. Returns how many notes were actually changed.
+int applyNoteVelocities(engraving::Score* score, const std::vector<std::pair<engraving::Note*, int> >& changes);
 
 //! Writes the "played" timing of a note - the piano roll's played layer, i.e. `ontime` and `len` of
 //! the first `NoteEvent`. `startTick` and `durationTicks` are absolute ticks; `velocityPercent` is
