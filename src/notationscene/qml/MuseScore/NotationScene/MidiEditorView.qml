@@ -129,6 +129,11 @@ Item {
     //! pointer instead of only changing on release.
     property var velocityTrail: ({})
 
+    //! True between the release and the model reporting the new values. The trail is kept for that
+    //! moment: dropping it straight away would make the bars fall back to their pre-drag heights for
+    //! a frame, so the lane would visibly jump back before jumping forward again.
+    property bool velocityPending: false
+
     //! The staff being edited. Cubase-style: the lane shows every staff's bars in that staff's own
     //! colour so they can be compared, but only the current staff is solid - and only the current
     //! staff is ever edited. That makes "which staff does this drag touch" a thing you choose,
@@ -389,7 +394,15 @@ Item {
     onScrollYChanged: repaintAll()
     onRowHeightChanged: repaintAll()
     onPixelsPerTickChanged: repaintAll()
-    onNotesChanged: repaintAll()
+    onNotesChanged: {
+        //! The model has reported back, so the stored values now match what was painted; the trail
+        //! has done its job and the bars switch over to the real data without a visible step.
+        if (velocityPending) {
+            velocityPending = false
+            velocityTrail = ({})
+        }
+        repaintAll()
+    }
     onStaffCountChanged: {
         //! A different score can have fewer staves; keep the selection inside the range.
         if (currentStaff >= staffCount) {
@@ -1197,24 +1210,30 @@ Item {
                         //! While the brush is down, a bar follows the pointer's height instead of the
                         //! stored value - that live feedback is the whole point of the gesture.
                         var trail = root.velocityTrail
-                        var brushed = root.velocityDragging && trail.hasOwnProperty(note.tick)
-                        var shownVelocity = brushed ? trail[note.tick] : note.velocity
+                        var hasTrail = trail.hasOwnProperty(note.tick)
+                        var brushed = root.velocityDragging && hasTrail
+
+                        //! Between the release and the model's answer the painted value is kept, but
+                        //! drawn in the staff colour rather than the brush colour: the gesture reads
+                        //! as finished immediately, and the height does not jump back in the meantime.
+                        var pending = root.velocityPending && hasTrail
+                        var shownVelocity = (brushed || pending) ? trail[note.tick] : note.velocity
 
                         var barH = Math.max(1, (shownVelocity / 127) * (h - 4))
                         var own = note.hasVelocityOverride
+                        var solid = own || brushed || pending
 
                         //! NOTE: a thin, faint bar means "this note has no velocity of its own, so it
                         //!       follows the dynamic marks (pp/ff, hairpins)" - which is the default
                         //!       for almost every note. A thick solid bar means the note was given its
                         //!       own velocity here, overriding the dynamics. Right-click clears it.
                         ctx.fillStyle = brushed ? root.cursorColor : root.staffColor(note.staffIndex)
-                        ctx.globalAlpha = brushed ? 1.0 : (own ? 0.9 : 0.55)
-                        ctx.fillRect((own || brushed) ? x - 0.5 : x + 0.5, h - barH,
-                                     (own || brushed) ? 4 : 2, barH)
+                        ctx.globalAlpha = (brushed || pending) ? 1.0 : (own ? 0.9 : 0.55)
+                        ctx.fillRect(solid ? x - 0.5 : x + 0.5, h - barH, solid ? 4 : 2, barH)
                         ctx.globalAlpha = 1.0
 
                         // a small cap so an overridden note is recognisable even when short
-                        if (own || brushed) {
+                        if (solid) {
                             ctx.fillStyle = root.cursorColor
                             ctx.fillRect(x - 0.5, h - barH - 2, 4, 2)
                         }
@@ -1299,7 +1318,8 @@ Item {
                     var trail = root.velocityTrail
                     var staff = root.velocityDragStaff
 
-                    root.clearVelocityTrail()
+                    root.velocityDragging = false
+                    root.velocityDragStaff = -1
 
                     //! NOTE: every note the brush passed over is submitted - that is what "drawing"
                     //!       means here - but in ONE call. Submitting them one at a time made the
@@ -1318,7 +1338,11 @@ Item {
                     }
 
                     if (rows.length > 0) {
+                        //! The trail stays until the model answers - see velocityPending.
+                        root.velocityPending = true
                         root.model.setNoteVelocities(rows, values)
+                    } else {
+                        root.clearVelocityTrail()
                     }
 
                     velocityCanvas.requestPaint()

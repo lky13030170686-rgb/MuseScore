@@ -240,16 +240,72 @@ void MidiEditorModel::setNoteVelocity(int row, int velocity)
 
 void MidiEditorModel::setNoteVelocities(const QVariantList& rows, const QVariantList& velocities)
 {
-    if (rows.size() != velocities.size()) {
+    if (rows.size() != velocities.size() || rows.isEmpty()) {
         return;
     }
 
-    mutateOnce([this, &rows, &velocities]() {
-        Score* score = currentScore();
-        for (int i = 0; i < rows.size(); ++i) {
-            applyNoteVelocity(score, noteAt(rows[i].toInt()), velocities[i].toInt());
+    //! NOTE: deferred by one event-loop turn ON PURPOSE. Applying the edits inline blocks the event
+    //!       loop, so the canvas repaint the view queued on release cannot run until the work is
+    //!       finished - and the bars therefore stayed in the brush colour until the model was done.
+    //!       That gap is the delay that could be felt. Deferring lets the repaint through first, so
+    //!       the gesture looks finished the moment the button comes up.
+    QMetaObject::invokeMethod(this, [this, rows, velocities]() {
+        applyVelocityBatch(rows, velocities);
+    }, Qt::QueuedConnection);
+}
+
+void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVariantList& velocities)
+{
+    Score* score = currentScore();
+    if (!score) {
+        return;
+    }
+
+    const bool wasSuppressed = m_rebuildSuppressed;
+    m_rebuildSuppressed = true;
+
+    std::vector<int> appliedRows;
+    std::vector<int> appliedValues;
+    appliedRows.reserve(size_t(rows.size()));
+    appliedValues.reserve(size_t(rows.size()));
+
+    for (int i = 0; i < rows.size(); ++i) {
+        const int row = rows[i].toInt();
+        const int velocity = velocities[i].toInt();
+        if (row < 0 || row >= int(m_entries.size())) {
+            continue;
         }
-    });
+
+        if (applyNoteVelocity(score, noteAt(row), velocity)) {
+            appliedRows.push_back(row);
+            appliedValues.push_back(velocity);
+        }
+    }
+
+    m_rebuildSuppressed = wasSuppressed;
+
+    if (appliedRows.empty()) {
+        return;
+    }
+
+    //! NOTE: only the velocities changed, so patch the cached lists instead of collecting the whole
+    //!       score again. A full reload walks every note of every staff and builds a QVariantMap per
+    //!       note - none of which can have changed here, and all of which costs time the user can
+    //!       feel. The maps still have to be re-emitted so the view sees the new values.
+    for (size_t i = 0; i < appliedRows.size(); ++i) {
+        const int row = appliedRows[i];
+        const int velocity = appliedValues[i];
+
+        m_entries[size_t(row)].velocity = midiDisplayVelocity(velocity);
+        m_entries[size_t(row)].hasVelocityOverride = (velocity > 0);
+
+        QVariantMap note = m_notes[row].toMap();
+        note["velocity"] = midiDisplayVelocity(velocity);
+        note["hasVelocityOverride"] = (velocity > 0);
+        m_notes[row] = note;
+    }
+
+    emit scoreChanged();
 }
 
 //! NOTE: writing through the engraving model notifies the score, and our notification handler

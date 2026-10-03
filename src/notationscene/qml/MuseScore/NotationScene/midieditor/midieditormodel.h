@@ -107,6 +107,9 @@ private:
     void reload();
     void updatePlaybackState();
 
+    //! The real work of setNoteVelocities(), run one event-loop turn later (see the .cpp).
+    void applyVelocityBatch(const QVariantList& rows, const QVariantList& velocities);
+
     //! Runs `mutate` with rebuilds suppressed, then rebuilds once. Writing through the engraving
     //! model notifies the score, and the notification handler rebuilds the note list - so a single
     //! edit otherwise rebuilds twice, and a batch of N rebuilds 2N times.
