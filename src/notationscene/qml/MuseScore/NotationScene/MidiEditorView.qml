@@ -48,15 +48,10 @@ Item {
     property bool velocityLaneVisible: true
 
     readonly property real keyboardWidth: 70
-    //! The lane carries one band per staff, so it has to grow with the staff count - otherwise a
-    //! score with a dozen instruments would squeeze every band into a few unclickable pixels. It
-    //! grows up to a cap and then stops; a score with more staves than that can still hide the lane
-    //! entirely with the toolbar button.
-    readonly property real velocityLaneBandMinHeight: 14
-    readonly property real velocityLaneMaxHeight: 320
-    readonly property real velocityLaneHeight: !velocityLaneVisible ? 0
-                                               : Math.min(velocityLaneMaxHeight,
-                                                          Math.max(96, staffCount * velocityLaneBandMinHeight + 12))
+    //! The lane is a single strip, Cubase-style - NOT one band per staff. Bands looked tidy with two
+    //! staves and became unclickable slivers with ten, and "the band the pointer happens to be in"
+    //! was never an obvious answer to "which staff am I editing".
+    readonly property real velocityLaneHeight: velocityLaneVisible ? 96 : 0
     readonly property real rulerHeight: 24
     readonly property real toolBarHeight: 36
 
@@ -128,12 +123,26 @@ Item {
     //! staff, so a drag must never touch another staff's notes that happen to sit on the same tick.
     property int velocityDragStaff: -1
 
-    //! One band per staff. Without this, every staff's notes pile onto the same bar and a single
-    //! drag edits all of them at once - which is exactly what a multi-instrument score must not do.
+    //! The staff being edited. Cubase-style: the lane shows every staff's bars in that staff's own
+    //! colour so they can be compared, but only the current staff is solid - and only the current
+    //! staff is ever edited. That makes "which staff does this drag touch" a thing you choose,
+    //! rather than a thing you infer from where the pointer happens to be.
+    property int currentStaff: 0
+
     readonly property int staffCount: (model !== null && model.hasScore) ? Math.max(1, model.staffCount) : 1
 
-    //! Staff names for the lane's labels, so a band can be identified without counting rows.
     readonly property var staffNames: (model !== null && model.hasScore) ? model.staffNames : []
+
+    readonly property string currentStaffName: {
+        if (currentStaff < staffNames.length && staffNames[currentStaff]) {
+            return staffNames[currentStaff]
+        }
+        return qsTrc("notationscene", "Staff") + " " + (currentStaff + 1)
+    }
+
+    function nextStaff() {
+        currentStaff = (currentStaff + 1) % staffCount
+    }
 
     // ── helpers ──────────────────────────────────────────────────────────────
     function clamp(v, lo, hi) {
@@ -188,7 +197,6 @@ Item {
         gridCanvas.requestPaint()
         rulerCanvas.requestPaint()
         velocityCanvas.requestPaint()
-        velocityLabelCanvas.requestPaint()
     }
 
     function clampScroll() {
@@ -280,22 +288,10 @@ Item {
         return best
     }
 
-    //! Height of ONE band. Named apart from the `velocityLaneHeight` property on purpose: QML lets a
-    //! function and a property share a name, and the function then shadows the property - which
-    //! compiles fine and breaks only at run time.
-    function velocityBandHeight() {
-        return velocityCanvas.height / staffCount
-    }
-
-    function velocityLaneAt(y) {
-        return clamp(Math.floor(y / velocityBandHeight()), 0, staffCount - 1)
-    }
-
     function velocityForY(y) {
-        //! Measured inside the note's own band, so dragging to the top of any band means 127.
-        var laneH = velocityBandHeight()
-        var inLane = (y - velocityLaneAt(y) * laneH) / laneH
-        return clamp(Math.round((1.0 - inLane) * 127), 1, 127)
+        //! One strip, so the whole lane height maps onto 1..127.
+        var lane = velocityCanvas.height
+        return clamp(Math.round((1.0 - y / lane) * 127), 1, 127)
     }
 
     onScrollXChanged: repaintAll()
@@ -303,8 +299,15 @@ Item {
     onRowHeightChanged: repaintAll()
     onPixelsPerTickChanged: repaintAll()
     onNotesChanged: repaintAll()
-    onStaffCountChanged: repaintAll()
+    onStaffCountChanged: {
+        //! A different score can have fewer staves; keep the selection inside the range.
+        if (currentStaff >= staffCount) {
+            currentStaff = 0
+        }
+        repaintAll()
+    }
     onStaffNamesChanged: repaintAll()
+    onCurrentStaffChanged: repaintAll()
     onPlaybackTickChanged: repaintAll()
     onHeightChanged: repaintAll()
     onWidthChanged: repaintAll()
@@ -342,7 +345,7 @@ Item {
 
             visible: root.hasScore
 
-            text: qsTrc("notationscene", "Drag the right edge of a note = played length · Shift+drag = played start · velocity lane: one band per staff, drag = own velocity, right-click = follow dynamics")
+            text: qsTrc("notationscene", "Drag a note's right edge = played length · Shift+drag = played start · velocity lane: pick a staff in the toolbar, drag = own velocity, right-click = follow dynamics")
 
             color: root.dimTextColor
             font: ui.theme.bodyFont
@@ -398,6 +401,53 @@ Item {
                             }
                         }
                     }
+                }
+            }
+
+            //! Cubase-style track selector: the lane and the roll always show every staff, but edits
+            //! only ever land on the one named here. Hidden for single-staff scores, where there is
+            //! nothing to choose.
+            Rectangle {
+                id: staffSelector
+
+                visible: root.staffCount > 1
+                width: staffSelectorRow.width + 18
+                height: 22
+                radius: 3
+                color: staffSelectorMouse.containsMouse ? ui.theme.buttonColor : "transparent"
+                border.width: 2
+                border.color: root.staffColor(root.currentStaff)
+
+                Row {
+                    id: staffSelectorRow
+
+                    anchors.centerIn: parent
+                    spacing: 5
+
+                    Rectangle {
+                        width: 8
+                        height: 8
+                        radius: 1
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: root.staffColor(root.currentStaff)
+                    }
+
+                    Text {
+                        id: staffSelectorLabel
+
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.currentStaffName
+                        color: root.textColor
+                        font: ui.theme.bodyFont
+                    }
+                }
+
+                MouseArea {
+                    id: staffSelectorMouse
+
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: root.nextStaff()
                 }
             }
 
@@ -716,19 +766,24 @@ Item {
 
                         ctx.fillStyle = root.staffColor(note.staffIndex)
 
+                        //! The same track distinction as the velocity lane: the current staff is
+                        //! solid, the others fade back but stay visible, so the score still reads as
+                        //! a whole while only one staff is being edited.
+                        var isCurrentStaff = (note.staffIndex === root.currentStaff)
+
                         if (!showingPlay) {
-                            ctx.globalAlpha = previewing ? 0.6 : 0.95
+                            ctx.globalAlpha = previewing ? 0.6 : (isCurrentStaff ? 0.95 : 0.22)
                             ctx.fillRect(nx, ny, nw, nh)
                             ctx.globalAlpha = 1.0
                         } else {
-                            ctx.globalAlpha = 0.45
+                            ctx.globalAlpha = isCurrentStaff ? 0.45 : 0.12
                             ctx.lineWidth = 1
                             ctx.strokeStyle = root.staffColor(note.staffIndex)
                             ctx.strokeRect(nx + 0.5, ny + 0.5, Math.max(1, nw - 1), Math.max(1, nh - 1))
 
                             var px = root.xForTick(playStart)
                             var pw = Math.max(2, playDuration * root.pixelsPerTick - 1)
-                            ctx.globalAlpha = previewing ? 0.6 : 0.95
+                            ctx.globalAlpha = previewing ? 0.6 : (isCurrentStaff ? 0.95 : 0.22)
                             ctx.fillRect(px, ny + 1, pw, Math.max(1, nh - 2))
                             ctx.globalAlpha = 1.0
                         }
@@ -769,6 +824,15 @@ Item {
 
                 onPressed: function(mouse) {
                     var index = root.noteIndexAt(mouse.x, mouse.y)
+
+                    //! Cubase habit: clicking a note that belongs to another track makes that track
+                    //! current instead of editing it. The other staves are drawn faded for exactly
+                    //! this reason - they are visible, but they are not what you are editing.
+                    if (index >= 0 && root.notes[index].staffIndex !== root.currentStaff) {
+                        root.currentStaff = root.notes[index].staffIndex
+                        root.dragNoteIndex = -1
+                        return
+                    }
 
                     if (index < 0) {
                         //! NOTE: only the miss is logged, so normal use stays quiet while a "the drag
@@ -932,62 +996,8 @@ Item {
             color: root.gridColor
         }
 
-        //! The labels column, as wide as the keyboard above it: one row per staff, each with that
-        //! staff's colour and name, so a band can be identified without counting rows. Deliberately
-        //! NOT part of the mouse area - clicking a label does nothing, dragging inside the lane does.
-        Item {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.bottom: parent.bottom
-            width: root.keyboardWidth
-
-            Canvas {
-                id: velocityLabelCanvas
-
-                anchors.fill: parent
-
-                onPaint: {
-                    var ctx = getContext("2d")
-                    var w = width
-                    var h = height
-
-                    ctx.clearRect(0, 0, w, h)
-                    ctx.fillStyle = root.panelColor
-                    ctx.fillRect(0, 0, w, h)
-
-                    var laneCount = root.staffCount
-                    var laneH = h / laneCount
-
-                    ctx.font = "9px sans-serif"
-                    ctx.textAlign = "left"
-                    ctx.textBaseline = "middle"
-
-                    for (var band = 0; band < laneCount; ++band) {
-                        var bandTop = band * laneH
-
-                        ctx.fillStyle = root.staffColor(band)
-                        ctx.globalAlpha = 0.85
-                        ctx.fillRect(0, bandTop + 1, 4, Math.max(2, laneH - 3))
-                        ctx.globalAlpha = 1.0
-
-                        if (laneH >= 9) {
-                            var name = (band < root.staffNames.length && root.staffNames[band])
-                                       ? root.staffNames[band]
-                                       : ("Staff " + (band + 1))
-                            ctx.fillStyle = root.dimTextColor
-                            ctx.fillText(name, 7, bandTop + laneH / 2)
-                        }
-                    }
-
-                    ctx.strokeStyle = root.gridColor
-                    ctx.lineWidth = 1
-                    ctx.beginPath()
-                    ctx.moveTo(w - 0.5, 0)
-                    ctx.lineTo(w - 0.5, h)
-                    ctx.stroke()
-                }
-            }
-        }
+        //! No labels column here any more: with one strip there is nothing to label. Which staff is
+        //! being edited is shown in the toolbar instead, and the bars themselves are colour-coded.
 
         Item {
             anchors.top: parent.top
@@ -1018,60 +1028,38 @@ Item {
                     var minTick = root.tickForX(-8)
                     var maxTick = root.tickForX(w + 8)
 
-                    //! NOTE: one horizontal band per staff. Alternate a faint tint and draw the
-                    //! separators first, so an empty band is still visible and the user can tell
-                    //! which staff a bar belongs to before touching it.
-                    var laneCount = root.staffCount
-                    var laneH = h / laneCount
-
-                    for (var band = 0; band < laneCount; ++band) {
-                        var bandTop = band * laneH
-
-                        if (band % 2 === 1) {
-                            ctx.fillStyle = root.panelColor
-                            ctx.globalAlpha = 0.5
-                            ctx.fillRect(0, bandTop, w, laneH)
-                            ctx.globalAlpha = 1.0
-                        }
-
-                        if (band > 0) {
-                            ctx.strokeStyle = root.gridColor
-                            ctx.lineWidth = 1
-                            ctx.beginPath()
-                            ctx.moveTo(0, Math.round(bandTop) + 0.5)
-                            ctx.lineTo(w, Math.round(bandTop) + 0.5)
-                            ctx.stroke()
-                        }
-                    }
-
                     for (var i = 0; i < root.notes.length; ++i) {
                         var note = root.notes[i]
                         if (note.tick > maxTick || note.tick < minTick) {
                             continue
                         }
 
-                        var lane = root.clamp(note.staffIndex, 0, laneCount - 1)
-                        var laneBottom = (lane + 1) * laneH - 2
-
                         var x = root.xForTick(note.tick)
-                        var barH = Math.max(1, (note.velocity / 127) * (laneH - 3))
+                        var barH = Math.max(1, (note.velocity / 127) * (h - 4))
                         var active = root.velocityDragging && root.velocityDragTick === note.tick
-                                     && root.velocityDragStaff === note.staffIndex
                         var own = note.hasVelocityOverride
+                        //! Cubase-style track distinction: every staff keeps its own colour, but the
+                        //! one being edited is solid while the others fade back. You can still see
+                        //! what the other staves are doing without them getting in the way.
+                        var isCurrent = (note.staffIndex === root.currentStaff)
 
                         //! NOTE: a thin, faint bar means "this note has no velocity of its own, so it
                         //!       follows the dynamic marks (pp/ff, hairpins)" - which is the default
                         //!       for almost every note. A thick solid bar means the note was given its
                         //!       own velocity here, overriding the dynamics. Right-click clears it.
                         ctx.fillStyle = active ? root.cursorColor : root.staffColor(note.staffIndex)
-                        ctx.globalAlpha = active ? 1.0 : (own ? 0.9 : 0.3)
-                        ctx.fillRect(own || active ? x - 0.5 : x + 0.5, laneBottom - barH, own || active ? 4 : 2, barH)
+                        ctx.globalAlpha = active ? 1.0
+                                          : (isCurrent ? (own ? 0.9 : 0.55) : 0.18)
+                        ctx.fillRect(isCurrent || active ? x - 0.5 : x + 0.5, h - barH,
+                                     isCurrent || active ? 4 : 2, barH)
                         ctx.globalAlpha = 1.0
 
                         // a small cap so an overridden note is recognisable even when short
                         if (own) {
                             ctx.fillStyle = root.cursorColor
-                            ctx.fillRect(x - 0.5, laneBottom - barH - 2, 4, 2)
+                            ctx.globalAlpha = isCurrent ? 1.0 : 0.3
+                            ctx.fillRect(x - 0.5, h - barH - 2, isCurrent ? 4 : 2, 2)
+                            ctx.globalAlpha = 1.0
                         }
                     }
 
@@ -1092,21 +1080,20 @@ Item {
 
                 //! NOTE: right-click clears the per-note velocity, so the note goes back to following
                 //!       the dynamic marks. Without this a tweak would be one-way.
-                //!       Only the band that was clicked is affected - another staff may well have a
-                //!       note on the very same tick.
+                //!       Only the CURRENT staff is touched - another staff may well have a note on the
+                //!       very same tick, and the lane draws it right next to this one.
                 onClicked: function(mouse) {
                     if (mouse.button !== Qt.RightButton) {
                         return
                     }
 
-                    var lane = root.velocityLaneAt(mouse.y)
-                    var tick = root.velocityAt(mouse.x, lane)
+                    var tick = root.velocityAt(mouse.x, root.currentStaff)
                     if (tick < 0) {
                         return
                     }
 
                     for (var i = root.notes.length - 1; i >= 0; --i) {
-                        if (root.notes[i].tick === tick && root.notes[i].staffIndex === lane
+                        if (root.notes[i].tick === tick && root.notes[i].staffIndex === root.currentStaff
                                 && root.notes[i].hasVelocityOverride) {
                             root.model.setNoteVelocity(i, 0)
                         }
@@ -1118,13 +1105,13 @@ Item {
                         return
                     }
 
-                    var lane = root.velocityLaneAt(mouse.y)
-                    var tick = root.velocityAt(mouse.x, lane)
+                    var tick = root.velocityAt(mouse.x, root.currentStaff)
                     if (tick < 0) {
                         return
                     }
                     root.velocityDragTick = tick
-                    root.velocityDragStaff = lane
+                    //! Remembered at press time: switching staff mid-drag must not retarget the edit.
+                    root.velocityDragStaff = root.currentStaff
                     root.velocityDragging = true
                     velocityCanvas.requestPaint()
                 }
