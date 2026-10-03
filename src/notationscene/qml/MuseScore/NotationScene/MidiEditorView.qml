@@ -116,6 +116,13 @@ Item {
 
     property int velocityDragTick: -1
     property bool velocityDragging: false
+    //! Which staff the current velocity drag edits. The lane is split into one horizontal band per
+    //! staff, so a drag must never touch another staff's notes that happen to sit on the same tick.
+    property int velocityDragStaff: -1
+
+    //! One band per staff. Without this, every staff's notes pile onto the same bar and a single
+    //! drag edits all of them at once - which is exactly what a multi-instrument score must not do.
+    readonly property int staffCount: (model !== null && model.hasScore) ? Math.max(1, model.staffCount) : 1
 
     // ── helpers ──────────────────────────────────────────────────────────────
     function clamp(v, lo, hi) {
@@ -241,12 +248,17 @@ Item {
         return Math.max(2, note.playDurationTicks * pixelsPerTick - 1)
     }
 
-    function velocityAt(x) {
-        //! NOTE: the velocity lane works per time position, not per single note: a chord is
-        //!       edited as a whole, which is also what makes dragging it usable.
+    function velocityAt(x, staffIndex) {
+        //! NOTE: the lane works per time position WITHIN one staff: a chord of that staff is edited
+        //!       as a whole (which is what makes dragging usable), but another staff's notes that
+        //!       happen to share the tick are left alone.
         var best = -1
         var bestDist = 6
         for (var i = 0; i < notes.length; ++i) {
+            if (notes[i].staffIndex !== staffIndex) {
+                continue
+            }
+
             var dist = Math.abs(xForTick(notes[i].tick) - x)
             if (dist <= bestDist) {
                 bestDist = dist
@@ -256,9 +268,19 @@ Item {
         return best
     }
 
+    function velocityLaneHeight() {
+        return velocityCanvas.height / staffCount
+    }
+
+    function velocityLaneAt(y) {
+        return clamp(Math.floor(y / velocityLaneHeight()), 0, staffCount - 1)
+    }
+
     function velocityForY(y) {
-        var lane = velocityCanvas.height
-        return clamp(Math.round((1.0 - y / lane) * 127), 1, 127)
+        //! Measured inside the note's own band, so dragging to the top of any band means 127.
+        var laneH = velocityLaneHeight()
+        var inLane = (y - velocityLaneAt(y) * laneH) / laneH
+        return clamp(Math.round((1.0 - inLane) * 127), 1, 127)
     }
 
     onScrollXChanged: repaintAll()
@@ -303,7 +325,7 @@ Item {
 
             visible: root.hasScore
 
-            text: qsTrc("notationscene", "Drag the right edge of a note = played length · Shift+drag = played start · velocity bar: drag = own velocity, right-click = follow dynamics")
+            text: qsTrc("notationscene", "Drag the right edge of a note = played length · Shift+drag = played start · velocity lane: one band per staff, drag = own velocity, right-click = follow dynamics")
 
             color: root.dimTextColor
             font: ui.theme.bodyFont
@@ -922,15 +944,45 @@ Item {
                     var minTick = root.tickForX(-8)
                     var maxTick = root.tickForX(w + 8)
 
+                    //! NOTE: one horizontal band per staff. Alternate a faint tint and draw the
+                    //! separators first, so an empty band is still visible and the user can tell
+                    //! which staff a bar belongs to before touching it.
+                    var laneCount = root.staffCount
+                    var laneH = h / laneCount
+
+                    for (var band = 0; band < laneCount; ++band) {
+                        var bandTop = band * laneH
+
+                        if (band % 2 === 1) {
+                            ctx.fillStyle = root.panelColor
+                            ctx.globalAlpha = 0.5
+                            ctx.fillRect(0, bandTop, w, laneH)
+                            ctx.globalAlpha = 1.0
+                        }
+
+                        if (band > 0) {
+                            ctx.strokeStyle = root.gridColor
+                            ctx.lineWidth = 1
+                            ctx.beginPath()
+                            ctx.moveTo(0, Math.round(bandTop) + 0.5)
+                            ctx.lineTo(w, Math.round(bandTop) + 0.5)
+                            ctx.stroke()
+                        }
+                    }
+
                     for (var i = 0; i < root.notes.length; ++i) {
                         var note = root.notes[i]
                         if (note.tick > maxTick || note.tick < minTick) {
                             continue
                         }
 
+                        var lane = root.clamp(note.staffIndex, 0, laneCount - 1)
+                        var laneBottom = (lane + 1) * laneH - 2
+
                         var x = root.xForTick(note.tick)
-                        var barH = Math.max(1, (note.velocity / 127) * (h - 4))
+                        var barH = Math.max(1, (note.velocity / 127) * (laneH - 3))
                         var active = root.velocityDragging && root.velocityDragTick === note.tick
+                                     && root.velocityDragStaff === note.staffIndex
                         var own = note.hasVelocityOverride
 
                         //! NOTE: a thin, faint bar means "this note has no velocity of its own, so it
@@ -939,13 +991,13 @@ Item {
                         //!       own velocity here, overriding the dynamics. Right-click clears it.
                         ctx.fillStyle = active ? root.cursorColor : root.staffColor(note.staffIndex)
                         ctx.globalAlpha = active ? 1.0 : (own ? 0.9 : 0.3)
-                        ctx.fillRect(own || active ? x - 0.5 : x + 0.5, h - barH, own || active ? 4 : 2, barH)
+                        ctx.fillRect(own || active ? x - 0.5 : x + 0.5, laneBottom - barH, own || active ? 4 : 2, barH)
                         ctx.globalAlpha = 1.0
 
                         // a small cap so an overridden note is recognisable even when short
                         if (own) {
                             ctx.fillStyle = root.cursorColor
-                            ctx.fillRect(x - 0.5, h - barH - 2, 4, 2)
+                            ctx.fillRect(x - 0.5, laneBottom - barH - 2, 4, 2)
                         }
                     }
 
@@ -966,18 +1018,22 @@ Item {
 
                 //! NOTE: right-click clears the per-note velocity, so the note goes back to following
                 //!       the dynamic marks. Without this a tweak would be one-way.
+                //!       Only the band that was clicked is affected - another staff may well have a
+                //!       note on the very same tick.
                 onClicked: function(mouse) {
                     if (mouse.button !== Qt.RightButton) {
                         return
                     }
 
-                    var tick = root.velocityAt(mouse.x)
+                    var lane = root.velocityLaneAt(mouse.y)
+                    var tick = root.velocityAt(mouse.x, lane)
                     if (tick < 0) {
                         return
                     }
 
                     for (var i = root.notes.length - 1; i >= 0; --i) {
-                        if (root.notes[i].tick === tick && root.notes[i].hasVelocityOverride) {
+                        if (root.notes[i].tick === tick && root.notes[i].staffIndex === lane
+                                && root.notes[i].hasVelocityOverride) {
                             root.model.setNoteVelocity(i, 0)
                         }
                     }
@@ -988,11 +1044,13 @@ Item {
                         return
                     }
 
-                    var tick = root.velocityAt(mouse.x)
+                    var lane = root.velocityLaneAt(mouse.y)
+                    var tick = root.velocityAt(mouse.x, lane)
                     if (tick < 0) {
                         return
                     }
                     root.velocityDragTick = tick
+                    root.velocityDragStaff = lane
                     root.velocityDragging = true
                     velocityCanvas.requestPaint()
                 }
@@ -1010,13 +1068,16 @@ Item {
 
                     var velocity = root.velocityForY(mouse.y)
                     var tick = root.velocityDragTick
+                    var staff = root.velocityDragStaff
 
                     root.velocityDragging = false
                     root.velocityDragTick = -1
+                    root.velocityDragStaff = -1
 
-                    //! NOTE: a chord is edited as a whole - one submission per drag, again.
+                    //! NOTE: a chord of THIS staff is edited as a whole - one submission per drag,
+                    //!       and nothing outside the staff the drag started in.
                     for (var i = root.notes.length - 1; i >= 0; --i) {
-                        if (root.notes[i].tick === tick) {
+                        if (root.notes[i].tick === tick && root.notes[i].staffIndex === staff) {
                             root.model.setNoteVelocity(i, velocity)
                         }
                     }

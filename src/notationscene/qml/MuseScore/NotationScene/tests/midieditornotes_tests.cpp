@@ -355,11 +355,9 @@ TEST_F(MidiEditorNotesTests, PlayedTimingSurvivesSaveAndReload)
         //! Give every note a played timing that is unmistakably different from the notated one:
         //! a quarter of the note later, half as long, and every other one quieter.
         //!
-        //! Every THIRD note additionally gets its own velocity (an override that stops it from
-        //! following the dynamic marks), so a score kept with MUSE_MIDIEDITOR_KEEP_SCORE shows both
-        //! states of the velocity lane: faint bars that follow the dynamics, and solid ones that do
-        //! not.
-        int index = 0;
+        //! Notes of EVEN-numbered staves additionally get their own velocity, so a score kept with
+        //! MUSE_MIDIEDITOR_KEEP_SCORE shows every state the velocity lane can be in at once:
+        //! one band per staff, faint bars that follow the dynamics, and solid ones that do not.
         for (const MidiNoteItem& item : collectMidiNotes(score)) {
             const int start = item.tick + item.durationTicks / 4;
             const int duration = std::max(1, item.durationTicks / 2);
@@ -367,10 +365,9 @@ TEST_F(MidiEditorNotesTests, PlayedTimingSurvivesSaveAndReload)
                 ++touched;
             }
 
-            if (index % 3 == 1 && applyNoteVelocity(score, item.note, index % 2 ? 110 : 40)) {
+            if (item.staffIndex % 2 == 0 && applyNoteVelocity(score, item.note, 40)) {
                 ++ownVelocity;
             }
-            ++index;
         }
 
         EXPECT_GT(touched, 0) << "no note accepted a played override";
