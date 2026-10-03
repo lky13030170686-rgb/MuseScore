@@ -32,6 +32,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls
 
 import Muse.Ui
 
@@ -57,8 +58,8 @@ Item {
 
     // ── model ────────────────────────────────────────────────────────────────
     readonly property bool hasScore: model !== null && model.hasScore
-    readonly property int lowestPitch: hasScore ? model.lowestPitch : 48
-    readonly property int highestPitch: hasScore ? model.highestPitch : 84
+    //! NOTE: lowestPitch / highestPitch are defined further down - they follow the VISIBLE staff's
+    //! notes rather than the whole score's range.
     readonly property int totalTicks: hasScore ? Math.max(1920, model.totalTicks) : 1920
 
     //! NOTE: cached on purpose - `model.notes` hands out a copy of the whole list on every read.
@@ -134,14 +135,69 @@ Item {
     readonly property var staffNames: (model !== null && model.hasScore) ? model.staffNames : []
 
     readonly property string currentStaffName: {
-        if (currentStaff < staffNames.length && staffNames[currentStaff]) {
-            return staffNames[currentStaff]
+        if (currentStaff < staffOptions.length) {
+            return staffOptions[currentStaff]
         }
         return qsTrc("notationscene", "Staff") + " " + (currentStaff + 1)
     }
 
-    function nextStaff() {
-        currentStaff = (currentStaff + 1) % staffCount
+    //! One entry per staff for the selector, with a fallback name so a score whose part names the
+    //! model could not resolve still gets a usable list.
+    readonly property var staffOptions: {
+        var out = []
+        for (var i = 0; i < staffCount; ++i) {
+            out.push((i < staffNames.length && staffNames[i])
+                     ? staffNames[i]
+                     : (qsTrc("notationscene", "Staff") + " " + (i + 1)))
+        }
+        return out
+    }
+
+    //! Only the selected staff is drawn. Cubase shows one track's notes at a time, and mixing every
+    //! instrument of a score into a single grid is what made the roll unreadable in the first place.
+    //!
+    //! Each entry carries `row`, its index in `notes` - that is what the model's edit calls take,
+    //! and after filtering the two indexes are no longer the same.
+    readonly property var visibleRows: {
+        var out = []
+        for (var i = 0; i < notes.length; ++i) {
+            if (notes[i].staffIndex === currentStaff) {
+                out.push({ "note": notes[i], "row": i })
+            }
+        }
+        return out
+    }
+
+    //! The pitch range follows the VISIBLE notes, not the whole score - otherwise selecting an
+    //! instrument with a narrow range would squeeze its notes into the middle of a mostly empty grid.
+    readonly property int lowestPitch: {
+        var list = visibleRows
+        if (list.length === 0) {
+            return 60
+        }
+        var lo = 127
+        for (var i = 0; i < list.length; ++i) {
+            lo = Math.min(lo, list[i].note.pitch)
+        }
+        return Math.max(0, lo - 2)
+    }
+
+    readonly property int highestPitch: {
+        var list = visibleRows
+        if (list.length === 0) {
+            return 72
+        }
+        var hi = 0
+        for (var i = 0; i < list.length; ++i) {
+            hi = Math.max(hi, list[i].note.pitch)
+        }
+        return Math.min(127, hi + 2)
+    }
+
+    function selectStaff(index) {
+        if (index >= 0 && index < staffCount) {
+            currentStaff = index
+        }
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
@@ -231,9 +287,12 @@ Item {
     }
 
     function noteIndexAt(x, y) {
+        //! Returns an index into visibleRows - NOT into notes, since only the selected staff is drawn
+        //! and clickable. Callers map it back with visibleRows[i].row.
         //! NOTE: iterate backwards because later notes are painted on top.
-        for (var i = notes.length - 1; i >= 0; --i) {
-            var note = notes[i]
+        var list = visibleRows
+        for (var i = list.length - 1; i >= 0; --i) {
+            var note = list[i].note
             var pitch = (i === dragNoteIndex && dragPreviewPitch >= 0) ? dragPreviewPitch : note.pitch
 
             //! NOTE: the note is grabbable over the union of its two extents. The played bar can sit
@@ -268,21 +327,17 @@ Item {
         return Math.max(2, note.playDurationTicks * pixelsPerTick - 1)
     }
 
-    function velocityAt(x, staffIndex) {
-        //! NOTE: the lane works per time position WITHIN one staff: a chord of that staff is edited
-        //!       as a whole (which is what makes dragging usable), but another staff's notes that
-        //!       happen to share the tick are left alone.
+    function velocityAt(x) {
+        //! NOTE: only the visible staff is drawn in the lane, so only its notes can be hit. A chord
+        //!       at that time position is edited as a whole, which is what makes dragging usable.
+        var list = visibleRows
         var best = -1
         var bestDist = 6
-        for (var i = 0; i < notes.length; ++i) {
-            if (notes[i].staffIndex !== staffIndex) {
-                continue
-            }
-
-            var dist = Math.abs(xForTick(notes[i].tick) - x)
+        for (var i = 0; i < list.length; ++i) {
+            var dist = Math.abs(xForTick(list[i].note.tick) - x)
             if (dist <= bestDist) {
                 bestDist = dist
-                best = notes[i].tick
+                best = list[i].note.tick
             }
         }
         return best
@@ -447,7 +502,81 @@ Item {
 
                     anchors.fill: parent
                     hoverEnabled: true
-                    onClicked: root.nextStaff()
+                    onClicked: staffPopup.open()
+                }
+            }
+
+            //! The staff list. A Popup rather than an inline panel because the toolbar is only 36px
+            //! tall - anything drawn inside it would be clipped.
+            Popup {
+                id: staffPopup
+
+                parent: staffSelector
+                x: 0
+                y: staffSelector.height + 2
+                width: Math.max(staffSelector.width, 180)
+                padding: 4
+                closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                background: Rectangle {
+                    color: root.panelColor
+                    border.width: 1
+                    border.color: root.gridColor
+                    radius: 3
+                }
+
+                contentItem: Column {
+                    spacing: 2
+
+                    Repeater {
+                        model: root.staffOptions
+
+                        delegate: Rectangle {
+                            id: staffOption
+
+                            required property string modelData
+                            required property int index
+
+                            width: staffPopup.width - 8
+                            height: 24
+                            radius: 2
+                            color: (staffOption.index === root.currentStaff || staffOptionMouse.containsMouse)
+                                   ? ui.theme.buttonColor : "transparent"
+
+                            Row {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 6
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 6
+
+                                Rectangle {
+                                    width: 8
+                                    height: 8
+                                    radius: 1
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: root.staffColor(staffOption.index)
+                                }
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: staffOption.modelData
+                                    color: root.textColor
+                                    font: ui.theme.bodyFont
+                                }
+                            }
+
+                            MouseArea {
+                                id: staffOptionMouse
+
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: {
+                                    root.selectStaff(staffOption.index)
+                                    staffPopup.close()
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -734,13 +863,14 @@ Item {
                         ctx.stroke()
                     }
 
-                    // notes
+                    // notes - only the selected staff is drawn
                     var nh = root.noteHeight()
                     var minTick = root.tickForX(-8)
                     var maxTick = root.tickForX(w + 8)
+                    var visible = root.visibleRows
 
-                    for (var n = 0; n < root.notes.length; ++n) {
-                        var note = root.notes[n]
+                    for (var n = 0; n < visible.length; ++n) {
+                        var note = visible[n].note
                         if (note.tick > maxTick || note.tick + note.durationTicks < minTick) {
                             continue
                         }
@@ -766,24 +896,20 @@ Item {
 
                         ctx.fillStyle = root.staffColor(note.staffIndex)
 
-                        //! The same track distinction as the velocity lane: the current staff is
-                        //! solid, the others fade back but stay visible, so the score still reads as
-                        //! a whole while only one staff is being edited.
-                        var isCurrentStaff = (note.staffIndex === root.currentStaff)
-
+                        //! No fading any more: only the selected staff reaches this loop at all.
                         if (!showingPlay) {
-                            ctx.globalAlpha = previewing ? 0.6 : (isCurrentStaff ? 0.95 : 0.22)
+                            ctx.globalAlpha = previewing ? 0.6 : 0.95
                             ctx.fillRect(nx, ny, nw, nh)
                             ctx.globalAlpha = 1.0
                         } else {
-                            ctx.globalAlpha = isCurrentStaff ? 0.45 : 0.12
+                            ctx.globalAlpha = 0.45
                             ctx.lineWidth = 1
                             ctx.strokeStyle = root.staffColor(note.staffIndex)
                             ctx.strokeRect(nx + 0.5, ny + 0.5, Math.max(1, nw - 1), Math.max(1, nh - 1))
 
                             var px = root.xForTick(playStart)
                             var pw = Math.max(2, playDuration * root.pixelsPerTick - 1)
-                            ctx.globalAlpha = previewing ? 0.6 : (isCurrentStaff ? 0.95 : 0.22)
+                            ctx.globalAlpha = previewing ? 0.6 : 0.95
                             ctx.fillRect(px, ny + 1, pw, Math.max(1, nh - 2))
                             ctx.globalAlpha = 1.0
                         }
@@ -823,16 +949,8 @@ Item {
                 hoverEnabled: true
 
                 onPressed: function(mouse) {
+                    //! An index into visibleRows - only the selected staff is drawn and clickable.
                     var index = root.noteIndexAt(mouse.x, mouse.y)
-
-                    //! Cubase habit: clicking a note that belongs to another track makes that track
-                    //! current instead of editing it. The other staves are drawn faded for exactly
-                    //! this reason - they are visible, but they are not what you are editing.
-                    if (index >= 0 && root.notes[index].staffIndex !== root.currentStaff) {
-                        root.currentStaff = root.notes[index].staffIndex
-                        root.dragNoteIndex = -1
-                        return
-                    }
 
                     if (index < 0) {
                         //! NOTE: only the miss is logged, so normal use stays quiet while a "the drag
@@ -840,14 +958,15 @@ Item {
                         //!       `console.warn` on purpose: MuseScore records Qt warnings, not plain
                         //!       console.log output, so a log() here would never reach the log file.
                         console.warn("MidiEditorView: press missed at", mouse.x, mouse.y,
-                                     "| notes", root.notes.length, "pitchRange", root.lowestPitch, "-", root.highestPitch,
+                                     "| visibleNotes", root.visibleRows.length, "of", root.notes.length,
+                                     "pitchRange", root.lowestPitch, "-", root.highestPitch,
                                      "rowHeight", root.rowHeight, "scrollY", root.scrollY,
                                      "mouseArea", width, "x", height)
                     }
 
                     root.dragNoteIndex = index
                     if (index >= 0) {
-                        var grabbed = root.notes[index]
+                        var grabbed = root.visibleRows[index].note
                         root.dragStartPitch = grabbed.pitch
                         root.dragPreviewPitch = root.dragStartPitch
                         root.dragStartY = mouse.y
@@ -922,17 +1041,19 @@ Item {
                 }
 
                 onReleased: function(mouse) {
-                    if (root.dragNoteIndex >= 0 && root.dragNoteIndex < root.notes.length) {
-                        var released = root.notes[root.dragNoteIndex]
+                    if (root.dragNoteIndex >= 0 && root.dragNoteIndex < root.visibleRows.length) {
+                        var entry = root.visibleRows[root.dragNoteIndex]
+                        var released = entry.note
 
+                        //! The model takes indexes into `notes`, not into the filtered view.
                         if (root.dragMode === root.dragModePitch) {
                             if (root.dragPreviewPitch >= 0 && root.dragPreviewPitch !== root.dragStartPitch) {
                                 //! NOTE: the single submission of the whole drag.
-                                root.model.setNotePitch(root.dragNoteIndex, root.dragPreviewPitch)
+                                root.model.setNotePitch(entry.row, root.dragPreviewPitch)
                             }
                         } else if (root.dragPreviewPlayStart !== released.playTick
                                    || root.dragPreviewPlayDuration !== released.playDurationTicks) {
-                            root.model.setNotePlayOverride(root.dragNoteIndex,
+                            root.model.setNotePlayOverride(entry.row,
                                                            root.dragPreviewPlayStart,
                                                            root.dragPreviewPlayDuration,
                                                            released.playVelocityPercent)
@@ -1027,9 +1148,10 @@ Item {
 
                     var minTick = root.tickForX(-8)
                     var maxTick = root.tickForX(w + 8)
+                    var visible = root.visibleRows
 
-                    for (var i = 0; i < root.notes.length; ++i) {
-                        var note = root.notes[i]
+                    for (var i = 0; i < visible.length; ++i) {
+                        var note = visible[i].note
                         if (note.tick > maxTick || note.tick < minTick) {
                             continue
                         }
@@ -1038,28 +1160,20 @@ Item {
                         var barH = Math.max(1, (note.velocity / 127) * (h - 4))
                         var active = root.velocityDragging && root.velocityDragTick === note.tick
                         var own = note.hasVelocityOverride
-                        //! Cubase-style track distinction: every staff keeps its own colour, but the
-                        //! one being edited is solid while the others fade back. You can still see
-                        //! what the other staves are doing without them getting in the way.
-                        var isCurrent = (note.staffIndex === root.currentStaff)
 
                         //! NOTE: a thin, faint bar means "this note has no velocity of its own, so it
                         //!       follows the dynamic marks (pp/ff, hairpins)" - which is the default
                         //!       for almost every note. A thick solid bar means the note was given its
                         //!       own velocity here, overriding the dynamics. Right-click clears it.
                         ctx.fillStyle = active ? root.cursorColor : root.staffColor(note.staffIndex)
-                        ctx.globalAlpha = active ? 1.0
-                                          : (isCurrent ? (own ? 0.9 : 0.55) : 0.18)
-                        ctx.fillRect(isCurrent || active ? x - 0.5 : x + 0.5, h - barH,
-                                     isCurrent || active ? 4 : 2, barH)
+                        ctx.globalAlpha = active ? 1.0 : (own ? 0.9 : 0.55)
+                        ctx.fillRect(own || active ? x - 0.5 : x + 0.5, h - barH, own || active ? 4 : 2, barH)
                         ctx.globalAlpha = 1.0
 
                         // a small cap so an overridden note is recognisable even when short
                         if (own) {
                             ctx.fillStyle = root.cursorColor
-                            ctx.globalAlpha = isCurrent ? 1.0 : 0.3
-                            ctx.fillRect(x - 0.5, h - barH - 2, isCurrent ? 4 : 2, 2)
-                            ctx.globalAlpha = 1.0
+                            ctx.fillRect(x - 0.5, h - barH - 2, 4, 2)
                         }
                     }
 
@@ -1080,22 +1194,21 @@ Item {
 
                 //! NOTE: right-click clears the per-note velocity, so the note goes back to following
                 //!       the dynamic marks. Without this a tweak would be one-way.
-                //!       Only the CURRENT staff is touched - another staff may well have a note on the
-                //!       very same tick, and the lane draws it right next to this one.
+                //!       Only the visible staff is drawn, so only its notes can be hit.
                 onClicked: function(mouse) {
                     if (mouse.button !== Qt.RightButton) {
                         return
                     }
 
-                    var tick = root.velocityAt(mouse.x, root.currentStaff)
+                    var tick = root.velocityAt(mouse.x)
                     if (tick < 0) {
                         return
                     }
 
-                    for (var i = root.notes.length - 1; i >= 0; --i) {
-                        if (root.notes[i].tick === tick && root.notes[i].staffIndex === root.currentStaff
-                                && root.notes[i].hasVelocityOverride) {
-                            root.model.setNoteVelocity(i, 0)
+                    var list = root.visibleRows
+                    for (var i = list.length - 1; i >= 0; --i) {
+                        if (list[i].note.tick === tick && list[i].note.hasVelocityOverride) {
+                            root.model.setNoteVelocity(list[i].row, 0)
                         }
                     }
                 }
@@ -1105,7 +1218,7 @@ Item {
                         return
                     }
 
-                    var tick = root.velocityAt(mouse.x, root.currentStaff)
+                    var tick = root.velocityAt(mouse.x)
                     if (tick < 0) {
                         return
                     }
@@ -1135,8 +1248,9 @@ Item {
                     root.velocityDragTick = -1
                     root.velocityDragStaff = -1
 
-                    //! NOTE: a chord of THIS staff is edited as a whole - one submission per drag,
-                    //!       and nothing outside the staff the drag started in.
+                    //! NOTE: a chord of the visible staff is edited as a whole - one submission per
+                    //!       drag. The staff check still matters: the drag may have started before a
+                    //!       staff switch, and it must not land on the newly selected one.
                     for (var i = root.notes.length - 1; i >= 0; --i) {
                         if (root.notes[i].tick === tick && root.notes[i].staffIndex === staff) {
                             root.model.setNoteVelocity(i, velocity)
