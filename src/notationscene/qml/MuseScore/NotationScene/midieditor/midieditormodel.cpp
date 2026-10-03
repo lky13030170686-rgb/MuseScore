@@ -36,6 +36,7 @@
 #include "notation/inotation.h"
 #include "notation/inotationelements.h" // IWYU pragma: keep
 #include "notation/inotationplayback.h"
+#include "notation/inotationundostack.h"
 
 using namespace mu::engraving;
 using namespace mu::notation;
@@ -116,6 +117,14 @@ void MidiEditorModel::connectToCurrentScore()
 
         reload();
     });
+
+    //! 撤销/重做的可用状态要跟着记谱的 undo stack 走 —— MIDI 页没有记谱页那个 UndoRedoToolBar，
+    //! 所以"能不能撤销"这件事得由这一页自己说出来（否则按钮/快捷键无从判断）。
+    if (INotationUndoStackPtr undoStack = m_notation->undoStack()) {
+        undoStack->stackChanged().onNotify(this, [this]() {
+            emit undoRedoChanged();
+        });
+    }
 }
 
 void MidiEditorModel::disconnectFromCurrentScore()
@@ -125,9 +134,53 @@ void MidiEditorModel::disconnectFromCurrentScore()
         if (score) {
             score->changesChannel().disconnect(this);
         }
+
+        if (INotationUndoStackPtr undoStack = m_notation->undoStack()) {
+            undoStack->stackChanged().disconnect(this);
+        }
     }
 
     m_notation = nullptr;
+}
+
+bool MidiEditorModel::canUndo() const
+{
+    INotationPtr notation = context()->currentNotation();
+    INotationUndoStackPtr undoStack = notation ? notation->undoStack() : nullptr;
+
+    return undoStack ? undoStack->canUndo() : false;
+}
+
+bool MidiEditorModel::canRedo() const
+{
+    INotationPtr notation = context()->currentNotation();
+    INotationUndoStackPtr undoStack = notation ? notation->undoStack() : nullptr;
+
+    return undoStack ? undoStack->canRedo() : false;
+}
+
+void MidiEditorModel::undo()
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return;
+    }
+
+    //! NOTE: the very same undo stack the notation page uses - the two pages edit one score, so they
+    //!       must also be one history. This is what makes Ctrl+Z work on this page at all: the
+    //!       command's own shortcut is empty (notationcommandsregister.cpp) and the notation page's
+    //!       UndoRedoToolBar, which is where the shortcut actually lives, is not mounted here.
+    notation->undoStack()->undo(nullptr);
+}
+
+void MidiEditorModel::redo()
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return;
+    }
+
+    notation->undoStack()->redo(nullptr);
 }
 
 void MidiEditorModel::reload()

@@ -73,6 +73,24 @@ Item {
     //! 按下时记下的谱表：拖动中切换谱表不能把这次编辑落到新谱表上（与力度画笔同一条纪律）。
     property int automationDragStaff: -1
 
+    //! Ctrl+Z / Ctrl+Shift+Z。
+    //!
+    //! ⚠️ 必须在这一页自己绑：`UNDO_COMMAND` 自身的 `InputSchema()` 是空的
+    //! （notationcommandsregister.cpp），Ctrl+Z 真正绑在**记谱页的 `UndoRedoToolBar`** 上，
+    //! 而那个工具栏不挂在这一页 —— 所以在此之前 MIDI 页**没有任何撤销入口**（用户 2026-10-03 报的）。
+    //! `enabled` 跟着 undo stack 的可用状态走，没得撤销时不拦截按键。
+    Shortcut {
+        sequences: [StandardKey.Undo]
+        enabled: root.model !== null && root.model.canUndo
+        onActivated: root.model.undo()
+    }
+
+    Shortcut {
+        sequences: [StandardKey.Redo]
+        enabled: root.model !== null && root.model.canRedo
+        onActivated: root.model.redo()
+    }
+
     readonly property real keyboardWidth: 70
     //! The lane is a single strip, Cubase-style - NOT one band per staff. Bands looked tidy with two
     //! staves and became unclickable slivers with ten, and "the band the pointer happens to be in"
@@ -553,7 +571,12 @@ Item {
     }
 
     //! 第 i 段（list[i-1] → list[i]）的弯折手柄位置：横向在段的 controlT 处、纵向在该处的值上。
-    //! 返回 { x, y, tick, prevTick, prevValue, arrival }，或 null（这一段是平的，弯折没有意义）。
+    //! 返回 { x, y, tick, prevTick, prevValue, arrival }，或 null（这一段没有手柄）。
+    //!
+    //! 两种情况不给手柄：
+    //!  * **平的段**（两端值相同）—— 弯折没有意义（range 为 0，怎么弯都是平的）；
+    //!  * **到达点是记号的点**（`authored == false`）—— 弯折写在到达点上，而记号的点每次重建
+    //!    都会被重新生成，写上去的曲率立刻被覆盖 → 表现就是"拖了松手又弹回去"。
     function automationHandleAt(list, i) {
         if (i < 1 || i >= list.length) {
             return null
@@ -561,6 +584,10 @@ Item {
 
         var point = list[i]
         var prev = list[i - 1]
+        if (!point.authored) {
+            return null
+        }
+
         var thisIn = point.hasEase ? point.arrival : prev.value
         if (Math.abs(thisIn - prev.value) < 1e-9) {
             return null   // 平的段：没有弯折可言，也就不给手柄
@@ -581,12 +608,20 @@ Item {
 
     //! 命中的控制点（返回它的 tick，-1 = 没命中）。点在**两个方向**上都要够近 —— 只看 x 会在
     //! 密集的段里抓错点（值差得远的两个点可能 x 很接近）。
+    //!
+    //! ⚠️ **记号的点（`authored == false`）不是拖动目标**：拖动它会被下一次重建"搬回原位"
+    //! （生成器按记号重新生成那个 tick），用户看到的就是"松手后跳回原点"。它是只读的：
+    //! 要改就在记号上改，或者在自己新增的点上调。
     function automationHitPoint(x, y) {
         var list = automationPointsForDraw()
         var best = -1
         var bestDist = 10
 
         for (var i = 0; i < list.length; ++i) {
+            if (!list[i].authored) {
+                continue
+            }
+
             var dx = xForTick(list[i].tick) - x
             var dy = yForAutomationValue(list[i].value, velocityCanvas.height) - y
             var dist = Math.sqrt(dx * dx + dy * dy)
@@ -995,9 +1030,59 @@ Item {
                 ToolTip {
                     //! 交互是"控制点 + 手柄"，不是刷 —— 一句话说明，省得用户先乱刷一通。
                     text: qsTrc("notationscene", "Click to add a point, drag a point to move it, "
-                                + "drag the square handle to bend the curve, right-click to remove")
+                                + "drag the square handle to bend the curve, right-click to remove. "
+                                + "Hollow points belong to a dynamic mark and are read-only")
                     visible: automationToggleArea.containsMouse
                     delay: 600
+                }
+            }
+
+            //! 撤销 / 重做。放在 Curve 开关旁边，因为曲线编辑就在这条车道上做 —— 而这一页原本
+            //! 没有任何撤销入口（见上面 Shortcut 的说明）。不可用时灰显。
+            Row {
+                spacing: 4
+
+                Repeater {
+                    model: [
+                        { "label": "↶", "tip": qsTrc("notationscene", "Undo (Ctrl+Z)"),
+                          "enabled": root.model !== null && root.model.canUndo, "act": "undo" },
+                        { "label": "↷", "tip": qsTrc("notationscene", "Redo (Ctrl+Shift+Z)"),
+                          "enabled": root.model !== null && root.model.canRedo, "act": "redo" }
+                    ]
+
+                    Rectangle {
+                        required property var modelData
+
+                        width: 26
+                        height: 22
+                        radius: 3
+                        color: "transparent"
+                        border.width: 1
+                        border.color: root.gridColor
+                        opacity: modelData.enabled ? 1.0 : 0.4
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData.label
+                            color: root.textColor
+                            font: ui.theme.bodyFont
+                        }
+
+                        MouseArea {
+                            id: undoRedoArea
+
+                            anchors.fill: parent
+                            enabled: modelData.enabled
+                            hoverEnabled: true
+                            onClicked: modelData.act === "undo" ? root.model.undo() : root.model.redo()
+                        }
+
+                        ToolTip {
+                            text: modelData.tip
+                            visible: undoRedoArea.containsMouse
+                            delay: 600
+                        }
+                    }
                 }
             }
 

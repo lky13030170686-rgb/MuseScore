@@ -64,6 +64,11 @@ class MidiEditorModel : public QObject, public muse::Contextable, public muse::a
     Q_PROPERTY(double playbackTick READ playbackTick NOTIFY playbackTickChanged)
     Q_PROPERTY(bool isPlaying READ isPlaying NOTIFY playbackTickChanged)
 
+    //! MIDI 页自己报"能不能撤销"：记谱页的 UndoRedoToolBar（Ctrl+Z 真正绑定的地方）不挂在这一页，
+    //! 而 `UNDO_COMMAND` 自己的 `InputSchema()` 是空的 —— 所以这一页必须自己给入口。
+    Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoRedoChanged)
+    Q_PROPERTY(bool canRedo READ canRedo NOTIFY undoRedoChanged)
+
     muse::ContextInject<context::IGlobalContext> context = { this };
 
 public:
@@ -82,7 +87,14 @@ public:
     double playbackTick() const { return m_playbackTick; }
     bool isPlaying() const { return m_isPlaying; }
 
+    bool canUndo() const;
+    bool canRedo() const;
+
     Q_INVOKABLE void init();
+
+    //! 撤销 / 重做：走**记谱页同一套** undo stack（两页编辑同一份乐谱，也就该是同一条历史）。
+    Q_INVOKABLE void undo();
+    Q_INVOKABLE void redo();
 
     //! NOTE: `row` is an index into notes(), and is only stable until the score changes.
     //!       The view is expected to submit one edit when the mouse is released (not on every
@@ -130,6 +142,7 @@ public:
 signals:
     void scoreChanged();
     void playbackTickChanged();
+    void undoRedoChanged();
 
 private:
     void reload();
