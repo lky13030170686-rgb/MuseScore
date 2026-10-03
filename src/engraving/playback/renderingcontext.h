@@ -109,6 +109,13 @@ struct NominalNoteCtx {
 
     muse::mpe::pitch_level_t pitchLevel = 0;
 
+    //! [our addition] The loudness SHAPE of this one note, when the piano roll drew one.
+    //!
+    //! Empty means "the note is equally loud throughout", which is the normal case. A non-empty curve
+    //! is a crescendo / diminuendo / fp INSIDE a single note: the key is where in the note (in
+    //! thousandths of its length) and the value is how loud it should be there.
+    muse::mpe::ExpressionCurve expressionCurve;
+
     RenderingContext chordCtx;
     muse::mpe::ArticulationMap articulations;
 
@@ -183,20 +190,67 @@ struct NominalNoteCtx {
                 userVelocityFraction = std::clamp(userVelocityFraction * static_cast<float>(event.velocityMultiplier()), 0.f, 1.f);
             }
         }
+
+        //! [our addition] More than one event means the note carries a loudness SHAPE, not just a
+        //! value: each event contributes a point at its own ontime, and its multiplier says how loud
+        //! the note should be at that point. That is what a crescendo, a diminuendo or an fp inside a
+        //! single note needs.
+        //!
+        //! Note carefully what this is NOT: the note is still ONE note with ONE note-on. The events
+        //! only describe how its loudness moves while it sounds. Playing them as separate note-ons -
+        //! which is what the raw list looks like - would make a crescendo sound like the note being
+        //! struck again and again, which is why the shape is read out here instead.
+        //!
+        //! `ontime` is in thousandths of the note, while the curve's key is in hundredths of a
+        //! percent (HUNDRED_PERCENT == 10000), hence the scaling.
+        if (events.size() > 1) {
+            muse::mpe::ExpressionCurve curve;
+
+            for (const NoteEvent& each : events) {
+                if (!each.play()) {
+                    continue;
+                }
+
+                const long long scaled = std::llround(static_cast<double>(ctx.nominalDynamicLevel) * each.velocityMultiplier());
+                const muse::mpe::dynamic_level_t level = static_cast<muse::mpe::dynamic_level_t>(
+                    std::clamp(scaled,
+                               static_cast<long long>(muse::mpe::MIN_DYNAMIC_LEVEL),
+                               static_cast<long long>(muse::mpe::MAX_DYNAMIC_LEVEL)));
+
+                const muse::mpe::duration_percentage_t at = static_cast<muse::mpe::duration_percentage_t>(
+                    std::clamp(each.ontime(), 0, NoteEvent::NOTE_LENGTH) * (muse::mpe::HUNDRED_PERCENT / NoteEvent::NOTE_LENGTH));
+
+                curve.insert_or_assign(at, level);
+            }
+
+            //! One point is not a shape - and leaving the curve empty keeps every existing score on
+            //! exactly the path it took before.
+            if (curve.size() > 1) {
+                expressionCurve = curve;
+            }
+        }
     }
 };
 
 inline muse::mpe::NoteEvent buildNoteEvent(const NominalNoteCtx& ctx, const muse::mpe::PitchCurve& pitchCurve = {})
 {
-    return muse::mpe::NoteEvent(ctx.timestamp,
-                                ctx.duration,
-                                static_cast<muse::mpe::voice_layer_idx_t>(ctx.voiceIdx),
-                                static_cast<muse::mpe::staff_layer_idx_t>(ctx.staffIdx),
-                                ctx.pitchLevel,
-                                ctx.dynamicLevel,
-                                ctx.articulations,
-                                ctx.tempo.val,
-                                ctx.userVelocityFraction,
-                                pitchCurve);
+    muse::mpe::NoteEvent event(ctx.timestamp,
+                               ctx.duration,
+                               static_cast<muse::mpe::voice_layer_idx_t>(ctx.voiceIdx),
+                               static_cast<muse::mpe::staff_layer_idx_t>(ctx.staffIdx),
+                               ctx.pitchLevel,
+                               ctx.dynamicLevel,
+                               ctx.articulations,
+                               ctx.tempo.val,
+                               ctx.userVelocityFraction,
+                               pitchCurve);
+
+    //! [our addition] The constructor derives the loudness shape from the articulations. A shape
+    //! drawn in the piano roll is about THIS note, so it takes precedence when there is one.
+    if (!ctx.expressionCurve.empty()) {
+        event.setExpressionCurve(ctx.expressionCurve);
+    }
+
+    return event;
 }
 }
