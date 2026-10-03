@@ -23,6 +23,11 @@
 
  #include "global/containers.h"
 
+ #include "engraving/dom/score.h"
+
+ #include "notation/inotation.h"
+ #include "notation/inotationelements.h"
+
  #include "../notationcommands.h"
 
 using namespace muse;
@@ -328,6 +333,27 @@ void NotationCommandsState::init()
     controller()->stackChanged().onNotify(this, [this]() {
         updateCommandStates(UNDO_REDO_COMMANDS);
     });
+
+    //! ⚠️ 上面那一路只覆盖「记谱视图的交互路径」（NotationUndoStack::transaction()）。
+    //! MIDI 页的钢琴卷帘窗走的是 engraving 的 `Score::startCmd`/`endCmd` —— 同一个 undo stack，
+    //! 却不经过那条路径，于是 undo/redo 命令在那一页**停在旧状态（disabled）**，而主菜单那条
+    //! Ctrl+Z（`src/app/configs/data/shortcuts.xml` 的 `action://undo` = std 11 → 依赖
+    //! `action://notation/undo` → 依赖 `UNDO_COMMAND` 的状态）就**不响应**了
+    //! （2026-10-03 用户报「工具条生效、快捷键不生效」的根因）。
+    //!
+    //! 盯住 score 的数据变化通道：任何来源的编辑（记谱页、卷帘窗、插件…）都会让状态跟上。
+    auto watchScoreChanges = [this]() {
+        const INotationPtr notation = globalContext()->currentNotation();
+        Score* score = notation ? notation->elements()->msScore() : nullptr;
+        if (score) {
+            score->changesChannel().onReceive(this, [this](const ScoreChanges&) {
+                updateCommandStates(UNDO_REDO_COMMANDS);
+            }, muse::async::Asyncable::Mode::SetReplace);
+        }
+    };
+
+    globalContext()->currentNotationChanged().onNotify(this, watchScoreChanges);
+    watchScoreChanges();
 
     controller()->textEditingChanged().onReceive(this, [this](bool) {
         updateCommandStates(TEXT_EDITING_COMMANDS);

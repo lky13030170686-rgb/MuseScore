@@ -73,23 +73,12 @@ Item {
     //! 按下时记下的谱表：拖动中切换谱表不能把这次编辑落到新谱表上（与力度画笔同一条纪律）。
     property int automationDragStaff: -1
 
-    //! Ctrl+Z / Ctrl+Shift+Z。
-    //!
-    //! ⚠️ 必须在这一页自己绑：`UNDO_COMMAND` 自身的 `InputSchema()` 是空的
-    //! （notationcommandsregister.cpp），Ctrl+Z 真正绑在**记谱页的 `UndoRedoToolBar`** 上，
-    //! 而那个工具栏不挂在这一页 —— 所以在此之前 MIDI 页**没有任何撤销入口**（用户 2026-10-03 报的）。
-    //! `enabled` 跟着 undo stack 的可用状态走，没得撤销时不拦截按键。
-    Shortcut {
-        sequences: [StandardKey.Undo]
-        enabled: root.model !== null && root.model.canUndo
-        onActivated: root.model.undo()
-    }
-
-    Shortcut {
-        sequences: [StandardKey.Redo]
-        enabled: root.model !== null && root.model.canRedo
-        onActivated: root.model.redo()
-    }
+    //! ⚠️ 这里**刻意不用** QML 的 `Shortcut`：Ctrl+Z 早已由 MuseScore 自己的快捷键表注册
+    //! （`src/app/configs/data/shortcuts.xml` 的 `action://undo` = std 11），QML 的同名快捷键
+    //! **抢不过它**（2026-10-03 实测：加了 Shortcut 也不触发），而万一抢到了还会**撤销两步**。
+    //! 正确的做法是让那条链本身能用 —— 见 `NotationCommandsState` 里对 score 变化通道的订阅
+    //! （我们的编辑走 engraving 的事务，原来不经过它的 `controller()->stackChanged()`）。
+    //! 工具条上的 ↶ ↷ 是本页自己的入口，不依赖快捷键表。
 
     readonly property real keyboardWidth: 70
     //! The lane is a single strip, Cubase-style - NOT one band per staff. Bands looked tidy with two
@@ -1846,6 +1835,8 @@ Item {
                                 var point = root.automationPointAt(bendTick)
                                 root.automationBendPreviewT = point !== null && point.hasEase ? point.controlT : 0.5
                                 root.automationBendPreviewValue = point !== null && point.hasEase ? point.controlValue : 0.5
+                                //! 观测点（§7.6：用 console.warn，console.log 进不了日志文件）
+                                console.warn("[midi-automation] press handle tick=" + bendTick)
                                 velocityCanvas.requestPaint()
                                 return
                             }
@@ -1857,13 +1848,18 @@ Item {
                             root.automationDragTick = hitTick
                             root.automationDragPreviewTick = hitTick
                             root.automationDragPreviewValue = hit !== null ? hit.value : 0
+                            console.warn("[midi-automation] press point tick=" + hitTick
+                                         + " value=" + root.automationDragPreviewValue)
                             velocityCanvas.requestPaint()
                             return
                         }
 
+                        var newTick = root.snapTick(root.tickForX(mouse.x))
+                        var newValue = root.automationValueForY(mouse.y)
+                        console.warn("[midi-automation] press empty -> add tick=" + newTick + " value=" + newValue)
                         root.model.setAutomationPoints(root.currentStaff, [{
-                            "tick": root.snapTick(root.tickForX(mouse.x)),
-                            "value": root.automationValueForY(mouse.y)
+                            "tick": newTick,
+                            "value": newValue
                         }])
                         return
                     }
@@ -1927,7 +1923,10 @@ Item {
                         root.automationBendTick = -1
                         root.automationDragStaff = -1
 
+                        console.warn("[midi-automation] release handle tick=" + bendTick
+                                     + " t=" + bendT + " value=" + bendValue)
                         root.model.setAutomationPointEase(bendStaff, bendTick, bendT, bendValue)
+                        root.reloadAutomation()
                         velocityCanvas.requestPaint()
                         return
                     }
@@ -1941,7 +1940,12 @@ Item {
                         root.automationDragTick = -1
                         root.automationDragStaff = -1
 
+                        console.warn("[midi-automation] release point from=" + fromTick + " to=" + toTick
+                                     + " value=" + movedValue)
                         root.model.moveAutomationPoint(dragStaff, fromTick, toTick, movedValue)
+                        //! 立刻按模型里的真实数据重画（模型是同步的）：画面不会停在预览上。
+                        //! 若这里看起来"回弹"，就是模型真的没写进去 —— 上面两行日志里有提交参数可查。
+                        root.reloadAutomation()
                         velocityCanvas.requestPaint()
                         return
                     }
