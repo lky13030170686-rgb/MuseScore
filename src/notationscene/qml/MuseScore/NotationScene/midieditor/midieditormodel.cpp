@@ -387,6 +387,44 @@ void MidiEditorModel::setAutomationPoint(int staffIndex, int tick, double value)
     reload();
 }
 
+void MidiEditorModel::setAutomationPoints(int staffIndex, const QVariantList& points)
+{
+    Score* score = currentScore();
+    const AutomationCurveKey key = dynamicsKey(staffIndex);
+    if (!score || !key.isValid() || points.isEmpty()) {
+        return;
+    }
+
+    AutomationPointEdits edits;
+    edits.reserve(size_t(points.size()));
+
+    for (const QVariant& entry : points) {
+        const QVariantMap point = entry.toMap();
+        const int tick = point.value("tick").toInt();
+        if (tick < 0) {
+            continue;
+        }
+
+        AutomationPoint written;
+        //! NOTE: engraving's AutomationPoint wraps the mpe one - the value lives one level down.
+        written.value.outValue = muse::real_t::make(std::clamp(point.value("value").toDouble(), 0.0, 1.0));
+
+        AutomationPointEdit edit;
+        edit.tick = tick;
+        edit.change = AutomationPointEdit::SetPoint { written };
+        edits.push_back(edit);
+    }
+
+    if (edits.empty()) {
+        return;
+    }
+
+    //! ONE command for the whole stroke - see setNoteVelocities for why that matters.
+    score->editAutomationPoints(key, edits);
+
+    reload();
+}
+
 void MidiEditorModel::removeAutomationPoint(int staffIndex, int tick)
 {
     Score* score = currentScore();

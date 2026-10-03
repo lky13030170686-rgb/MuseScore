@@ -47,6 +47,21 @@ Item {
     property real scrollX: 0
     property real scrollY: 0
     property bool velocityLaneVisible: true
+    //! Whether the lane edits the velocity of single notes (bars) or the staff's Dynamics AUTOMATION
+    //! curve. They are different things: a bar is "this note is this loud, whatever the score says",
+    //! while the curve is "the loudness moves like this over time" - which is what a crescendo, a
+    //! diminuendo or an fp is. Both need a left-drag in the same strip, hence a mode.
+    property bool automationMode: false
+
+    //! The Dynamics automation of the selected staff, as { tick, value } with value in 0..1. Read
+    //! from the model rather than bound, because it is a Q_INVOKABLE - it is refreshed whenever the
+    //! score or the selected staff changes.
+    property var automationPoints: []
+
+    //! The stroke being drawn, { tick: value }, kept locally until the button comes up so that a drag
+    //! is one command rather than one per mouse move.
+    property var automationTrail: ({})
+    property bool automationDragging: false
 
     readonly property real keyboardWidth: 70
     //! The lane is a single strip, Cubase-style - NOT one band per staff. Bands looked tidy with two
@@ -390,6 +405,93 @@ Item {
         velocityTrail = ({})
     }
 
+    //! Reads the selected staff's Dynamics automation into `automationPoints`.
+    function reloadAutomation() {
+        automationPoints = (model !== null && model.hasScore)
+                           ? model.automationPoints(currentStaff)
+                           : []
+    }
+
+    //! The value under the pointer, in the same 0..1 the automation uses.
+    function automationValueForY(y) {
+        var lane = velocityCanvas.height
+        return clamp(1.0 - (y - 2) / Math.max(1, lane - 4), 0.0, 1.0)
+    }
+
+    function automationValueAt(tick) {
+        if (automationTrail.hasOwnProperty(tick)) {
+            return automationTrail[tick]
+        }
+        for (var i = 0; i < automationPoints.length; ++i) {
+            if (automationPoints[i].tick === tick) {
+                return automationPoints[i].value
+            }
+        }
+        return -1
+    }
+
+    //! One stroke of the curve: remembers the value at the tick under the pointer. Nothing is written
+    //! yet - the whole stroke is submitted once, on release.
+    function paintAutomationAt(x, y) {
+        var tick = snapTick(tickForX(x))
+        var trail = automationTrail
+        trail[tick] = automationValueForY(y)
+        automationTrail = trail
+    }
+
+    //! The tick a drawn point lands on. The automation is a time curve, so it snaps like the played
+    //! layer does - on the same grid, so a point drawn here lines up with the notes.
+    function snapTick(tick) {
+        var snap = playSnapTicks
+        return Math.max(0, Math.round(tick / snap) * snap)
+    }
+
+    //! Where a 0..1 automation value sits in the lane.
+    function yForAutomationValue(v, laneHeight) {
+        return 2 + (1.0 - v) * (laneHeight - 4)
+    }
+
+    //! The stored curve merged with the stroke in progress, sorted by tick - the stroke wins while it
+    //! is being drawn, so the line follows the pointer.
+    function automationCurveToDraw() {
+        var drawn = []
+        for (var p = 0; p < automationPoints.length; ++p) {
+            drawn.push({ "tick": automationPoints[p].tick, "value": automationPoints[p].value })
+        }
+
+        for (var key in automationTrail) {
+            var trailTick = Number(key)
+            var replaced = false
+            for (var d = 0; d < drawn.length; ++d) {
+                if (drawn[d].tick === trailTick) {
+                    drawn[d].value = automationTrail[key]
+                    replaced = true
+                    break
+                }
+            }
+            if (!replaced) {
+                drawn.push({ "tick": trailTick, "value": automationTrail[key] })
+            }
+        }
+
+        drawn.sort(function(a, b) { return a.tick - b.tick })
+        return drawn
+    }
+
+    //! The point nearest to x, or -1. Only points close enough to aim at count as a hit.
+    function automationPointNear(x) {
+        var best = -1
+        var bestDist = 8
+        for (var i = 0; i < automationPoints.length; ++i) {
+            var dist = Math.abs(xForTick(automationPoints[i].tick) - x)
+            if (dist <= bestDist) {
+                bestDist = dist
+                best = automationPoints[i].tick
+            }
+        }
+        return best
+    }
+
     onScrollXChanged: repaintAll()
     onScrollYChanged: repaintAll()
     onRowHeightChanged: repaintAll()
@@ -401,6 +503,9 @@ Item {
             velocityPending = false
             velocityTrail = ({})
         }
+        //! The automation is a Q_INVOKABLE, not a property, so it has to be re-read rather than
+        //! bound - and it changes whenever the score does (the notation page edits the same curve).
+        reloadAutomation()
         repaintAll()
     }
     onStaffCountChanged: {
@@ -411,7 +516,12 @@ Item {
         repaintAll()
     }
     onStaffNamesChanged: repaintAll()
-    onCurrentStaffChanged: repaintAll()
+    onCurrentStaffChanged: {
+        //! Each staff has its own Dynamics curve, so the one on screen has to follow the selection.
+        reloadAutomation()
+        repaintAll()
+    }
+    onAutomationPointsChanged: repaintAll()
     onPlaybackTickChanged: repaintAll()
     onHeightChanged: repaintAll()
     onWidthChanged: repaintAll()
@@ -625,6 +735,36 @@ Item {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            //! Switches the lane between editing single notes' velocity and drawing the staff's
+            //! Dynamics automation curve. Shown next to the lane's own toggle because the two are
+            //! about the same strip.
+            Rectangle {
+                visible: root.velocityLaneVisible
+                width: Math.max(28, automationToggleLabel.implicitWidth + 16)
+                height: 22
+                radius: 3
+                color: root.automationMode ? ui.theme.buttonColor : "transparent"
+                border.width: 1
+                border.color: root.automationMode ? root.cursorColor : root.gridColor
+
+                Text {
+                    id: automationToggleLabel
+
+                    anchors.centerIn: parent
+                    text: qsTrc("notationscene", "Curve")
+                    color: root.textColor
+                    font: ui.theme.bodyFont
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        root.automationMode = !root.automationMode
+                        root.reloadAutomation()
                     }
                 }
             }
@@ -1228,14 +1368,49 @@ Item {
                         //!       for almost every note. A thick solid bar means the note was given its
                         //!       own velocity here, overriding the dynamics. Right-click clears it.
                         ctx.fillStyle = brushed ? root.cursorColor : root.staffColor(note.staffIndex)
-                        ctx.globalAlpha = (brushed || pending) ? 1.0 : (own ? 0.9 : 0.55)
+                        //! In curve mode the bars step back and become a reference: what is being
+                        //! edited is the shape over time, not these individual values.
+                        ctx.globalAlpha = root.automationMode ? 0.18
+                                          : ((brushed || pending) ? 1.0 : (own ? 0.9 : 0.55))
                         ctx.fillRect(solid ? x - 0.5 : x + 0.5, h - barH, solid ? 4 : 2, barH)
                         ctx.globalAlpha = 1.0
 
                         // a small cap so an overridden note is recognisable even when short
                         if (solid) {
                             ctx.fillStyle = root.cursorColor
+                            ctx.globalAlpha = root.automationMode ? 0.25 : 1.0
                             ctx.fillRect(x - 0.5, h - barH - 2, 4, 2)
+                            ctx.globalAlpha = 1.0
+                        }
+                    }
+
+                    //! The staff's Dynamics automation - the curve a crescendo, a diminuendo or an fp
+                    //! inside a note actually is. Drawn over the bars, because it is what the
+                    //! synthesiser follows.
+                    if (root.automationMode) {
+                        var drawn = root.automationCurveToDraw()
+
+                        if (drawn.length > 0) {
+                            ctx.strokeStyle = root.cursorColor
+                            ctx.lineWidth = 2
+                            ctx.beginPath()
+                            for (var s = 0; s < drawn.length; ++s) {
+                                var sx = root.xForTick(drawn[s].tick)
+                                var sy = root.yForAutomationValue(drawn[s].value, h)
+                                if (s === 0) {
+                                    ctx.moveTo(sx, sy)
+                                } else {
+                                    ctx.lineTo(sx, sy)
+                                }
+                            }
+                            ctx.stroke()
+
+                            ctx.fillStyle = root.cursorColor
+                            for (var q = 0; q < drawn.length; ++q) {
+                                ctx.beginPath()
+                                ctx.arc(root.xForTick(drawn[q].tick), root.yForAutomationValue(drawn[q].value, h), 3, 0, 2 * Math.PI)
+                                ctx.fill()
+                            }
                         }
                     }
 
@@ -1257,8 +1432,18 @@ Item {
                 //! NOTE: right-click clears the per-note velocity, so the note goes back to following
                 //!       the dynamic marks. Without this a tweak would be one-way.
                 //!       Only the visible staff is drawn, so only its notes can be hit.
+                //!       In curve mode it removes an automation point instead - the same gesture,
+                //!       "take this away".
                 onClicked: function(mouse) {
                     if (mouse.button !== Qt.RightButton) {
+                        return
+                    }
+
+                    if (root.automationMode) {
+                        var pointTick = root.automationPointNear(mouse.x)
+                        if (pointTick >= 0) {
+                            root.model.removeAutomationPoint(root.currentStaff, pointTick)
+                        }
                         return
                     }
 
@@ -1280,6 +1465,16 @@ Item {
                         return
                     }
 
+                    //! Curve mode: draw the staff's Dynamics automation instead of a single note's
+                    //! velocity. Nothing is written yet - the stroke is submitted on release.
+                    if (root.automationMode) {
+                        root.automationTrail = ({})
+                        root.automationDragging = true
+                        root.paintAutomationAt(mouse.x, mouse.y)
+                        velocityCanvas.requestPaint()
+                        return
+                    }
+
                     var tick = root.velocityAt(mouse.x)
                     if (tick < 0) {
                         return
@@ -1297,6 +1492,12 @@ Item {
                 }
 
                 onPositionChanged: function(mouse) {
+                    if (root.automationDragging) {
+                        root.paintAutomationAt(mouse.x, mouse.y)
+                        velocityCanvas.requestPaint()
+                        return
+                    }
+
                     if (!root.velocityDragging) {
                         return
                     }
@@ -1307,7 +1508,35 @@ Item {
                 }
 
                 onReleased: function(mouse) {
-                    if (mouse.button !== Qt.LeftButton || !root.velocityDragging) {
+                    if (mouse.button !== Qt.LeftButton) {
+                        return
+                    }
+
+                    if (root.automationDragging) {
+                        //! One last stroke at the release position, so the value under the pointer is
+                        //! the value that gets stored.
+                        root.paintAutomationAt(mouse.x, mouse.y)
+
+                        var drawn = root.automationTrail
+                        root.automationDragging = false
+                        root.automationTrail = ({})
+
+                        //! ONE submission for the whole stroke - the same lesson the velocity brush
+                        //! taught: one command per point would notify the whole score per point.
+                        var points = []
+                        for (var key in drawn) {
+                            points.push({ "tick": Number(key), "value": drawn[key] })
+                        }
+
+                        if (points.length > 0) {
+                            root.model.setAutomationPoints(root.currentStaff, points)
+                        }
+
+                        velocityCanvas.requestPaint()
+                        return
+                    }
+
+                    if (!root.velocityDragging) {
                         return
                     }
 

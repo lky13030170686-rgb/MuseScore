@@ -108,6 +108,10 @@ public:
     //! it undoes and saves exactly like the same edit made on the notation page.
     Q_INVOKABLE void setAutomationPoint(int staffIndex, int tick, double value);
 
+    //! Writes a whole stroke at once, from a list of { tick, value }. One command for the batch, for
+    //! the same reason the velocity brush needs one: every command notifies the whole score.
+    Q_INVOKABLE void setAutomationPoints(int staffIndex, const QVariantList& points);
+
     //! Removes the point at that tick, if there is one.
     Q_INVOKABLE void removeAutomationPoint(int staffIndex, int tick);
 
