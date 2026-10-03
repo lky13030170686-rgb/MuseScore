@@ -118,11 +118,16 @@ Item {
 
     property int hoveredNoteIndex: -1
 
-    property int velocityDragTick: -1
     property bool velocityDragging: false
     //! Which staff the current velocity drag edits. The lane is split into one horizontal band per
     //! staff, so a drag must never touch another staff's notes that happen to sit on the same tick.
     property int velocityDragStaff: -1
+
+    //! tick -> velocity, filled in as the pointer sweeps across the lane. This is what makes the
+    //! gesture feel like DRAWING rather than "pick one value, release, see it jump": every note the
+    //! brush passes over keeps the height the pointer had at that moment, and the bars follow the
+    //! pointer instead of only changing on release.
+    property var velocityTrail: ({})
 
     //! The staff being edited. Cubase-style: the lane shows every staff's bars in that staff's own
     //! colour so they can be compared, but only the current staff is solid - and only the current
@@ -347,6 +352,37 @@ Item {
         //! One strip, so the whole lane height maps onto 1..127.
         var lane = velocityCanvas.height
         return clamp(Math.round((1.0 - y / lane) * 127), 1, 127)
+    }
+
+    //! One stroke of the brush: every note under the pointer keeps the height the pointer has right
+    //! now. Called on press and on every move, so the lane tracks the pointer instead of waiting for
+    //! the release.
+    function paintVelocityAt(x, y) {
+        var velocity = velocityForY(y)
+        var trail = velocityTrail
+        var list = visibleRows
+        var touched = false
+
+        for (var i = 0; i < list.length; ++i) {
+            var note = list[i].note
+            //! Either the pointer is over the note, or close enough to its onset that a fast sweep
+            //! must not skip it - a brush that leaves gaps feels broken.
+            if (hitHorizontally(note, x) || Math.abs(xForTick(note.tick) - x) <= 8) {
+                trail[note.tick] = velocity
+                touched = true
+            }
+        }
+
+        if (touched) {
+            //! Reassign so the property change reaches the canvas.
+            velocityTrail = trail
+        }
+    }
+
+    function clearVelocityTrail() {
+        velocityDragging = false
+        velocityDragStaff = -1
+        velocityTrail = ({})
     }
 
     onScrollXChanged: repaintAll()
@@ -1157,21 +1193,28 @@ Item {
                         }
 
                         var x = root.xForTick(note.tick)
-                        var barH = Math.max(1, (note.velocity / 127) * (h - 4))
-                        var active = root.velocityDragging && root.velocityDragTick === note.tick
+
+                        //! While the brush is down, a bar follows the pointer's height instead of the
+                        //! stored value - that live feedback is the whole point of the gesture.
+                        var trail = root.velocityTrail
+                        var brushed = root.velocityDragging && trail.hasOwnProperty(note.tick)
+                        var shownVelocity = brushed ? trail[note.tick] : note.velocity
+
+                        var barH = Math.max(1, (shownVelocity / 127) * (h - 4))
                         var own = note.hasVelocityOverride
 
                         //! NOTE: a thin, faint bar means "this note has no velocity of its own, so it
                         //!       follows the dynamic marks (pp/ff, hairpins)" - which is the default
                         //!       for almost every note. A thick solid bar means the note was given its
                         //!       own velocity here, overriding the dynamics. Right-click clears it.
-                        ctx.fillStyle = active ? root.cursorColor : root.staffColor(note.staffIndex)
-                        ctx.globalAlpha = active ? 1.0 : (own ? 0.9 : 0.55)
-                        ctx.fillRect(own || active ? x - 0.5 : x + 0.5, h - barH, own || active ? 4 : 2, barH)
+                        ctx.fillStyle = brushed ? root.cursorColor : root.staffColor(note.staffIndex)
+                        ctx.globalAlpha = brushed ? 1.0 : (own ? 0.9 : 0.55)
+                        ctx.fillRect((own || brushed) ? x - 0.5 : x + 0.5, h - barH,
+                                     (own || brushed) ? 4 : 2, barH)
                         ctx.globalAlpha = 1.0
 
                         // a small cap so an overridden note is recognisable even when short
-                        if (own) {
+                        if (own || brushed) {
                             ctx.fillStyle = root.cursorColor
                             ctx.fillRect(x - 0.5, h - barH - 2, 4, 2)
                         }
@@ -1222,17 +1265,26 @@ Item {
                     if (tick < 0) {
                         return
                     }
-                    root.velocityDragTick = tick
+
                     //! Remembered at press time: switching staff mid-drag must not retarget the edit.
                     root.velocityDragStaff = root.currentStaff
+                    root.velocityTrail = ({})
                     root.velocityDragging = true
+
+                    //! Lay down the first stroke immediately, so a plain click already shows its
+                    //! effect instead of appearing to do nothing until the button comes up.
+                    root.paintVelocityAt(mouse.x, mouse.y)
                     velocityCanvas.requestPaint()
                 }
 
                 onPositionChanged: function(mouse) {
-                    if (root.velocityDragging) {
-                        velocityCanvas.requestPaint()
+                    if (!root.velocityDragging) {
+                        return
                     }
+
+                    //! Every move paints, which is what makes the bars follow the pointer.
+                    root.paintVelocityAt(mouse.x, mouse.y)
+                    velocityCanvas.requestPaint()
                 }
 
                 onReleased: function(mouse) {
@@ -1240,20 +1292,23 @@ Item {
                         return
                     }
 
-                    var velocity = root.velocityForY(mouse.y)
-                    var tick = root.velocityDragTick
+                    //! One last stroke at the release position, so the value under the pointer is the
+                    //! value that gets stored.
+                    root.paintVelocityAt(mouse.x, mouse.y)
+
+                    var trail = root.velocityTrail
                     var staff = root.velocityDragStaff
 
-                    root.velocityDragging = false
-                    root.velocityDragTick = -1
-                    root.velocityDragStaff = -1
+                    root.clearVelocityTrail()
 
-                    //! NOTE: a chord of the visible staff is edited as a whole - one submission per
-                    //!       drag. The staff check still matters: the drag may have started before a
-                    //!       staff switch, and it must not land on the newly selected one.
-                    for (var i = root.notes.length - 1; i >= 0; --i) {
-                        if (root.notes[i].tick === tick && root.notes[i].staffIndex === staff) {
-                            root.model.setNoteVelocity(i, velocity)
+                    //! NOTE: every note the brush passed over is submitted - that is what "drawing"
+                    //!       means here. The staff check still matters: the drag may have started
+                    //!       before a staff switch, and it must not land on the newly selected one.
+                    var list = root.visibleRows
+                    for (var i = list.length - 1; i >= 0; --i) {
+                        var note = list[i].note
+                        if (note.staffIndex === staff && trail.hasOwnProperty(note.tick)) {
+                            root.model.setNoteVelocity(list[i].row, trail[note.tick])
                         }
                     }
 
