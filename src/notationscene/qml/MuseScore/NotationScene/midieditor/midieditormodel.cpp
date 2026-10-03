@@ -24,6 +24,7 @@
 
 #include <algorithm>
 
+#include "engraving/automation/automationdata.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/part.h"
 #include "engraving/dom/score.h"
@@ -312,6 +313,97 @@ void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVarian
     }
 
     emit scoreChanged();
+}
+
+//! NOTE: every score has exactly one Dynamics curve per staff (optionally per voice); the key is how
+//!       the automation data finds it. `staff->id()` is what the notation page uses too
+//!       (scoreautomationcontroller.cpp), so both pages address the same curve.
+AutomationCurveKey MidiEditorModel::dynamicsKey(int staffIndex) const
+{
+    Score* score = currentScore();
+    if (!score || staffIndex < 0 || staffIndex >= int(score->nstaves())) {
+        return {};
+    }
+
+    const Staff* staff = score->staff(staff_idx_t(staffIndex));
+    if (!staff) {
+        return {};
+    }
+
+    return AutomationCurveKey::staff(AutomationType::Dynamics, staff->id());
+}
+
+QVariantList MidiEditorModel::automationPoints(int staffIndex) const
+{
+    QVariantList result;
+
+    Score* score = currentScore();
+    const AutomationCurveKey key = dynamicsKey(staffIndex);
+    if (!score || !key.isValid()) {
+        return result;
+    }
+
+    const AutomationDataConstPtr data = score->automationData();
+    if (!data) {
+        return result;
+    }
+
+    for (const auto& [tick, point] : data->curve(key)) {
+        QVariantMap item;
+        item["tick"] = tick;
+        item["value"] = double(point.value.outValue);
+        result << item;
+    }
+
+    return result;
+}
+
+void MidiEditorModel::setAutomationPoint(int staffIndex, int tick, double value)
+{
+    Score* score = currentScore();
+    const AutomationCurveKey key = dynamicsKey(staffIndex);
+    if (!score || !key.isValid() || tick < 0) {
+        return;
+    }
+
+    AutomationPoint point;
+    //! NOTE: engraving's AutomationPoint wraps the mpe one (it adds the `itemId` that ties a point
+    //!       back to the Dynamic element it came from), so the value lives one level down.
+    point.value.outValue = muse::real_t::make(std::clamp(value, 0.0, 1.0));
+
+    //! `inValue` is left at its default (ArrivalFromPrevious), which is what makes a run of points
+    //! read as one continuous move - the shape of a crescendo - rather than as steps.
+
+    AutomationPointEdits edits;
+    AutomationPointEdit edit;
+    edit.tick = tick;
+    edit.change = AutomationPointEdit::SetPoint { point };
+    edits.push_back(edit);
+
+    //! NOTE: undoable on purpose - the same edit made on the notation page goes through the same
+    //!       command, so it lands in the undo stack and in the saved file the same way.
+    score->editAutomationPoints(key, edits);
+
+    reload();
+}
+
+void MidiEditorModel::removeAutomationPoint(int staffIndex, int tick)
+{
+    Score* score = currentScore();
+    const AutomationCurveKey key = dynamicsKey(staffIndex);
+    if (!score || !key.isValid() || tick < 0) {
+        return;
+    }
+
+    AutomationPointEdits edits;
+    AutomationPointEdit edit;
+    edit.tick = tick;
+    edit.change = AutomationPointEdit::ErasePoint {};
+    edits.push_back(edit);
+
+    score->editAutomationPoints(key, edits);
+
+    reload();
 }
 
 //! NOTE: writing through the engraving model notifies the score, and our notification handler

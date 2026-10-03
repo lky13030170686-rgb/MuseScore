@@ -35,6 +35,8 @@
 
 #include "notation/inotation.h"
 
+#include "engraving/automation/automationtypes.h"
+
 #include "midieditornotes.h"
 
 namespace mu::engraving {
@@ -95,6 +97,20 @@ public:
     //! cost dozens of rebuilds. Here the rebuild happens once, at the end.
     Q_INVOKABLE void setNoteVelocities(const QVariantList& rows, const QVariantList& velocities);
 
+    //! The Dynamics AUTOMATION curve of one staff - where the loudness should be over time. This is
+    //! what a crescendo, a diminuendo or an fp inside a single note is, and it is the same curve the
+    //! notation page draws next to the mixer, so the two stay one thing rather than two.
+    //!
+    //! Returns a list of { tick, value } with value in 0..1.
+    Q_INVOKABLE QVariantList automationPoints(int staffIndex) const;
+
+    //! Writes one point of that curve. Goes through the score's own undoable automation command, so
+    //! it undoes and saves exactly like the same edit made on the notation page.
+    Q_INVOKABLE void setAutomationPoint(int staffIndex, int tick, double value);
+
+    //! Removes the point at that tick, if there is one.
+    Q_INVOKABLE void removeAutomationPoint(int staffIndex, int tick);
+
     //! The "played" layer: where the note actually sounds (tick) and for how long, plus the velocity
     //! multiplier in percent. Absolute ticks, so the view does not need to know about thousandths.
     Q_INVOKABLE void setNotePlayOverride(int row, int startTick, int durationTicks, int velocityPercent);
@@ -120,6 +136,10 @@ private:
 
     engraving::Score* currentScore() const;
     engraving::Note* noteAt(int row) const;
+
+    //! The automation curve key for one staff's Dynamics curve, or an invalid key when there is no
+    //! such staff.
+    engraving::AutomationCurveKey dynamicsKey(int staffIndex) const;
 
     std::vector<MidiNoteItem> m_entries;
     QVariantList m_notes;
