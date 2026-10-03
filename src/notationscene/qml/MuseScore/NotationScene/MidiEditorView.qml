@@ -48,9 +48,17 @@ Item {
     property bool velocityLaneVisible: true
 
     readonly property real keyboardWidth: 70
+    //! The lane carries one band per staff, so it has to grow with the staff count - otherwise a
+    //! score with a dozen instruments would squeeze every band into a few unclickable pixels. It
+    //! grows up to a cap and then stops; a score with more staves than that can still hide the lane
+    //! entirely with the toolbar button.
+    readonly property real velocityLaneBandMinHeight: 14
+    readonly property real velocityLaneMaxHeight: 320
+    readonly property real velocityLaneHeight: !velocityLaneVisible ? 0
+                                               : Math.min(velocityLaneMaxHeight,
+                                                          Math.max(96, staffCount * velocityLaneBandMinHeight + 12))
     readonly property real rulerHeight: 24
     readonly property real toolBarHeight: 36
-    readonly property real velocityLaneHeight: velocityLaneVisible ? 96 : 0
 
     // ── model ────────────────────────────────────────────────────────────────
     readonly property bool hasScore: model !== null && model.hasScore
@@ -124,6 +132,9 @@ Item {
     //! drag edits all of them at once - which is exactly what a multi-instrument score must not do.
     readonly property int staffCount: (model !== null && model.hasScore) ? Math.max(1, model.staffCount) : 1
 
+    //! Staff names for the lane's labels, so a band can be identified without counting rows.
+    readonly property var staffNames: (model !== null && model.hasScore) ? model.staffNames : []
+
     // ── helpers ──────────────────────────────────────────────────────────────
     function clamp(v, lo, hi) {
         return Math.max(lo, Math.min(hi, v))
@@ -177,6 +188,7 @@ Item {
         gridCanvas.requestPaint()
         rulerCanvas.requestPaint()
         velocityCanvas.requestPaint()
+        velocityLabelCanvas.requestPaint()
     }
 
     function clampScroll() {
@@ -268,17 +280,20 @@ Item {
         return best
     }
 
-    function velocityLaneHeight() {
+    //! Height of ONE band. Named apart from the `velocityLaneHeight` property on purpose: QML lets a
+    //! function and a property share a name, and the function then shadows the property - which
+    //! compiles fine and breaks only at run time.
+    function velocityBandHeight() {
         return velocityCanvas.height / staffCount
     }
 
     function velocityLaneAt(y) {
-        return clamp(Math.floor(y / velocityLaneHeight()), 0, staffCount - 1)
+        return clamp(Math.floor(y / velocityBandHeight()), 0, staffCount - 1)
     }
 
     function velocityForY(y) {
         //! Measured inside the note's own band, so dragging to the top of any band means 127.
-        var laneH = velocityLaneHeight()
+        var laneH = velocityBandHeight()
         var inLane = (y - velocityLaneAt(y) * laneH) / laneH
         return clamp(Math.round((1.0 - inLane) * 127), 1, 127)
     }
@@ -288,6 +303,8 @@ Item {
     onRowHeightChanged: repaintAll()
     onPixelsPerTickChanged: repaintAll()
     onNotesChanged: repaintAll()
+    onStaffCountChanged: repaintAll()
+    onStaffNamesChanged: repaintAll()
     onPlaybackTickChanged: repaintAll()
     onHeightChanged: repaintAll()
     onWidthChanged: repaintAll()
@@ -913,6 +930,63 @@ Item {
             anchors.right: parent.right
             height: 1
             color: root.gridColor
+        }
+
+        //! The labels column, as wide as the keyboard above it: one row per staff, each with that
+        //! staff's colour and name, so a band can be identified without counting rows. Deliberately
+        //! NOT part of the mouse area - clicking a label does nothing, dragging inside the lane does.
+        Item {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.bottom: parent.bottom
+            width: root.keyboardWidth
+
+            Canvas {
+                id: velocityLabelCanvas
+
+                anchors.fill: parent
+
+                onPaint: {
+                    var ctx = getContext("2d")
+                    var w = width
+                    var h = height
+
+                    ctx.clearRect(0, 0, w, h)
+                    ctx.fillStyle = root.panelColor
+                    ctx.fillRect(0, 0, w, h)
+
+                    var laneCount = root.staffCount
+                    var laneH = h / laneCount
+
+                    ctx.font = "9px sans-serif"
+                    ctx.textAlign = "left"
+                    ctx.textBaseline = "middle"
+
+                    for (var band = 0; band < laneCount; ++band) {
+                        var bandTop = band * laneH
+
+                        ctx.fillStyle = root.staffColor(band)
+                        ctx.globalAlpha = 0.85
+                        ctx.fillRect(0, bandTop + 1, 4, Math.max(2, laneH - 3))
+                        ctx.globalAlpha = 1.0
+
+                        if (laneH >= 9) {
+                            var name = (band < root.staffNames.length && root.staffNames[band])
+                                       ? root.staffNames[band]
+                                       : ("Staff " + (band + 1))
+                            ctx.fillStyle = root.dimTextColor
+                            ctx.fillText(name, 7, bandTop + laneH / 2)
+                        }
+                    }
+
+                    ctx.strokeStyle = root.gridColor
+                    ctx.lineWidth = 1
+                    ctx.beginPath()
+                    ctx.moveTo(w - 0.5, 0)
+                    ctx.lineTo(w - 0.5, h)
+                    ctx.stroke()
+                }
+            }
         }
 
         Item {
