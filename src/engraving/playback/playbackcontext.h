@@ -105,6 +105,11 @@ private:
 
     std::set<track_idx_t> m_usedTracks;
     mutable std::unordered_map<track_idx_t, const AutomationCurve*> m_dynamicsCurveByTrack;
+
+    //! NOTE: [our addition] storage for the curves that had to be merged out of the shared (no voice) one
+    //! and the voice's own - see dynamicsCurve(). `m_dynamicsCurveByTrack` may point into this.
+    mutable std::unordered_map<track_idx_t, AutomationCurve> m_mergedDynamicsCurves;
+
     SoundPresetsByTrack m_soundPresetsByTrack;
     TextArticulationsByTrack m_textArticulationsByTrack;
     SyllablesByTrack m_syllablesByTrack;

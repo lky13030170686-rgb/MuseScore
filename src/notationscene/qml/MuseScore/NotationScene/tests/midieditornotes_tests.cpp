@@ -36,7 +36,11 @@
 #include "engraving/dom/note.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/staff.h"
+#include "engraving/dom/tempotimeline.h"
+#include "engraving/playback/playbackcontext.h"
 #include "engraving/tests/utils/scorerw.h"
+
+#include "mpe/automationpoint.h"
 
 #include "notationscene/qml/MuseScore/NotationScene/midieditor/midieditornotes.h"
 
@@ -670,6 +674,48 @@ TEST_F(MidiEditorNotesTests, TheCurveClampsItsValuesAndIgnoresWhatIsNotAPoint)
     EXPECT_TRUE(collectAutomationPoints(nullptr, 0).empty());
     EXPECT_FALSE(eraseAutomationPoint(nullptr, 0, 100));
     EXPECT_EQ(applyAutomationPoints(m_score, 0, {}), 0);
+}
+
+//! 播放侧读的是"该声部自己的曲线"，而记谱页车道与 MIDI 页写的是"整谱表共用"的那条（不带 voice）。
+//!
+//! 原来的取法是「声部曲线非空就用它，共用曲线整条丢弃」→ 只要谱表里存在**一个**声部专用的点
+//! （`VoiceAssignment` 非 ALL_VOICE_IN_INSTRUMENT 的力度记号 / 渐强线就会生成这样的点），
+//! 用户画在车道或卷帘窗上的**整条渐强对播放完全无效**。
+//!
+//! 2026-10-03 用户实测报的「曲线未能作用于最终播放」就是它：真实合奏谱（17 谱表）里
+//! 5/7/16/17 号谱表都有声部曲线，而画出来的那条是共用曲线 - 在那些谱表上画什么都听不见。
+TEST_F(MidiEditorNotesTests, ADrawnCurveStillReachesPlaybackWhenTheVoiceCurveExists)
+{
+    m_score->initAutomation();
+
+    // [GIVEN] 用户画的一条（不带 voice 的共用曲线，记谱页车道与 MIDI 页写的都是它）
+    const std::vector<MidiAutomationPoint> drawn { { 0, 0.1 }, { 1920, 0.9 } };
+    ASSERT_EQ(applyAutomationPoints(m_score, 0, drawn), int(drawn.size()));
+
+    // [AND] 该声部自己的一个点（模拟 CURRENT_VOICE_ONLY 的力度记号生成的点）
+    AutomationPoint own;
+    own.value.outValue = muse::real_t::make(0.5);
+    AutomationPointEdits ownEdits { { 960, AutomationPointEdit::SetPoint { own } } };
+    m_score->editAutomationPoints(AutomationCurveKey::staff(AutomationType::Dynamics, m_score->staff(0)->id(), size_t(0)),
+                                  ownEdits, /*undoable*/ false);
+
+    // [WHEN] 播放侧取第 0 轨的力度曲线（这正是渲染音符力度与发轨道 dynamics 事件用的那条）
+    PlaybackContext ctx(m_score);
+    const muse::mpe::DynamicAutomationLayers layers = ctx.dynamicLevelLayers(0, 1);
+    ASSERT_FALSE(layers.empty()) << "播放侧没有拿到任何力度曲线";
+
+    const muse::mpe::DynamicAutomationMap& curve = layers.begin()->second;
+    ASSERT_FALSE(curve.empty());
+
+    const TempoTimeline& timeline = m_score->tempoTimeline(/*expandRepeats*/ true);
+    auto valueAt = [&curve, &timeline](int tick) {
+        return double(muse::mpe::evaluateCurveAt(curve, timeline.utick2utime(tick) * 1000000));
+    };
+
+    // [THEN] 用户曲线的两端与声部自己的那个点，三者都在
+    EXPECT_NEAR(valueAt(0), 0.1, 0.001) << "用户画的起点没有进播放";
+    EXPECT_NEAR(valueAt(960), 0.5, 0.001) << "声部自己的点丢了";
+    EXPECT_NEAR(valueAt(1920), 0.9, 0.001) << "用户画的终点没有进播放";
 }
 
 //! What the lane draws is what the score FILE keeps. The saver writes the curve with

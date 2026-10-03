@@ -295,6 +295,7 @@ void PlaybackContext::update(const track_idx_t trackFrom, const track_idx_t trac
     }
 
     m_dynamicsCurveByTrack.clear();
+    m_mergedDynamicsCurves.clear();
 
     for (const RepeatSegment* repeatSegment : m_score->repeatList(expandRepeats)) {
         const int repeatStartTick = repeatSegment->tick;
@@ -678,12 +679,34 @@ const mu::engraving::AutomationCurve* PlaybackContext::dynamicsCurve(const track
 
     const AutomationCurve* curve = nullptr;
     if (staff) {
-        AutomationCurveKey key = AutomationCurveKey::staff(AutomationType::Dynamics, staff->id(), track2voice(trackIdx));
-        curve = &automation->curve(key);
+        //! NOTE: [our addition] Two Dynamics curves can exist for one staff, and BOTH are meant to be
+        //! heard:
+        //!   * the shared one (no voice) - what the notation page's automation lane writes, what the MIDI
+        //!     page's piano roll writes, and what an ALL_VOICE_IN_INSTRUMENT marking generates;
+        //!   * the voice's own - what a voice-scoped (CURRENT_VOICE_ONLY) marking generates.
+        //!
+        //! Taking the voice's curve whenever it was non-empty discarded the shared curve WHOLE, so a
+        //! crescendo drawn on either page was inaudible on any staff that happened to have a single
+        //! voice-scoped point - and in a real ensemble score that is most staves (2026-10-03: the user's
+        //! 17-staff score had voice curves on staves 5/7/16/17, and the drawn curve was silent there).
+        //! Merge them instead: the voice's point wins at the same tick, everything else from the shared
+        //! curve stays.
+        const AutomationCurve& sharedCurve = automation->curve(
+            AutomationCurveKey::staff(AutomationType::Dynamics, staff->id()));
+        const AutomationCurve& voiceCurve = automation->curve(
+            AutomationCurveKey::staff(AutomationType::Dynamics, staff->id(), track2voice(trackIdx)));
 
-        if (curve->empty()) {
-            key = key.withoutVoice();
-            curve = &automation->curve(key);
+        if (voiceCurve.empty()) {
+            curve = &sharedCurve;
+        } else if (sharedCurve.empty()) {
+            curve = &voiceCurve;
+        } else {
+            AutomationCurve merged = sharedCurve;
+            for (const auto& [tick, point] : voiceCurve) {
+                merged.insert_or_assign(tick, point);
+            }
+
+            curve = &m_mergedDynamicsCurves.insert_or_assign(trackIdx, std::move(merged)).first->second;
         }
     }
 
