@@ -92,9 +92,38 @@ TEST_F(MidiEditorNotesTests, DescribesTheVeryNotesTheScoreHas)
     }
 }
 
-//! Every rectangle must land inside the score timeline.
-TEST_F(MidiEditorNotesTests, EveryRectangleStartsInsideTheScore)
+//! The velocity lane groups notes by staff - one band per staff - so every note has to carry a
+//! staff index the roll can actually address, and the staff list the model builds must be able to
+//! cover it. A note whose index fell outside that range would land in no band at all and could
+//! never be edited.
+TEST_F(MidiEditorNotesTests, EveryNoteCarriesAStaffIndexTheLaneCanAddress)
 {
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_FALSE(items.empty());
+
+    const int staffCount = int(m_score->nstaves());
+    ASSERT_GE(staffCount, 1);
+
+    for (const MidiNoteItem& item : items) {
+        EXPECT_GE(item.staffIndex, 0);
+        EXPECT_LT(item.staffIndex, staffCount)
+            << "a note outside the staff range would fall into no velocity band";
+    }
+
+    //! And a band exists for every staff the notes actually use - that is what the lane draws.
+    std::vector<int> used;
+    for (const MidiNoteItem& item : items) {
+        used.push_back(item.staffIndex);
+    }
+    std::sort(used.begin(), used.end());
+    used.erase(std::unique(used.begin(), used.end()), used.end());
+
+    EXPECT_FALSE(used.empty());
+    EXPECT_LE(int(used.size()), staffCount);
+}
+
+//! Every rectangle must land inside the score timeline.
+TEST_F(MidiEditorNotesTests, EveryRectangleStartsInsideTheScore){
     const std::vector<MidiMeasureItem> measures = collectMidiMeasures(m_score);
     ASSERT_FALSE(measures.empty());
 
