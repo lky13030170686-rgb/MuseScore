@@ -1302,14 +1302,23 @@ Item {
                     root.clearVelocityTrail()
 
                     //! NOTE: every note the brush passed over is submitted - that is what "drawing"
-                    //!       means here. The staff check still matters: the drag may have started
-                    //!       before a staff switch, and it must not land on the newly selected one.
+                    //!       means here - but in ONE call. Submitting them one at a time made the
+                    //!       model rebuild its note list per note, which is what made a sweep lag.
+                    //!       The staff check still matters: the drag may have started before a staff
+                    //!       switch, and it must not land on the newly selected one.
+                    var rows = []
+                    var values = []
                     var list = root.visibleRows
                     for (var i = list.length - 1; i >= 0; --i) {
                         var note = list[i].note
                         if (note.staffIndex === staff && trail.hasOwnProperty(note.tick)) {
-                            root.model.setNoteVelocity(list[i].row, trail[note.tick])
+                            rows.push(list[i].row)
+                            values.push(trail[note.tick])
                         }
+                    }
+
+                    if (rows.length > 0) {
+                        root.model.setNoteVelocities(rows, values)
                     }
 
                     velocityCanvas.requestPaint()

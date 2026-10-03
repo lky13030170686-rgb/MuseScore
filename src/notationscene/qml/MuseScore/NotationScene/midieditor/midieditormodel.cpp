@@ -108,6 +108,12 @@ void MidiEditorModel::connectToCurrentScore()
     //!       model (the one PlaybackCursor also listens to); `notationChanged` is only a repaint
     //!       request for the notation view and would be the wrong thing to reload from.
     score->changesChannel().onReceive(this, [this](const ScoreChanges&) {
+        //! Our own edits notify the score too; mutateOnce() rebuilds once when it is done, so
+        //! rebuilding here as well would double the work for every single edit.
+        if (m_rebuildSuppressed) {
+            return;
+        }
+
         reload();
     });
 }
@@ -220,27 +226,53 @@ void MidiEditorModel::updatePlaybackState()
 
 void MidiEditorModel::setNotePitch(int row, int pitch)
 {
-    if (!applyNotePitch(currentScore(), noteAt(row), pitch)) {
-        return;
-    }
-
-    reload();
+    mutateOnce([this, row, pitch]() {
+        applyNotePitch(currentScore(), noteAt(row), pitch);
+    });
 }
 
 void MidiEditorModel::setNoteVelocity(int row, int velocity)
 {
-    if (!applyNoteVelocity(currentScore(), noteAt(row), velocity)) {
+    mutateOnce([this, row, velocity]() {
+        applyNoteVelocity(currentScore(), noteAt(row), velocity);
+    });
+}
+
+void MidiEditorModel::setNoteVelocities(const QVariantList& rows, const QVariantList& velocities)
+{
+    if (rows.size() != velocities.size()) {
         return;
     }
+
+    mutateOnce([this, &rows, &velocities]() {
+        Score* score = currentScore();
+        for (int i = 0; i < rows.size(); ++i) {
+            applyNoteVelocity(score, noteAt(rows[i].toInt()), velocities[i].toInt());
+        }
+    });
+}
+
+//! NOTE: writing through the engraving model notifies the score, and our notification handler
+//!       rebuilds the whole note list - so one edit would rebuild twice, and a batch of N would
+//!       rebuild 2N times. That is what made a brush stroke lag: sweeping over ten notes cleared and
+//!       rebuilt the note list (and with it the QML list and the canvas) about twenty times.
+void MidiEditorModel::mutateOnce(const std::function<void()>& mutate)
+{
+    if (!currentScore()) {
+        return;
+    }
+
+    const bool wasSuppressed = m_rebuildSuppressed;
+    m_rebuildSuppressed = true;
+    mutate();
+    m_rebuildSuppressed = wasSuppressed;
 
     reload();
 }
 
 void MidiEditorModel::setNotePlayOverride(int row, int startTick, int durationTicks, int velocityPercent)
 {
-    if (!applyNotePlayOverride(currentScore(), noteAt(row), startTick, durationTicks, velocityPercent)) {
-        return;
-    }
-
-    reload();
+    mutateOnce([this, row, startTick, durationTicks, velocityPercent]() {
+        applyNotePlayOverride(currentScore(), noteAt(row), startTick, durationTicks, velocityPercent);
+    });
 }

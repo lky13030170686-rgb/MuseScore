@@ -26,6 +26,8 @@
 #include <QVariantList>
 #include <qqmlintegration.h>
 
+#include <functional>
+
 #include "async/asyncable.h"
 
 #include "modularity/ioc.h"
@@ -88,6 +90,11 @@ public:
     Q_INVOKABLE void setNotePitch(int row, int pitch);
     Q_INVOKABLE void setNoteVelocity(int row, int velocity);
 
+    //! The same edit for many notes at once, which is what a brush stroke needs. Setting them one by
+    //! one made the model rebuild its whole note list - twice - per note, so sweeping over a phrase
+    //! cost dozens of rebuilds. Here the rebuild happens once, at the end.
+    Q_INVOKABLE void setNoteVelocities(const QVariantList& rows, const QVariantList& velocities);
+
     //! The "played" layer: where the note actually sounds (tick) and for how long, plus the velocity
     //! multiplier in percent. Absolute ticks, so the view does not need to know about thousandths.
     Q_INVOKABLE void setNotePlayOverride(int row, int startTick, int durationTicks, int velocityPercent);
@@ -99,6 +106,11 @@ signals:
 private:
     void reload();
     void updatePlaybackState();
+
+    //! Runs `mutate` with rebuilds suppressed, then rebuilds once. Writing through the engraving
+    //! model notifies the score, and the notification handler rebuilds the note list - so a single
+    //! edit otherwise rebuilds twice, and a batch of N rebuilds 2N times.
+    void mutateOnce(const std::function<void()>& mutate);
 
     void connectToCurrentScore();
     void disconnectFromCurrentScore();
@@ -113,6 +125,10 @@ private:
     QStringList m_staffNames;
     QString m_scoreName;
     bool m_hasScore = false;
+
+    //! Set while an edit of our own is in flight, so the score's change notification does not
+    //! rebuild the list underneath us.
+    bool m_rebuildSuppressed = false;
 
     int m_lowestPitch = 60;
     int m_highestPitch = 72;
