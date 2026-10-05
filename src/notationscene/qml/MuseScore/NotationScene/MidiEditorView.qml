@@ -767,7 +767,10 @@ Item {
         //! 曲线这边同理：模型回话说明编辑已经落到数据里，预览该让位 —— 留着会画出一个"幽灵点"。
         automationDragTick = -1
         automationBendTick = -1
-        automationDragStaff = -1
+        //! ⚠️ **`automationDragStaff` 不能在这里清**：它是"这次手势的谱表上下文"，
+        //! 而不是数据预览。新增点会立刻触发本处理器（`setAutomationPoints` → `scoreChanged`），
+        //! 若把它清成 -1，紧接着的"拖动刚新增的点"就会用 -1 去查曲线键 → 移动被拒绝 → 点弹回。
+        //! 这正是"新增后立刻拖动第一次失败、第二次成功"的根因（2026-10-05）。
         //! The automation is a Q_INVOKABLE, not a property, so it has to be re-read rather than
         //! bound - and it changes whenever the score does (the notation page edits the same curve).
         reloadAutomation()
@@ -1894,6 +1897,11 @@ Item {
                         //! 拖着它调位置。不这么做的话，这一次手势的拖动**没有预览、松手也不提交** ——
                         //! 用户看到的是"按下冒出一个点，怎么拖都不动"，报成了「松手又弹回原点」
                         //! （2026-10-05 日志：只有 `press empty -> add`、没有 release 记录，就是它）。
+                        //!
+                        //! ⚠️ 这三行必须放在 `setAutomationPoints` **之后**：那次调用会同步触发
+                        //! `scoreChanged` → `onNotesChanged`，把"预览状态"清掉；先设就会被清掉，
+                        //! 于是松手时 `drag == -1`、什么都不提交（同一份日志里的第一次失败）。
+                        root.automationDragStaff = root.currentStaff
                         root.automationDragTick = newTick
                         root.automationDragPreviewTick = newTick
                         root.automationDragPreviewValue = newValue

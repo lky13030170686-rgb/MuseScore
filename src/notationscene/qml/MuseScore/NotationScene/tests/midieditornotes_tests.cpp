@@ -732,6 +732,30 @@ TEST_F(MidiEditorNotesTests, ADrawnCurveStillReachesPlaybackWhenTheVoiceCurveExi
     EXPECT_NEAR(valueAt(1920), 0.9, 0.001) << "用户画的终点没有进播放";
 }
 
+//! 复现用户报的"新增点后立刻拖动会回弹"：模型层同一个序列，点应当被移走而不是留在原地。
+//! 用户日志（2026-10-05）里**同一组参数第一次失败、第二次成功** —— 差别只在第一次的点是
+//! 刚新增的。这个测试把那个序列原样走一遍。
+TEST_F(MidiEditorNotesTests, ANewlyAddedPointCanBeMovedRightAway)
+{
+    m_score->initAutomation();
+
+    // [GIVEN] 刚新增一个点（用户按下空白）
+    ASSERT_EQ(applyAutomationPoints(m_score, 0, { { 3720, 0.26 } }), 1);
+    ASSERT_NE(findAutomationPoint(collectAutomationPoints(m_score, 0), 3720), nullptr)
+        << "新增的点没进曲线";
+
+    // [WHEN] 立刻把它拖到别处（用户不松手直接拖）
+    EXPECT_TRUE(applyAutomationPointMove(m_score, 0, 3720, 3780, 0.587))
+        << "刚新增的点立刻移动被拒绝了";
+
+    // [THEN] 点在新位置、旧位置没有
+    const std::vector<MidiAutomationPoint> after = collectAutomationPoints(m_score, 0);
+    EXPECT_EQ(findAutomationPoint(after, 3720), nullptr) << "旧位置的点没被移走（= 回弹）";
+    const MidiAutomationPoint* moved = findAutomationPoint(after, 3780);
+    ASSERT_NE(moved, nullptr) << "新位置没有点（= 回弹）";
+    EXPECT_NEAR(moved->value, 0.587, 1e-6);
+}
+
 //! What the lane draws is what the score FILE keeps. The saver writes the curve with
 //! `writeGenerated = false` (MscSaver), so the user's own points go in and the marks' generated ones are
 //! left out - they are rebuilt from the marks on the next load, and writing them as well would put a
