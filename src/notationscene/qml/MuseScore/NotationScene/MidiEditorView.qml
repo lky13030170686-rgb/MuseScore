@@ -1946,6 +1946,17 @@ Item {
                         ++root.automationMoveCount
                     }
 
+                    //! ⚠️ **新建拖动**必须单独一支：这时 `automationDragTick` 是 -1（点还没建），
+                    //! 所以下面"拖已有点"的分支不会命中 —— 漏掉这一支的后果是预览不更新，
+                    //! 松手时把点建在**按下的位置**，看起来就是"点击后直接移动失败/回弹"
+                    //! （2026-10-05 用户实测）。
+                    if (root.automationNewDragging) {
+                        root.automationDragPreviewTick = root.snapTick(root.tickForX(mouse.x))
+                        root.automationDragPreviewValue = root.automationValueForY(mouse.y)
+                        velocityCanvas.requestPaint()
+                        return
+                    }
+
                     if (root.automationBendTick >= 0) {
                         var bent = root.automationBendFromPointer(mouse.x, mouse.y, root.automationBendTick)
                         if (bent !== null) {
