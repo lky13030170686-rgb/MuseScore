@@ -111,18 +111,55 @@ Item {
     //! `enabled` **不要**绑 `canUndo`：`enabled: false` 的 Shortcut 完全不拦截按键，
     //! 只要那个属性有一次没刷新，快捷键就"永远没反应"且日志里毫无痕迹。没得撤销时
     //! `undoStack()->undo()` 本来就是 no-op。
+    //! ⚠️ Ctrl+Z / Ctrl+Shift+Z —— **两道保险**。
+    //!
+    //! 第一道是下面的 `Shortcut`（`Qt::ApplicationShortcut`）。实测它在这套架构里**不触发**
+    //! （2026-10-05：`active=true`、`Ctrl+Z` 已在快捷键表里、上下文检查通过、全局 `Shortcuts`
+    //! 组件也在主窗口上 —— 链路上每一环都正常，按键就是没反应）。
+    //!
+    //! 所以再加一道 `Keys.onPressed`：**只要按键能到达这一页，就一定能撤销**。
+    //! 两条日志（`keys undo` / `shortcut undo`）还能顺带告诉我们按键到底走到了哪一层：
+    //!  * 只有 `keys undo`  → 按键到了页面、Shortcut 系统没接 → 兜底生效（快捷键可用）
+    //!  * 两条都没有        → 按键在更上层就被吃掉了 → 继续往上查
+    focus: true
+    Keys.onPressed: function(event) {
+        if ((event.modifiers & Qt.ControlModifier) === 0) {
+            return
+        }
+
+        if (event.key === Qt.Key_Z) {
+            console.warn("[midi-automation] keys undo (shift=" + ((event.modifiers & Qt.ShiftModifier) !== 0) + ")")
+            if ((event.modifiers & Qt.ShiftModifier) !== 0) {
+                root.model.redo()
+            } else {
+                root.model.undo()
+            }
+            event.accepted = true
+        } else if (event.key === Qt.Key_Y) {
+            console.warn("[midi-automation] keys redo")
+            root.model.redo()
+            event.accepted = true
+        }
+    }
+
     Shortcut {
         sequences: [StandardKey.Undo]
         context: Qt.ApplicationShortcut
         enabled: root.model !== null
-        onActivated: root.model.undo()
+        onActivated: {
+            console.warn("[midi-automation] shortcut undo")
+            root.model.undo()
+        }
     }
 
     Shortcut {
         sequences: [StandardKey.Redo]
         context: Qt.ApplicationShortcut
         enabled: root.model !== null
-        onActivated: root.model.redo()
+        onActivated: {
+            console.warn("[midi-automation] shortcut redo")
+            root.model.redo()
+        }
     }
 
     readonly property real keyboardWidth: 70
