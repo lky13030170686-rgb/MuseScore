@@ -345,7 +345,7 @@ std::vector<MidiAutomationPoint> collectAutomationPoints(const Score* score, int
     return result;
 }
 
-int applyAutomationPoints(Score* score, int staffIndex, const std::vector<MidiAutomationPoint>& points)
+int applyAutomationPoints(Score* score, int staffIndex, const std::vector<MidiAutomationPoint>& points, bool openCommand)
 {
     const AutomationCurveKey key = dynamicsKey(score, staffIndex);
     if (!score || !key.isValid() || points.empty()) {
@@ -404,16 +404,19 @@ int applyAutomationPoints(Score* score, int staffIndex, const std::vector<MidiAu
     //!
     //! ⚠️ The command has to be OPEN when that call is made: `Score::undo()` (cmd.cpp) applies a command
     //! immediately and then DISCARDS it when no transaction is open, so an edit made outside one changes
-    //! the curve and leaves nothing to undo - the stroke would be un-undoable. The notation page wraps
-    //! this very call in a transaction for the same reason (NotationAutomation::editPoints).
-    score->startCmd(TranslatableString("midieditor", "Draw dynamics curve"));
+    //! the curve and leaves nothing to undo - the stroke would be un-undoable.
+    //! `openCommand == false` 时事务由调用方开（MIDI 页用 notation 的 undo stack，理由见头文件）。
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Draw dynamics curve"));
+    }
     score->editAutomationPoints(key, edits);
-    score->endCmd();
+    if (openCommand) {
+        score->endCmd();
+    }
 
-    return int(edits.size());
-}
+    return int(edits.size());}
 
-bool eraseAutomationPoint(Score* score, int staffIndex, int tick)
+bool eraseAutomationPoint(Score* score, int staffIndex, int tick, bool openCommand)
 {
     const AutomationCurveKey key = dynamicsKey(score, staffIndex);
     if (!score || !key.isValid() || tick < 0) {
@@ -439,14 +442,18 @@ bool eraseAutomationPoint(Score* score, int staffIndex, int tick)
     AutomationPointEdits edits { { tick, AutomationPointEdit::ErasePoint {} } };
 
     //! In a command, for the reason spelled out in applyAutomationPoints.
-    score->startCmd(TranslatableString("midieditor", "Remove dynamics point"));
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Remove dynamics point"));
+    }
     score->editAutomationPoints(key, edits);
-    score->endCmd();
+    if (openCommand) {
+        score->endCmd();
+    }
 
     return true;
 }
 
-bool applyAutomationPointEase(Score* score, int staffIndex, int tick, double t, double value)
+bool applyAutomationPointEase(Score* score, int staffIndex, int tick, double t, double value, bool openCommand)
 {
     const AutomationCurveKey key = dynamicsKey(score, staffIndex);
     if (!score || !key.isValid() || tick < 0) {
@@ -483,16 +490,24 @@ bool applyAutomationPointEase(Score* score, int staffIndex, int tick, double t, 
                            : written.value.outValue;
     written.value.inValue = AutomationPoint::ExplicitArrival { arrival, bend };
 
+    //! ⚠️ **接管**：碰过一下，这个点就是用户的了（理由见 applyAutomationPointMove）。
+    written.generated = false;
+    written.itemId = std::nullopt;
+
     AutomationPointEdits edits { { tick, AutomationPointEdit::SetPoint { written } } };
 
-    score->startCmd(TranslatableString("midieditor", "Bend dynamics curve"));
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Bend dynamics curve"));
+    }
     score->editAutomationPoints(key, edits);
-    score->endCmd();
+    if (openCommand) {
+        score->endCmd();
+    }
 
     return true;
 }
 
-bool applyAutomationPointMove(Score* score, int staffIndex, int fromTick, int toTick, double value)
+bool applyAutomationPointMove(Score* score, int staffIndex, int fromTick, int toTick, double value, bool openCommand)
 {
     const AutomationCurveKey key = dynamicsKey(score, staffIndex);
     if (!score || !key.isValid() || fromTick < 0 || toTick < 0) {
@@ -523,12 +538,23 @@ bool applyAutomationPointMove(Score* score, int staffIndex, int fromTick, int to
     }
     moved.value.outValue = movedValue;
 
+    //! ⚠️ **接管**：拖一下记号生成的点，它就从"记号的"变成"用户的"。
+    //! 不清这两个标志的话，拖动只是把记号点临时搬走 —— 下一次重建（记号还在）会在原 tick
+    //! 重新生成一个，用户看到的就是"松手又弹回来"（2026-10-03 用户报的现象）。
+    //! 与"新增点即接管"是同一条规则（见 applyAutomationPoints 里的说明）。
+    moved.generated = false;
+    moved.itemId = std::nullopt;
+
     //! 上游的 MovePoint：写到新 tick，并把原 tick 上的点删掉。
     AutomationPointEdits edits { { toTick, AutomationPointEdit::MovePoint { moved, fromTick } } };
 
-    score->startCmd(TranslatableString("midieditor", "Move dynamics point"));
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Move dynamics point"));
+    }
     score->editAutomationPoints(key, edits);
-    score->endCmd();
+    if (openCommand) {
+        score->endCmd();
+    }
 
     return true;
 }

@@ -155,7 +155,14 @@ std::vector<MidiAutomationPoint> collectAutomationPoints(const engraving::Score*
 //! A point that already holds that value is left alone; when nothing at all changes, nothing is written,
 //! because a stroke that changes nothing must not cost an undo step either. Returns how many points were
 //! written.
-int applyAutomationPoints(engraving::Score* score, int staffIndex, const std::vector<MidiAutomationPoint>& points);
+//!
+//! ⚠️ `openCommand`：默认 `true` = 自己开事务（测试与独立调用走这条）。MIDI 页传 **`false`**，
+//! 由调用方包在 `INotationUndoStack::transaction()` 里 —— 那条路会在提交后**通知"栈变了"**，
+//! 撤销/重做命令的状态（以及主菜单那条 Ctrl+Z）才会跟上；engraving 的 `Score::startCmd/endCmd`
+//! 虽然用同一个 undo stack，却**不经过那个通知**（2026-10-03 用户报「Undo 是灰的」的根因）。
+//! 下面四个写入函数都有这个参数，含义相同。
+int applyAutomationPoints(engraving::Score* score, int staffIndex, const std::vector<MidiAutomationPoint>& points,
+                          bool openCommand = true);
 
 //! Removes the point at `tick`, if it is the user's own.
 //!
@@ -164,7 +171,7 @@ int applyAutomationPoints(engraving::Score* score, int staffIndex, const std::ve
 //! shape away until that rebuild. The notation page's lane refuses exactly the same points
 //! (NotationAutomationController::requestRemovePoint), and the two pages must not disagree about what is
 //! the user's to delete. Returns false when nothing was removed.
-bool eraseAutomationPoint(engraving::Score* score, int staffIndex, int tick);
+bool eraseAutomationPoint(engraving::Score* score, int staffIndex, int tick, bool openCommand = true);
 
 //! 把某个点的"到达段"弯折控制写成 `ExplicitArrival { outValue, Ease { t, value } }` ——
 //! 也就是拖手柄调曲率。点的出值（`outValue`）保持不变，只有弯折点变。
@@ -172,7 +179,8 @@ bool eraseAutomationPoint(engraving::Score* score, int staffIndex, int tick);
 //! `t` / `value` 都夹到 0..1；`t` 贴到 0 或 1 时上游按"无弯折"处理（见 `muse::mpe::evaluateAt`），
 //! 所以这里不做特殊处理，交给同一个求值函数。
 //! 点不存在、不是本谱表的曲线、或值没变时返回 false（**不写**、不压撤销步）。
-bool applyAutomationPointEase(engraving::Score* score, int staffIndex, int tick, double t, double value);
+bool applyAutomationPointEase(engraving::Score* score, int staffIndex, int tick, double t, double value,
+                              bool openCommand = true);
 
 //! 把一个点移到另一个 tick（可同时改值），走上游的 `MovePoint`：目标 tick 上的点被它取代，
 //! 原 tick 上的点消失 —— 这就是"拖动控制点"。
@@ -180,7 +188,8 @@ bool applyAutomationPointEase(engraving::Score* score, int staffIndex, int tick,
 //! NOTE: 名字与 `applyAutomationPoints` / `applyAutomationPointEase` 同族，**刻意不叫
 //!       `moveAutomationPoint`** —— 模型里有同名成员函数，成员会遮蔽外层同名自由函数，
 //!       在成员函数体里调用时重载解析直接失败（编译期就报，不会静默）。
-bool applyAutomationPointMove(engraving::Score* score, int staffIndex, int fromTick, int toTick, double value);
+bool applyAutomationPointMove(engraving::Score* score, int staffIndex, int fromTick, int toTick, double value,
+                              bool openCommand = true);
 
 //! The default velocity shown for a note the user has never given an explicit velocity.
 int midiDisplayVelocity(int userVelocity);

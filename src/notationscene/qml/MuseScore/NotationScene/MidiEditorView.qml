@@ -560,12 +560,10 @@ Item {
     }
 
     //! 第 i 段（list[i-1] → list[i]）的弯折手柄位置：横向在段的 controlT 处、纵向在该处的值上。
-    //! 返回 { x, y, tick, prevTick, prevValue, arrival }，或 null（这一段没有手柄）。
+    //! 返回 { x, y, tick, prevTick, prevValue, arrival }，或 null（平的段：没有弯折可言）。
     //!
-    //! 两种情况不给手柄：
-    //!  * **平的段**（两端值相同）—— 弯折没有意义（range 为 0，怎么弯都是平的）；
-    //!  * **到达点是记号的点**（`authored == false`）—— 弯折写在到达点上，而记号的点每次重建
-    //!    都会被重新生成，写上去的曲率立刻被覆盖 → 表现就是"拖了松手又弹回去"。
+    //! 记号生成的点（空心）**也给手柄**：拖手柄 = **接管**它（模型会把 `generated`/`itemId`
+    //! 清掉），所以写上去的曲率不会被下一次重建覆盖。
     function automationHandleAt(list, i) {
         if (i < 1 || i >= list.length) {
             return null
@@ -573,10 +571,6 @@ Item {
 
         var point = list[i]
         var prev = list[i - 1]
-        if (!point.authored) {
-            return null
-        }
-
         var thisIn = point.hasEase ? point.arrival : prev.value
         if (Math.abs(thisIn - prev.value) < 1e-9) {
             return null   // 平的段：没有弯折可言，也就不给手柄
@@ -598,19 +592,15 @@ Item {
     //! 命中的控制点（返回它的 tick，-1 = 没命中）。点在**两个方向**上都要够近 —— 只看 x 会在
     //! 密集的段里抓错点（值差得远的两个点可能 x 很接近）。
     //!
-    //! ⚠️ **记号的点（`authored == false`）不是拖动目标**：拖动它会被下一次重建"搬回原位"
-    //! （生成器按记号重新生成那个 tick），用户看到的就是"松手后跳回原点"。它是只读的：
-    //! 要改就在记号上改，或者在自己新增的点上调。
+    //! ⚠️ **记号的点（空心）也是拖动目标**：拖它 = **接管**（模型会把 `generated`/`itemId` 清掉，
+    //! 于是它不再被记号重建覆盖）。曾经把空心点设成"不可拖"，结果是：用户想拖它却在空白分支里
+    //! 新增了一个点、原来的点纹丝不动 —— 用户把这个现象报成了"松手又弹回原点"（2026-10-03）。
     function automationHitPoint(x, y) {
         var list = automationPointsForDraw()
         var best = -1
         var bestDist = 10
 
         for (var i = 0; i < list.length; ++i) {
-            if (!list[i].authored) {
-                continue
-            }
-
             var dx = xForTick(list[i].tick) - x
             var dy = yForAutomationValue(list[i].value, velocityCanvas.height) - y
             var dist = Math.sqrt(dx * dx + dy * dy)

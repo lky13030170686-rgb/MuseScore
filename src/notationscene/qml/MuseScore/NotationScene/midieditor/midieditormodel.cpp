@@ -394,8 +394,15 @@ void MidiEditorModel::setAutomationPoint(int staffIndex, int tick, double value)
     const std::vector<MidiAutomationPoint> points { MidiAutomationPoint { tick, value } };
 
     //! NOTE: write through the engraving model, rebuild once - see mutateOnce.
+    //! ⚠️ 事务由 **notation 的 undo stack** 开（不是自由函数自带的那条）：只有它会在提交后通知
+    //! "栈变了"，撤销/重做命令的状态、主菜单与 Ctrl+Z 才会跟上（见头文件里 openCommand 的说明）。
     mutateOnce([this, staffIndex, points]() {
-        applyAutomationPoints(currentScore(), staffIndex, points);
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Draw dynamics curve"),
+                                               [this, staffIndex, points](engraving::Transaction&) {
+                applyAutomationPoints(currentScore(), staffIndex, points, /*openCommand*/ false);
+            });
+        }
     });
 }
 
@@ -418,28 +425,48 @@ void MidiEditorModel::setAutomationPoints(int staffIndex, const QVariantList& po
     }
 
     mutateOnce([this, staffIndex, drawn]() {
-        applyAutomationPoints(currentScore(), staffIndex, drawn);
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Add dynamics point"),
+                                               [this, staffIndex, drawn](engraving::Transaction&) {
+                applyAutomationPoints(currentScore(), staffIndex, drawn, /*openCommand*/ false);
+            });
+        }
     });
 }
 
 void MidiEditorModel::removeAutomationPoint(int staffIndex, int tick)
 {
     mutateOnce([this, staffIndex, tick]() {
-        eraseAutomationPoint(currentScore(), staffIndex, tick);
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Remove dynamics point"),
+                                               [this, staffIndex, tick](engraving::Transaction&) {
+                eraseAutomationPoint(currentScore(), staffIndex, tick, /*openCommand*/ false);
+            });
+        }
     });
 }
 
 void MidiEditorModel::setAutomationPointEase(int staffIndex, int tick, double t, double value)
 {
     mutateOnce([this, staffIndex, tick, t, value]() {
-        applyAutomationPointEase(currentScore(), staffIndex, tick, t, value);
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Bend dynamics curve"),
+                                               [this, staffIndex, tick, t, value](engraving::Transaction&) {
+                applyAutomationPointEase(currentScore(), staffIndex, tick, t, value, /*openCommand*/ false);
+            });
+        }
     });
 }
 
 void MidiEditorModel::moveAutomationPoint(int staffIndex, int fromTick, int toTick, double value)
 {
     mutateOnce([this, staffIndex, fromTick, toTick, value]() {
-        applyAutomationPointMove(currentScore(), staffIndex, fromTick, toTick, value);
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Move dynamics point"),
+                                               [this, staffIndex, fromTick, toTick, value](engraving::Transaction&) {
+                applyAutomationPointMove(currentScore(), staffIndex, fromTick, toTick, value, /*openCommand*/ false);
+            });
+        }
     });
 }
 
