@@ -78,6 +78,15 @@ Item {
     //! `moves > 0` 却 `from == to` 说明鼠标确实没怎么动。2026-10-05 加，用来一次定位"拖不动"。
     property int automationMoveCount: 0
 
+    //! 正在**新建一个点**（按下空白后还没松手）。
+    //!
+    //! ⚠️ 按下时**不写模型**：整次手势只在松手时发**一个**命令，直接把点建在最终位置。
+    //! 曾经的写法是"按下写一次（新增）+ 松手再写一次（移动）"—— 两个命令落在同一个点上，
+    //! 第二个会把点弄丢，表现就是"按下冒出一个点、一拖就没了 / 切页后消失"
+    //! （2026-10-05 用户实测："不松手直接拖"丢点、"先点击-松开"正常）。
+    //! 只发一个命令既修掉它，也保住了"按下即拖"的一次性操作。
+    property bool automationNewDragging: false
+
     //! Ctrl+Z / Ctrl+Shift+Z。
     //!
     //! ⚠️ 这里必须**自己绑**，而且要用 `Qt.ApplicationShortcut`：
@@ -556,6 +565,19 @@ Item {
             drawn.push(item)
         }
 
+        //! 新建中的点：还没写进模型，但**必须参与绘制** —— 否则按下拖动时看不到它（= 不跟手）。
+        if (automationNewDragging) {
+            drawn.push({
+                "tick": automationDragPreviewTick,
+                "value": automationDragPreviewValue,
+                "authored": true,
+                "hasEase": false,
+                "controlT": 0.5,
+                "controlValue": 0.5,
+                "arrival": automationDragPreviewValue
+            })
+        }
+
         drawn.sort(function(a, b) { return a.tick - b.tick })
         return drawn
     }
@@ -781,6 +803,7 @@ Item {
         automationDragTick = -1
         automationBendTick = -1
         automationDragStaff = -1
+        automationNewDragging = false
         repaintAll()
     }
     onStaffCountChanged: {
@@ -1887,21 +1910,18 @@ Item {
 
                         var newTick = root.snapTick(root.tickForX(mouse.x))
                         var newValue = root.automationValueForY(mouse.y)
-                        console.warn("[midi-automation] press empty -> add tick=" + newTick + " value=" + newValue)
-                        root.model.setAutomationPoints(root.currentStaff, [{
-                            "tick": newTick,
-                            "value": newValue
-                        }])
+                        console.warn("[midi-automation] press empty -> pending new tick=" + newTick + " value=" + newValue)
 
-                        //! ⚠️ **新增之后【不再】接管为"正在拖这个点"**（2026-10-05 回退）。
-                        //!
-                        //! 曾经这么做，结果是：同一次手势里先在 press 写一次（SetPoint 新增）、
-                        //! 再在 release 写一次（MovePoint 移动）—— **两个命令落在同一个点上，
-                        //! 第二个会把点弄丢**，表现就是"按下冒出一个点、一拖就没了/回弹"。
-                        //! 用户实测给出决定性区分：**"先点击-松开"能建成、"不松手直接拖"就失败** ✓
-                        //!
-                        //! 所以这里只新增，松手什么都不提交；要移动就**再拖一次那个点**（已验证可行）。
-                        //! 代价是"按下直接拖"要分成两步 —— 正确性优先。
+                        //! ⚠️ **按下时不写模型**：只记住"要在哪儿新建"，并进入拖动预览。
+                        //! 松手时发**一个**命令，把点直接建在**松手时**的位置 —— 于是
+                        //! "单击一下"和"按下就拖"都只发一个命令，而一次手势发两个命令正是
+                        //! 点会消失的原因（见 automationNewDragging 的说明）。
+                        root.automationNewDragging = true
+                        root.automationDragStaff = root.currentStaff
+                        root.automationDragTick = -1
+                        root.automationDragPreviewTick = newTick
+                        root.automationDragPreviewValue = newValue
+                        velocityCanvas.requestPaint()
                         return
                     }
 
@@ -1964,7 +1984,25 @@ Item {
                                  + " drag=" + root.automationDragTick
                                  + " moves=" + root.automationMoveCount)
 
-                    //! Curve mode：一次手势 = 一个命令（拖动中只预览，松手才提交）。
+                    //! Curve mode：一次手势 = **一个**命令（拖动中只预览，松手才提交）。
+                    //!
+                    //! 新建优先：按下空白时只记了"要在哪儿建"，松手时在**最终位置**建一个点 ——
+                    //! 一个命令，既保住"按下即拖"，也不会出现"两个命令弄丢点"。
+                    if (root.automationNewDragging) {
+                        var newTick = root.automationDragPreviewTick
+                        var newValue = root.automationDragPreviewValue
+                        var newStaff = root.automationDragStaff
+
+                        root.automationNewDragging = false
+                        root.automationDragStaff = -1
+
+                        console.warn("[midi-automation] release new tick=" + newTick + " value=" + newValue)
+                        root.model.setAutomationPoints(newStaff, [{ "tick": newTick, "value": newValue }])
+                        root.reloadAutomation()
+                        velocityCanvas.requestPaint()
+                        return
+                    }
+
                     if (root.automationBendTick >= 0) {
                         var bendTick = root.automationBendTick
                         var bendT = root.automationBendPreviewT
