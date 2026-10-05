@@ -73,6 +73,11 @@ Item {
     //! 按下时记下的谱表：拖动中切换谱表不能把这次编辑落到新谱表上（与力度画笔同一条纪律）。
     property int automationDragStaff: -1
 
+    //! 本次手势收到的**移动事件次数**（观测用）。
+    //! `moves == 0` 说明 `MouseArea` 根本没收到移动 → 那是事件层的问题；
+    //! `moves > 0` 却 `from == to` 说明鼠标确实没怎么动。2026-10-05 加，用来一次定位"拖不动"。
+    property int automationMoveCount: 0
+
     //! Ctrl+Z / Ctrl+Shift+Z。
     //!
     //! ⚠️ 这里必须**自己绑**，而且要用 `Qt.ApplicationShortcut`：
@@ -1848,6 +1853,7 @@ Item {
                     //!   3) 都没命中   → 在空白处新增一个控制点（立即提交，单击即生效）
                     if (root.automationMode) {
                         root.automationDragStaff = root.currentStaff
+                        root.automationMoveCount = 0
 
                         var bendTick = root.automationHitHandle(mouse.x, mouse.y)
                         if (bendTick >= 0) {
@@ -1911,6 +1917,10 @@ Item {
                 }
 
                 onPositionChanged: function(mouse) {
+                    if (root.automationMode) {
+                        ++root.automationMoveCount
+                    }
+
                     if (root.automationBendTick >= 0) {
                         var bent = root.automationBendFromPointer(mouse.x, mouse.y, root.automationBendTick)
                         if (bent !== null) {
@@ -1946,7 +1956,8 @@ Item {
                     //! 无条件留痕：任何一次松手都要能在日志里看见走的是哪个分支 ——
                     //! "按下有记录、松手没记录"曾经让一次排查多绕了一轮（2026-10-05）。
                     console.warn("[midi-automation] release bend=" + root.automationBendTick
-                                 + " drag=" + root.automationDragTick)
+                                 + " drag=" + root.automationDragTick
+                                 + " moves=" + root.automationMoveCount)
 
                     //! Curve mode：一次手势 = 一个命令（拖动中只预览，松手才提交）。
                     if (root.automationBendTick >= 0) {
@@ -1977,6 +1988,12 @@ Item {
 
                         console.warn("[midi-automation] release point from=" + fromTick + " to=" + toTick
                                      + " value=" + movedValue)
+                        //! 观测点：**提交前**模型里到底有没有这两个 tick ——
+                        //! "新增点后立刻拖动"第一次失败、第二次成功（2026-10-05 日志），
+                        //! 靠这一行就能看出是"from 不在模型里"还是"to 写不进去"。
+                        console.warn("[midi-automation] before move: hasFrom=" + (root.automationPointAt(fromTick) !== null)
+                                     + " hasTo=" + (root.automationPointAt(toTick) !== null)
+                                     + " total=" + root.automationPoints.length)
                         root.model.moveAutomationPoint(dragStaff, fromTick, toTick, movedValue)
                         //! 立刻按模型里的真实数据重画（模型是同步的）：画面不会停在预览上。
                         root.reloadAutomation()

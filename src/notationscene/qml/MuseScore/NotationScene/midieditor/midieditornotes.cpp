@@ -24,8 +24,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 #include "translation.h"
+#include "log.h"
 
 #include "engraving/automation/automationdata.h"
 #include "engraving/automation/automationtypes.h"
@@ -511,17 +513,27 @@ bool applyAutomationPointMove(Score* score, int staffIndex, int fromTick, int to
 {
     const AutomationCurveKey key = dynamicsKey(score, staffIndex);
     if (!score || !key.isValid() || fromTick < 0 || toTick < 0) {
+        LOGW() << "[midi-automation] move refused: bad key/ticks key=" << key.isValid()
+               << " from=" << fromTick << " to=" << toTick;
         return false;
     }
 
     const AutomationDataConstPtr data = score->automationData();
     if (!data) {
+        LOGW() << "[midi-automation] move refused: no automation data";
         return false;
     }
 
     const AutomationCurve& curve = data->curve(key);
     const AutomationCurve::const_iterator it = curve.find(fromTick);
     if (it == curve.end()) {
+        //! 观测点：**这是"新增后立刻拖动失败"最可能的现场** —— 说明按下时写进去的点，
+        //! 到松手时已经不在曲线里了（打印当前曲线上的 tick，便于对比）。
+        std::string ticks;
+        for (const auto& [t, p] : curve) {
+            ticks += std::to_string(t) + " ";
+        }
+        LOGW() << "[midi-automation] move refused: fromTick " << fromTick << " not in curve, curve has: " << ticks;
         return false;
     }
 
