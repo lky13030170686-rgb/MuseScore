@@ -2827,15 +2827,25 @@ const UiActionList NotationUiActions::s_scoreConfigActions = {
 };
 
 const UiActionList NotationUiActions::s_undoRedoActions = {
+    //! ⚠️ `UiCtxAny` 而不是 `UiCtxProjectOpened`（2026-10-05 改）。
+    //!
+    //! Ctrl+Z 在 `shortcuts.xml` 里绑的是 `action://undo`，而那个 action **依赖**
+    //! `action://notation/undo`（见上面 s_actions 里的定义）。`resolveAction()` 会检查依赖链上的
+    //! enabled —— MIDI 页（`musescore://midi`）**不属于 `UiCtxProjectOpened`**，于是这两个 action
+    //! 在那一页是 disabled → 快捷键被全局 `Shortcut` 吞掉却什么都不做
+    //! （用户实测：**记谱页 Ctrl+Z 生效、MIDI 页毫无反应**）。
+    //!
+    //! MIDI 页编辑的是**同一份乐谱、同一个 undo stack**，撤销/重做在那一页本来就该可用；
+    //! 没有可撤销的东西时 `canUndo()` 会让 action 状态自己变灰，不需要靠上下文挡。
     UiAction("action://notation/undo",
-             mu::context::UiCtxProjectOpened,
+             mu::context::UiCtxAny,
              mu::context::CTX_DISABLED,
              TranslatableString("action", "Undo"),
              TranslatableString("action", "Undo"),
              IconCode::Code::UNDO
              ),
     UiAction("action://notation/redo",
-             mu::context::UiCtxProjectOpened,
+             mu::context::UiCtxAny,
              mu::context::CTX_DISABLED,
              TranslatableString("action", "Redo"),
              TranslatableString("action", "Redo"),
