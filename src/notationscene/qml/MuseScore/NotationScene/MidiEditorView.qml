@@ -73,12 +73,30 @@ Item {
     //! 按下时记下的谱表：拖动中切换谱表不能把这次编辑落到新谱表上（与力度画笔同一条纪律）。
     property int automationDragStaff: -1
 
-    //! ⚠️ 这里**刻意不用** QML 的 `Shortcut`：Ctrl+Z 早已由 MuseScore 自己的快捷键表注册
-    //! （`src/app/configs/data/shortcuts.xml` 的 `action://undo` = std 11），QML 的同名快捷键
-    //! **抢不过它**（2026-10-03 实测：加了 Shortcut 也不触发），而万一抢到了还会**撤销两步**。
-    //! 正确的做法是让那条链本身能用 —— 见 `NotationCommandsState` 里对 score 变化通道的订阅
-    //! （我们的编辑走 engraving 的事务，原来不经过它的 `controller()->stackChanged()`）。
-    //! 工具条上的 ↶ ↷ 是本页自己的入口，不依赖快捷键表。
+    //! Ctrl+Z / Ctrl+Shift+Z。
+    //!
+    //! ⚠️ 这里必须**自己绑**，而且要用 `Qt.ApplicationShortcut`：
+    //!  * MuseScore 的快捷键表（`shortcuts.xml`）虽然注册了 `action://undo` = std 11，但它在
+    //!    `musescore://midi` 这一页**不触发**（2026-10-03/05 实测：Edit 菜单的 Undo 已经亮了、
+    //!    命令状态也正确，按键仍然没反应）；
+    //!  * QML `Shortcut` 默认是 `Qt::WindowShortcut`，与 MuseScore 注册的键同级 —— 同级时先注册者
+    //!    优先，所以抢不到；`Qt::ApplicationShortcut` **优先级更高**，能稳定拿到（也正因为更高，
+    //!    不会与它双触发）；
+    //!  * `enabled` 绑 `canUndo` —— 它订阅了 notation 的 undo stack，编辑后会真的更新。
+    //!    （上一轮加的那个 Shortcut"不生效"，真因是 `canUndo` 当时停在 false，不是抢不过。）
+    Shortcut {
+        sequences: [StandardKey.Undo]
+        context: Qt.ApplicationShortcut
+        enabled: root.model !== null && root.model.canUndo
+        onActivated: root.model.undo()
+    }
+
+    Shortcut {
+        sequences: [StandardKey.Redo]
+        context: Qt.ApplicationShortcut
+        enabled: root.model !== null && root.model.canRedo
+        onActivated: root.model.redo()
+    }
 
     readonly property real keyboardWidth: 70
     //! The lane is a single strip, Cubase-style - NOT one band per staff. Bands looked tidy with two
@@ -1851,6 +1869,14 @@ Item {
                             "tick": newTick,
                             "value": newValue
                         }])
+
+                        //! ⚠️ **新增之后立刻接管为"正在拖这个点"**：用户在这里按下去，接下来多半就是要
+                        //! 拖着它调位置。不这么做的话，这一次手势的拖动**没有预览、松手也不提交** ——
+                        //! 用户看到的是"按下冒出一个点，怎么拖都不动"，报成了「松手又弹回原点」
+                        //! （2026-10-05 日志：只有 `press empty -> add`、没有 release 记录，就是它）。
+                        root.automationDragTick = newTick
+                        root.automationDragPreviewTick = newTick
+                        root.automationDragPreviewValue = newValue
                         return
                     }
 
@@ -1903,6 +1929,11 @@ Item {
                         return
                     }
 
+                    //! 无条件留痕：任何一次松手都要能在日志里看见走的是哪个分支 ——
+                    //! "按下有记录、松手没记录"曾经让一次排查多绕了一轮（2026-10-05）。
+                    console.warn("[midi-automation] release bend=" + root.automationBendTick
+                                 + " drag=" + root.automationDragTick)
+
                     //! Curve mode：一次手势 = 一个命令（拖动中只预览，松手才提交）。
                     if (root.automationBendTick >= 0) {
                         var bendTick = root.automationBendTick
@@ -1934,8 +1965,13 @@ Item {
                                      + " value=" + movedValue)
                         root.model.moveAutomationPoint(dragStaff, fromTick, toTick, movedValue)
                         //! 立刻按模型里的真实数据重画（模型是同步的）：画面不会停在预览上。
-                        //! 若这里看起来"回弹"，就是模型真的没写进去 —— 上面两行日志里有提交参数可查。
                         root.reloadAutomation()
+
+                        //! 观测点：提交后**读回模型**，一眼看清写入结果（有没有落上、值是多少）。
+                        var back = root.automationPointAt(toTick)
+                        console.warn("[midi-automation] after move: at toTick=" + (back !== null)
+                                     + " value=" + (back !== null ? back.value : -1)
+                                     + " fromStillThere=" + (root.automationPointAt(fromTick) !== null))
                         velocityCanvas.requestPaint()
                         return
                     }
