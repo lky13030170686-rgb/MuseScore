@@ -81,21 +81,30 @@ Item {
     //!    命令状态也正确，按键仍然没反应）；
     //!  * QML `Shortcut` 默认是 `Qt::WindowShortcut`，与 MuseScore 注册的键同级 —— 同级时先注册者
     //!    优先，所以抢不到；`Qt::ApplicationShortcut` **优先级更高**，能稳定拿到（也正因为更高，
-    //!    不会与它双触发）；
-    //!  * `enabled` 绑 `canUndo` —— 它订阅了 notation 的 undo stack，编辑后会真的更新。
-    //!    （上一轮加的那个 Shortcut"不生效"，真因是 `canUndo` 当时停在 false，不是抢不过。）
+    //!    不会与它双触发）。
+    //!
+    //! ⚠️⚠️ **不要用 `enabled` 去绑 `canUndo`**：`enabled: false` 的 Shortcut **完全不拦截按键**，
+    //! 所以只要那个属性有一次没刷新，快捷键就"永远没反应"、而且**日志里连痕迹都没有**（这次
+    //! 排查就卡在这里）。改成常开 + 在回调里打印一行观测点，能不能撤销交给模型自己判断
+    //! （没得撤销时 `undoStack()->undo()` 本来就是 no-op）。
     Shortcut {
         sequences: [StandardKey.Undo]
         context: Qt.ApplicationShortcut
-        enabled: root.model !== null && root.model.canUndo
-        onActivated: root.model.undo()
+        enabled: root.model !== null
+        onActivated: {
+            console.warn("[midi-automation] shortcut undo, canUndo=" + root.model.canUndo)
+            root.model.undo()
+        }
     }
 
     Shortcut {
         sequences: [StandardKey.Redo]
         context: Qt.ApplicationShortcut
-        enabled: root.model !== null && root.model.canRedo
-        onActivated: root.model.redo()
+        enabled: root.model !== null
+        onActivated: {
+            console.warn("[midi-automation] shortcut redo, canRedo=" + root.model.canRedo)
+            root.model.redo()
+        }
     }
 
     readonly property real keyboardWidth: 70
@@ -607,22 +616,27 @@ Item {
         }
     }
 
-    //! 命中的控制点（返回它的 tick，-1 = 没命中）。点在**两个方向**上都要够近 —— 只看 x 会在
-    //! 密集的段里抓错点（值差得远的两个点可能 x 很接近）。
+    //! 命中的控制点（返回它的 tick，-1 = 没命中）。
     //!
-    //! ⚠️ **记号的点（空心）也是拖动目标**：拖它 = **接管**（模型会把 `generated`/`itemId` 清掉，
-    //! 于是它不再被记号重建覆盖）。曾经把空心点设成"不可拖"，结果是：用户想拖它却在空白分支里
-    //! 新增了一个点、原来的点纹丝不动 —— 用户把这个现象报成了"松手又弹回原点"（2026-10-03）。
+    //! ⚠️ **横纵分开判**，纵向给得宽得多：力度轴是 0..1 映射到 ~92px 的一条窄带，
+    //! 用户很难在纵向精确点中一个半径 3px 的圆 —— 2026-10-05 的日志里，用户想拖的点
+    //! 横向只差 5.4px、**纵向差约 10px**，于是被判成"空白"、走了新增分支，
+    //! 表现出来就是"我拖它它不动"（用户报的「回弹」）。
     function automationHitPoint(x, y) {
         var list = automationPointsForDraw()
         var best = -1
-        var bestDist = 10
+        var bestDist = 1e9
 
         for (var i = 0; i < list.length; ++i) {
-            var dx = xForTick(list[i].tick) - x
-            var dy = yForAutomationValue(list[i].value, velocityCanvas.height) - y
-            var dist = Math.sqrt(dx * dx + dy * dy)
-            if (dist <= bestDist) {
+            var dx = Math.abs(xForTick(list[i].tick) - x)
+            var dy = Math.abs(yForAutomationValue(list[i].value, velocityCanvas.height) - y)
+            if (dx > 10 || dy > 18) {
+                continue
+            }
+
+            //! 都够近时取"更像同一个点"的那个：横向权重更高（时间轴才是主要维度）。
+            var dist = dx * dx + dy * dy
+            if (dist < bestDist) {
                 bestDist = dist
                 best = list[i].tick
             }
