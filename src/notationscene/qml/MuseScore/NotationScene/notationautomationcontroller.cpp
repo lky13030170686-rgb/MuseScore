@@ -463,6 +463,16 @@ muse::uicomponents::PolylinePlot* NotationAutomationController::createPolylineFo
         };
 
         if (completed) {
+            //! ⚠️ 按下时在**折线上**新加的那个点，模型里**还不存在** —— 这时它不是"移动"而是"新建"。
+            //! 直接走 `requestEditPoint()` 会因为找不到点被拒绝（`IF_ASSERT_FAILED(existingIt != curve.end())`
+            //! 就是它，日志里那 19 次断言也是这个），用户看到的就是"按住曲线拖动没反应"。
+            //! 与 MIDI 页"新建+拖动会丢点"是同一个病根：**一次手势里点还不存在就被当成已存在的点操作**。
+            //! 这里按"模型里有没有"来分流：没有 → 在**松手的位置**新建一个点（一个命令）。
+            if (!automationPointAt(key, oldPointData.tick)) {
+                requestAddPoint(key, clampedX, y);
+                return;
+            }
+
             if (!requestEditPoint(oldPointData, key, clampedX, y)) {
                 // Edit was rejected - snap the point back to where it actually is instead of
                 // leaving the live-drag preview stuck at the rejected position
