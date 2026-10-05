@@ -87,40 +87,43 @@ Item {
     //! 只发一个命令既修掉它，也保住了"按下即拖"的一次性操作。
     property bool automationNewDragging: false
 
-    //! Ctrl+Z / Ctrl+Shift+Z。
+    //! Ctrl+Z / Ctrl+Shift+Z —— **只有一道**：全局 `Shortcuts`（`AppWindow.qml` 里的
+    //! `Shortcuts { }`）负责，这里只留一个**不参与 Shortcut 冲突**的 `Keys.onPressed` 兜底。
     //!
-    //! ⚠️ 这里必须**自己绑**，而且要用 `Qt.ApplicationShortcut`：
-    //!  * MuseScore 的快捷键表（`shortcuts.xml`）虽然注册了 `action://undo` = std 11，但它在
-    //!    `musescore://midi` 这一页**不触发**（2026-10-03/05 实测：Edit 菜单的 Undo 已经亮了、
-    //!    命令状态也正确，按键仍然没反应）；
-    //!  * QML `Shortcut` 默认是 `Qt::WindowShortcut`，与 MuseScore 注册的键同级 —— 同级时先注册者
-    //!    优先，所以抢不到；`Qt::ApplicationShortcut` **优先级更高**，能稳定拿到（也正因为更高，
-    //!    不会与它双触发）。
+    //! ⛔⛔ **千万不要在这一页再挂 `Shortcut`** —— 2026-10-05 用 Qt 自己的
+    //! `qt.gui.shortcutmap` 日志把它钉死了：
     //!
-    //! ⚠️⚠️ **不要用 `enabled` 去绑 `canUndo`**：`enabled: false` 的 Shortcut **完全不拦截按键**，
-    //! 所以只要那个属性有一次没刷新，快捷键就"永远没反应"、而且**日志里连痕迹都没有**（这次
-    //! 排查就卡在这里）。改成常开 + 在回调里打印一行观测点，能不能撤销交给模型自己判断
+    //! ```
+    //! 17:36:17  QShortcutMap::dispatchEvent(): Sending QShortcutEvent("Ctrl+Z", -159, false)
+    //!           → ShortcutsController::activate | Ctrl+Z                       ← 正常触发 ✓
+    //! 17:37:18  addShortcut(QQuickShortcut(…f90), QKeySequence("Ctrl+Z"), Qt::ApplicationShortcut)
+    //!           ← 点开 MIDI 页（页面 QML 此时才创建）后多出第二个注册者
+    //! 17:37:24  The following shortcuts are about to be activated ambiguously:
+    //!           - QKeySequence("Ctrl+Z") (belonging to QQuickShortcut(…4600))  ← 全局
+    //!           - QKeySequence("Ctrl+Z") (belonging to QQuickShortcut(…f90))   ← 本页
+    //!           QShortcutMap::dispatchEvent(): Sending QShortcutEvent("Ctrl+Z", -159, true)
+    //!           （此后 activate 再也不出现）                                  ← 三个全废 ✗
+    //! ```
+    //!
+    //! 机理（Qt 源码 `qshortcutmap.cpp` + `qquickshortcut.cpp`）：
+    //!  * `QShortcutMap::dispatchEvent()` 把**所有 context 匹配的注册者**合成**一个**事件，
+    //!    多于一个就把 `QShortcutEvent` 标成 **ambiguous**；
+    //!  * `QQuickShortcut::event()` 对 ambiguous **只发 `activatedAmbiguously()`** ——
+    //!    `Shortcut.onActivated` **永远不触发**；
+    //!  * 而 `tryShortcut()` 对 ExactMatch **返回 true**（事件被消费）⇒ 连
+    //!    `Keys.onPressed` 也收不到。
+    //!  ⇒ **"抢不到"是不会发生的：只要有两个注册者，就同归于尽。**
+    //!  这也正是第 56 条起"按键毫无反应、日志里连痕迹都没有"的真因（当时误判成
+    //!  "按键没进入 Qt 的快捷键匹配"，方向正好相反）。
+    //!
+    //! ⚠️ 另一个坑：**别用 `enabled` 去绑 `canUndo`** —— `enabled: false` 的 Shortcut 完全不
+    //! 拦截按键，只要那个属性有一次没刷新，快捷键就"永远没反应"。能不能撤销交给模型判断
     //! （没得撤销时 `undoStack()->undo()` 本来就是 no-op）。
-    //! Ctrl+Z / Ctrl+Shift+Z。
     //!
-    //! ⚠️ 这一页**必须自己绑**：MuseScore 的全局快捷键（`AppWindow.qml` 的 `Shortcuts { }`）
-    //! 在 `musescore://midi` 这一页**不触发**（2026-10-05 实测：`active=true`、`Ctrl+Z` 已注册、
-    //! 上下文检查通过、组件也在主窗口上 —— 链路上每一环都正常，按键就是没反应）。
-    //! QML `Shortcut` 默认是 `Qt::WindowShortcut`，与它同级时抢不到；用
-    //! **`Qt::ApplicationShortcut`**（优先级更高）才能稳定拿到。
-    //! `enabled` **不要**绑 `canUndo`：`enabled: false` 的 Shortcut 完全不拦截按键，
-    //! 只要那个属性有一次没刷新，快捷键就"永远没反应"且日志里毫无痕迹。没得撤销时
-    //! `undoStack()->undo()` 本来就是 no-op。
-    //! ⚠️ Ctrl+Z / Ctrl+Shift+Z —— **两道保险**。
-    //!
-    //! 第一道是下面的 `Shortcut`（`Qt::ApplicationShortcut`）。实测它在这套架构里**不触发**
-    //! （2026-10-05：`active=true`、`Ctrl+Z` 已在快捷键表里、上下文检查通过、全局 `Shortcuts`
-    //! 组件也在主窗口上 —— 链路上每一环都正常，按键就是没反应）。
-    //!
-    //! 所以再加一道 `Keys.onPressed`：**只要按键能到达这一页，就一定能撤销**。
-    //! 两条日志（`keys undo` / `shortcut undo`）还能顺带告诉我们按键到底走到了哪一层：
-    //!  * 只有 `keys undo`  → 按键到了页面、Shortcut 系统没接 → 兜底生效（快捷键可用）
-    //!  * 两条都没有        → 按键在更上层就被吃掉了 → 继续往上查
+    //! 为什么这里保留 `Keys.onPressed`：它**不是 `Shortcut`**，不参与上面的冲突。
+    //! 全局 Shortcut 正常时按键已被 shortcut map 先消费 ⇒ 这里不会触发（**不会双触发**）；
+    //! 全局那条若因 `enabled: false`（`shortcutsModel.active`）而不匹配，Qt **不消耗**按键
+    //! （`tryShortcut` 在没有任何 identical 注册者时返回 false）⇒ 这道兜底接管 ✓
     focus: true
     Keys.onPressed: function(event) {
         if ((event.modifiers & Qt.ControlModifier) === 0) {
@@ -142,25 +145,8 @@ Item {
         }
     }
 
-    Shortcut {
-        sequences: [StandardKey.Undo]
-        context: Qt.ApplicationShortcut
-        enabled: root.model !== null
-        onActivated: {
-            console.warn("[midi-automation] shortcut undo")
-            root.model.undo()
-        }
-    }
-
-    Shortcut {
-        sequences: [StandardKey.Redo]
-        context: Qt.ApplicationShortcut
-        enabled: root.model !== null
-        onActivated: {
-            console.warn("[midi-automation] shortcut redo")
-            root.model.redo()
-        }
-    }
+    //! NOTE: **No `Shortcut` here on purpose** - see the comment on `Keys.onPressed` above.
+    //! A second Ctrl+Z registration makes Qt dispatch the key ambiguously and kills them all.
 
     readonly property real keyboardWidth: 70
     //! The lane is a single strip, Cubase-style - NOT one band per staff. Bands looked tidy with two
