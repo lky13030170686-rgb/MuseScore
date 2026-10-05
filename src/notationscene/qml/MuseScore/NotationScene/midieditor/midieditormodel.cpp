@@ -279,15 +279,27 @@ void MidiEditorModel::updatePlaybackState()
 
 void MidiEditorModel::setNotePitch(int row, int pitch)
 {
+    //! ⚠️ 事务由 **notation 的 undo stack** 开（不是写入函数自带的那条）：只有它会在提交后通知
+    //! "栈变了"，撤销/重做命令的状态（以及主菜单与 Ctrl+Z）才会跟上 —— 见头文件里 openCommand 的说明。
     mutateOnce([this, row, pitch]() {
-        applyNotePitch(currentScore(), noteAt(row), pitch);
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Change pitch"),
+                                               [this, row, pitch](engraving::Transaction&) {
+                applyNotePitch(currentScore(), noteAt(row), pitch, /*openCommand*/ false);
+            });
+        }
     });
 }
 
 void MidiEditorModel::setNoteVelocity(int row, int velocity)
 {
     mutateOnce([this, row, velocity]() {
-        applyNoteVelocity(currentScore(), noteAt(row), velocity);
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Change velocity"),
+                                               [this, row, velocity](engraving::Transaction&) {
+                applyNoteVelocity(currentScore(), noteAt(row), velocity, /*openCommand*/ false);
+            });
+        }
     });
 }
 
@@ -340,7 +352,14 @@ void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVarian
 
     const bool wasSuppressed = m_rebuildSuppressed;
     m_rebuildSuppressed = true;
-    const int changed = applyNoteVelocities(score, changes);
+    int changed = 0;
+    //! 整笔一个命令，且事务开在 **notation 的 undo stack** 上（同 setNotePitch 的理由）。
+    if (INotationPtr notation = context()->currentNotation()) {
+        notation->undoStack()->transaction(TranslatableString("midieditor", "Draw velocities"),
+                                           [this, score, &changes, &changed](engraving::Transaction&) {
+            changed = applyNoteVelocities(score, changes, /*openCommand*/ false);
+        });
+    }
     m_rebuildSuppressed = wasSuppressed;
 
     if (changed == 0) {
@@ -496,6 +515,12 @@ void MidiEditorModel::mutateOnce(const std::function<void()>& mutate)
 void MidiEditorModel::setNotePlayOverride(int row, int startTick, int durationTicks, int velocityPercent)
 {
     mutateOnce([this, row, startTick, durationTicks, velocityPercent]() {
-        applyNotePlayOverride(currentScore(), noteAt(row), startTick, durationTicks, velocityPercent);
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Change played timing"),
+                                               [this, row, startTick, durationTicks, velocityPercent](engraving::Transaction&) {
+                applyNotePlayOverride(currentScore(), noteAt(row), startTick, durationTicks, velocityPercent,
+                                      /*openCommand*/ false);
+            });
+        }
     });
 }

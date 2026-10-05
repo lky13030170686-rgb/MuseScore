@@ -78,13 +78,20 @@ std::vector<MidiMeasureItem> collectMidiMeasures(const engraving::Score* score);
 
 //! Writes a pitch back into the score, reusing the very command the notation editor uses, so the
 //! linked notes stay in sync and undo keeps working. No-op (returns false) when nothing changes.
-bool applyNotePitch(engraving::Score* score, engraving::Note* note, int pitch);
+//!
+//! ⚠️ `openCommand`：默认 `true` = 自己开事务（测试与独立调用走这条）。MIDI 页传 **`false`**，
+//! 由调用方包在 `INotationUndoStack::transaction()` 里 —— 那条路会在提交后**通知"栈变了"**，
+//! 撤销/重做命令的状态（以及主菜单那条 Ctrl+Z）才会跟上；engraving 的 `Score::startCmd/endCmd`
+//! 虽然用同一个 undo stack，却**不经过那个通知**（2026-10-03 用户报「Undo 是灰的」的根因，
+//! 2026-10-05 又查到它就是「MIDI 页 Ctrl+Z 有按键痕迹却撤销不了」的根因）。
+//! 下面四个写入函数都有这个参数，含义相同。
+bool applyNotePitch(engraving::Score* score, engraving::Note* note, int pitch, bool openCommand = true);
 
 //! Writes a velocity back into the score, through the same property the Properties panel writes.
 //!
 //! `velocity` may be 0, which means "no own velocity" - the note goes back to following the dynamic
 //! marks of the score. That is the only way to undo a per-note tweak, so it is allowed on purpose.
-bool applyNoteVelocity(engraving::Score* score, engraving::Note* note, int velocity);
+bool applyNoteVelocity(engraving::Score* score, engraving::Note* note, int velocity, bool openCommand = true);
 
 //! One velocity write for each pair, all under a SINGLE command.
 //!
@@ -96,7 +103,8 @@ bool applyNoteVelocity(engraving::Score* score, engraving::Note* note, int veloc
 //!
 //! A pair whose note already has that velocity is skipped, so the count returned may be smaller than
 //! the number of pairs. Returns how many notes were actually changed.
-int applyNoteVelocities(engraving::Score* score, const std::vector<std::pair<engraving::Note*, int> >& changes);
+int applyNoteVelocities(engraving::Score* score, const std::vector<std::pair<engraving::Note*, int> >& changes,
+                        bool openCommand = true);
 
 //! Writes the "played" timing of a note - the piano roll's played layer, i.e. `ontime` and `len` of
 //! the first `NoteEvent`. `startTick` and `durationTicks` are absolute ticks; `velocityPercent` is
@@ -104,7 +112,7 @@ int applyNoteVelocities(engraving::Score* score, const std::vector<std::pair<eng
 //! undo command, so it is undoable and does not invent a second data model.
 //! Returns false when nothing changes.
 bool applyNotePlayOverride(engraving::Score* score, engraving::Note* note,
-                           int startTick, int durationTicks, int velocityPercent);
+                           int startTick, int durationTicks, int velocityPercent, bool openCommand = true);
 
 //! One point of the Dynamics automation curve of a staff: a tick, and a level in 0..1.
 struct MidiAutomationPoint {

@@ -157,7 +157,7 @@ std::vector<MidiMeasureItem> collectMidiMeasures(const Score* score)
     return result;
 }
 
-bool applyNotePitch(Score* score, Note* note, int pitch)
+bool applyNotePitch(Score* score, Note* note, int pitch, bool openCommand)
 {
     if (!score || !note) {
         return false;
@@ -168,9 +168,13 @@ bool applyNotePitch(Score* score, Note* note, int pitch)
         return false;
     }
 
-    score->startCmd(TranslatableString("midieditor", "Change pitch"));
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Change pitch"));
+    }
     EditNote::undoChangePitch(score, note, pitch, note->tpc1default(pitch), note->tpc2default(pitch));
-    score->endCmd();
+    if (openCommand) {
+        score->endCmd();
+    }
 
     return true;
 }
@@ -190,7 +194,7 @@ static void writeNoteVelocity(Note* note, int velocity)
     note->undoChangeProperty(Pid::USER_VELOCITY, PropertyValue(std::clamp(velocity, 0, 127)), flags);
 }
 
-bool applyNoteVelocity(Score* score, Note* note, int velocity)
+bool applyNoteVelocity(Score* score, Note* note, int velocity, bool openCommand)
 {
     if (!score || !note) {
         return false;
@@ -200,14 +204,18 @@ bool applyNoteVelocity(Score* score, Note* note, int velocity)
         return false;
     }
 
-    score->startCmd(TranslatableString("midieditor", "Change velocity"));
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Change velocity"));
+    }
     writeNoteVelocity(note, velocity);
-    score->endCmd();
+    if (openCommand) {
+        score->endCmd();
+    }
 
     return true;
 }
 
-int applyNoteVelocities(Score* score, const std::vector<std::pair<Note*, int> >& changes)
+int applyNoteVelocities(Score* score, const std::vector<std::pair<Note*, int> >& changes, bool openCommand)
 {
     if (!score) {
         return 0;
@@ -231,16 +239,20 @@ int applyNoteVelocities(Score* score, const std::vector<std::pair<Note*, int> >&
     //! subscribers to that notification rebuild things that cost O(score) - the notation view
     //! repaints, the playback events are rebuilt. One command per note therefore made a brush stroke
     //! over N notes cost N full-score rebuilds: that is the lag, and this is the fix.
-    score->startCmd(TranslatableString("midieditor", "Draw velocities"));
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Draw velocities"));
+    }
     for (const std::pair<Note*, int>& change : pending) {
         writeNoteVelocity(change.first, change.second);
     }
-    score->endCmd();
+    if (openCommand) {
+        score->endCmd();
+    }
 
     return int(pending.size());
 }
 
-bool applyNotePlayOverride(Score* score, Note* note, int startTick, int durationTicks, int velocityPercent)
+bool applyNotePlayOverride(Score* score, Note* note, int startTick, int durationTicks, int velocityPercent, bool openCommand)
 {
     if (!score || !note || !note->chord()) {
         return false;
@@ -274,15 +286,18 @@ bool applyNotePlayOverride(Score* score, Note* note, int startTick, int duration
     events.front().setLen(len);
     events.front().setVelocityMultiplier(velocityMultiplier);
 
-    score->startCmd(TranslatableString("midieditor", "Change played timing"));
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Change played timing"));
+    }
     //! NOTE: reuse the engraving undo command instead of writing our own; it also switches the
     //!       chord's play event type to User, which is what makes the value survive saving.
     score->undo(new ChangeNoteEventList(note, events));
-    score->endCmd();
+    if (openCommand) {
+        score->endCmd();
+    }
 
     return true;
 }
-
 //! The Dynamics curve key of one staff, built the way the notation page builds it
 //! (NotationAutomationController::curveKeyFor -> ScoreAutomationController::resolveKeys), so that the
 //! two pages address ONE curve. A staff index outside the score yields an invalid key, and every entry

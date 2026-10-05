@@ -37,6 +37,14 @@ using namespace mu::engraving;
 
 static const muse::Uri PROJECT_PAGE_URI("musescore://notation");
 
+//! ⚠️ MIDI 页（钢琴卷帘窗）**也是同一个工程的页面**：它显示同一份乐谱、写同一个 undo stack、
+//! 跑同一条 Ctrl+Z。`isProjectOpened()` 原来只认记谱页，于是切到 MIDI 页之后它就认为"没有打开
+//! 工程"，**所有** notation 命令的状态被短路成 disabled —— 其中就有 `command://notation/undo`，
+//! 而 `NotationActionController::registerCommand` 的外层包装遇到 disabled 会**静默返回
+//! NotSupported**，于是 Ctrl+Z「有按键痕迹、什么都不做」（2026-10-05 定位，
+//! `进度快照.md` 第 60 条）。
+static const muse::Uri MIDI_PAGE_URI("musescore://midi");
+
 template<typename Map>
 static inline auto commands(const Map& m) -> std::vector<typename Map::key_type>
 {
@@ -563,7 +571,10 @@ bool NotationCommandsState::isProjectOpened() const
         return false;
     }
 
-    if (!interactive() || !interactive()->isOpened(PROJECT_PAGE_URI).val) {
+    //! NOTE: 记谱页**或** MIDI 页打开着都算"工程已打开" —— 两页是同一个工程的两个视图
+    //! （见文件顶部 MIDI_PAGE_URI 的说明）。
+    if (!interactive()
+        || (!interactive()->isOpened(PROJECT_PAGE_URI).val && !interactive()->isOpened(MIDI_PAGE_URI).val)) {
         return false;
     }
 
