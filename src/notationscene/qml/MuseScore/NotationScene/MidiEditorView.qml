@@ -1893,18 +1893,15 @@ Item {
                             "value": newValue
                         }])
 
-                        //! ⚠️ **新增之后立刻接管为"正在拖这个点"**：用户在这里按下去，接下来多半就是要
-                        //! 拖着它调位置。不这么做的话，这一次手势的拖动**没有预览、松手也不提交** ——
-                        //! 用户看到的是"按下冒出一个点，怎么拖都不动"，报成了「松手又弹回原点」
-                        //! （2026-10-05 日志：只有 `press empty -> add`、没有 release 记录，就是它）。
+                        //! ⚠️ **新增之后【不再】接管为"正在拖这个点"**（2026-10-05 回退）。
                         //!
-                        //! ⚠️ 这三行必须放在 `setAutomationPoints` **之后**：那次调用会同步触发
-                        //! `scoreChanged` → `onNotesChanged`，把"预览状态"清掉；先设就会被清掉，
-                        //! 于是松手时 `drag == -1`、什么都不提交（同一份日志里的第一次失败）。
-                        root.automationDragStaff = root.currentStaff
-                        root.automationDragTick = newTick
-                        root.automationDragPreviewTick = newTick
-                        root.automationDragPreviewValue = newValue
+                        //! 曾经这么做，结果是：同一次手势里先在 press 写一次（SetPoint 新增）、
+                        //! 再在 release 写一次（MovePoint 移动）—— **两个命令落在同一个点上，
+                        //! 第二个会把点弄丢**，表现就是"按下冒出一个点、一拖就没了/回弹"。
+                        //! 用户实测给出决定性区分：**"先点击-松开"能建成、"不松手直接拖"就失败** ✓
+                        //!
+                        //! 所以这里只新增，松手什么都不提交；要移动就**再拖一次那个点**（已验证可行）。
+                        //! 代价是"按下直接拖"要分成两步 —— 正确性优先。
                         return
                     }
 
