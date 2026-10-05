@@ -430,6 +430,11 @@ void MidiEditorModel::setAutomationPoints(int staffIndex, const QVariantList& po
                                                [this, staffIndex, drawn](engraving::Transaction&) {
                 applyAutomationPoints(currentScore(), staffIndex, drawn, /*openCommand*/ false);
             });
+
+            //! 观测点：**事务提交之后**点还在不在。用户报「新建的点切页后消失」（= 模型里没有），
+            //! 这一行与 applyAutomationPoints 里那行配合，就能分清是"没写进去"还是"写进去又被清掉"。
+            LOGW() << "[midi-automation] after transaction: points="
+                   << collectAutomationPoints(currentScore(), staffIndex).size();
         }
     });
 }

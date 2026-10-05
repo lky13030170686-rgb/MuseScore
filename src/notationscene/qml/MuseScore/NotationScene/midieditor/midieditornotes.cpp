@@ -416,6 +416,21 @@ int applyAutomationPoints(Score* score, int staffIndex, const std::vector<MidiAu
         score->endCmd();
     }
 
+    //! 观测点：写入之后曲线里到底有多少点、我们写的那个 tick 在不在 ——
+    //! 用户报「新建的点切页后消失，是不是从来没建成功」，这一行就是答案。
+    {
+        const AutomationDataConstPtr after = score->automationData();
+        const size_t count = after ? after->curve(key).size() : 0;
+        std::string ticks;
+        if (after) {
+            for (const auto& [t, p] : after->curve(key)) {
+                ticks += std::to_string(t) + " ";
+            }
+        }
+        LOGW() << "[midi-automation] wrote " << edits.size() << " point(s); curve now has "
+               << count << ": " << ticks;
+    }
+
     return int(edits.size());}
 
 bool eraseAutomationPoint(Score* score, int staffIndex, int tick, bool openCommand)
