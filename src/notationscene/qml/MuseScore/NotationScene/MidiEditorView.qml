@@ -101,24 +101,28 @@ Item {
     //! 所以只要那个属性有一次没刷新，快捷键就"永远没反应"、而且**日志里连痕迹都没有**（这次
     //! 排查就卡在这里）。改成常开 + 在回调里打印一行观测点，能不能撤销交给模型自己判断
     //! （没得撤销时 `undoStack()->undo()` 本来就是 no-op）。
+    //! Ctrl+Z / Ctrl+Shift+Z。
+    //!
+    //! ⚠️ 这一页**必须自己绑**：MuseScore 的全局快捷键（`AppWindow.qml` 的 `Shortcuts { }`）
+    //! 在 `musescore://midi` 这一页**不触发**（2026-10-05 实测：`active=true`、`Ctrl+Z` 已注册、
+    //! 上下文检查通过、组件也在主窗口上 —— 链路上每一环都正常，按键就是没反应）。
+    //! QML `Shortcut` 默认是 `Qt::WindowShortcut`，与它同级时抢不到；用
+    //! **`Qt::ApplicationShortcut`**（优先级更高）才能稳定拿到。
+    //! `enabled` **不要**绑 `canUndo`：`enabled: false` 的 Shortcut 完全不拦截按键，
+    //! 只要那个属性有一次没刷新，快捷键就"永远没反应"且日志里毫无痕迹。没得撤销时
+    //! `undoStack()->undo()` 本来就是 no-op。
     Shortcut {
         sequences: [StandardKey.Undo]
         context: Qt.ApplicationShortcut
         enabled: root.model !== null
-        onActivated: {
-            console.warn("[midi-automation] shortcut undo, canUndo=" + root.model.canUndo)
-            root.model.undo()
-        }
+        onActivated: root.model.undo()
     }
 
     Shortcut {
         sequences: [StandardKey.Redo]
         context: Qt.ApplicationShortcut
         enabled: root.model !== null
-        onActivated: {
-            console.warn("[midi-automation] shortcut redo, canRedo=" + root.model.canRedo)
-            root.model.redo()
-        }
+        onActivated: root.model.redo()
     }
 
     readonly property real keyboardWidth: 70
