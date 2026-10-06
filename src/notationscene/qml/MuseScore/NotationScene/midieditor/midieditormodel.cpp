@@ -126,6 +126,13 @@ void MidiEditorModel::applyDemoPlaybackIfPending()
 
     seekTick(inTick);
     setLoopRange(inTick, outTick);
+
+    //! 验证钩子（**有意保留**，与 MUSE_MIDIEDITOR_DEMO_PLAYBACK 配套）：设好循环后直接起播，
+    //! 于是"循环有没有真的无缝"不必点 GUI 就能量（机器不能驱动画布上的手势，见 维护手册.md §7.6）。
+    //! 不设这个环境变量时一行都不会执行。
+    if (qEnvironmentVariableIsSet("MUSE_MIDIEDITOR_DEMO_LOOP_PLAY")) {
+        playbackController()->play(false /*showErrors*/);
+    }
 }
 
 void MidiEditorModel::connectToCurrentScore()

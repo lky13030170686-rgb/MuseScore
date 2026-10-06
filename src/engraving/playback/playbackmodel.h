@@ -36,6 +36,7 @@
 
 #include "../types/types.h"
 #include "playbackeventsrenderer.h"
+#include "playbackloopexpansion.h"
 #include "playbacksetupdataresolver.h"
 #include "playbackcontext.h"
 
@@ -161,6 +162,10 @@ private:
     TickBoundaries tickBoundaries(const ScoreChanges& changes) const;
 
     const RepeatList& repeatList() const;
+
+    //! NOTE: [our addition] The native repeat segments plus the loop passes, see
+    //! playbackloopexpansion.h. This is the timeline the events are laid out on.
+    std::vector<PlaybackTimelineSegment> playbackTimeline() const;
 
     muse::mpe::ArticulationsProfilePtr defaultActiculationProfile(const InstrumentTrackId& trackId) const;
 

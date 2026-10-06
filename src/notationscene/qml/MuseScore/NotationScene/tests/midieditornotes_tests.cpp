@@ -32,12 +32,16 @@
 #include "engraving/automation/automationdata.h"
 #include "engraving/automation/automationtypes.h"
 #include "engraving/automation/internal/automationrw.h"
+#include "engraving/automation/tempovalues.h"
 #include "engraving/dom/masterscore.h"
+#include "engraving/dom/measure.h"
 #include "engraving/dom/note.h"
+#include "engraving/dom/repeatlist.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/tempotimeline.h"
 #include "engraving/playback/playbackcontext.h"
+#include "engraving/playback/playbackloopexpansion.h"
 #include "engraving/tests/utils/scorerw.h"
 
 #include "mpe/automationpoint.h"
@@ -1144,3 +1148,223 @@ TEST_F(MidiEditorNotesTests, TheViewFollowsThePlayheadOnlyWhenItHasTo)
     //! 视口还没量出来时不动（第一帧）。
     EXPECT_DOUBLE_EQ(midiFollowScrollX(123.0, 10.0, 0.0, 5000.0), 123.0);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  无缝循环回卷：循环 = 播放时间线上的"额外重复"
+//
+//  用户 2026-10-06 指定的方向是「参考原生重复的工作逻辑」。原生重复根本不 seek：
+//  RepeatList 把谱面展开成 utick 时间线，PlaybackModel 把事件按 tickPositionOffset 铺上去，
+//  播放器一路向前播 —— 所以重复处天然无缝。
+//  循环原来靠"播到循环终点就 seek 回起点"实现，代价是：末尾最多一块（≈21ms）不播、
+//  回卷要 flush 音源（听得见的接缝）、还要跟"音轨先渲染、时钟后推进"的一帧顺序斗。
+//
+//  下面这些测试钉住的就是替换后的那套：**时间线上多出来的那几遍**。
+// ─────────────────────────────────────────────────────────────────────────────
+
+//! 谱子（data/test.mscx）是 2 个 4/4 小节 = 3840 tick（division 480），没有反复记号。
+static constexpr int TEST_SCORE_TICKS = 3840;
+
+static PlaybackLoopExpansion testLoopExpansion(const RepeatList& repeats, int inTick, int outTick, int passes)
+{
+    PlaybackLoopExpansion loop;
+    loop.enabled = true;
+    loop.baseTicks = repeats.ticks();
+    loop.loopInUtick = inTick;
+    loop.loopOutUtick = outTick;
+    loop.passes = passes;
+
+    return loop;
+}
+
+//! 循环区间在时间线上**原地铺 K 遍**，后面的音乐整体后移 —— 于是播放器一路向前播，
+//! 没有任何一次 seek。这里逐段钉住铺出来的样子。
+TEST_F(MidiEditorNotesTests, TheLoopIsLaidOutOnTheTimelineAsExtraRepeats)
+{
+    const RepeatList& repeats = m_score->repeatList(/*expandRepeats*/ true);
+    ASSERT_EQ(repeats.ticks(), TEST_SCORE_TICKS);
+
+    const PlaybackLoopExpansion loop = testLoopExpansion(repeats, /*inTick*/ 960, /*outTick*/ 1920, /*passes*/ 3);
+
+    const std::vector<PlaybackTimelineSegment> timeline = buildPlaybackTimeline(repeats, loop);
+
+    //! 前缀 + 3 遍循环 + 后缀 = 5 段（每段都被循环边界切在该切的地方）
+    ASSERT_EQ(timeline.size(), size_t(5));
+
+    //! 前缀原样不动
+    EXPECT_EQ(timeline[0].utick, 0);
+    EXPECT_EQ(timeline[0].tick, 0);
+    EXPECT_EQ(timeline[0].endTick, 960);
+
+    //! 三遍循环：谱面位置都是 [960,1920)，时间线位置依次后移一个循环长度
+    for (int pass = 0; pass < 3; ++pass) {
+        const PlaybackTimelineSegment& segment = timeline[1 + pass];
+        EXPECT_EQ(segment.tick, 960) << "第 " << pass << " 遍的谱面位置";
+        EXPECT_EQ(segment.endTick, 1920) << "第 " << pass << " 遍的谱面位置";
+        EXPECT_EQ(segment.utick, 960 + pass * 960) << "第 " << pass << " 遍的时间线位置";
+        EXPECT_FALSE(segment.measures.empty()) << "第 " << pass << " 遍没有铺到小节";
+    }
+
+    //! 后缀整体后移 (passes - 1) 个循环长度 —— 这正是"没有 seek"的代价所在：时间线变长了
+    const PlaybackTimelineSegment& suffix = timeline[4];
+    EXPECT_EQ(suffix.tick, 1920);
+    EXPECT_EQ(suffix.endTick, TEST_SCORE_TICKS);
+    EXPECT_EQ(suffix.utick, 1920 + 2 * 960);
+
+    //! 铺出来的总长 = 前缀 + K 遍循环 + 后缀
+    EXPECT_EQ(loop.expandedTicks(), TEST_SCORE_TICKS + 2 * 960);
+    int laidOutTicks = 0;
+    for (const PlaybackTimelineSegment& segment : timeline) {
+        laidOutTicks += segment.endTick - segment.tick;
+    }
+    EXPECT_EQ(laidOutTicks, loop.expandedTicks());
+}
+
+//! 每段"铺"出来的东西必须正好是它自己的窗口：循环起点/终点可以落在小节中间，
+//! 那时**窗口之前的那半个小节不能跟着重播**（否则循环边界会多出一点"提前响"的音）。
+TEST_F(MidiEditorNotesTests, APassCarriesItsOwnWindowAndNothingBeforeIt)
+{
+    const RepeatList& repeats = m_score->repeatList(true);
+
+    const PlaybackLoopExpansion loop = testLoopExpansion(repeats, /*inTick*/ 960, /*outTick*/ 1920, /*passes*/ 2);
+    const std::vector<PlaybackTimelineSegment> timeline = buildPlaybackTimeline(repeats, loop);
+
+    ASSERT_EQ(timeline.size(), size_t(4));
+
+    //! 每段的窗口都是半开的 [tick, endTick)，且与 utick 的偏移一致
+    for (const PlaybackTimelineSegment& segment : timeline) {
+        EXPECT_LT(segment.tick, segment.endTick);
+        for (const Measure* measure : segment.measures) {
+            EXPECT_GT(measure->endTick().ticks(), segment.tick) << "窗口之前的小节被带进来了";
+            EXPECT_LT(measure->tick().ticks(), segment.endTick) << "窗口之后的小节被带进来了";
+        }
+    }
+
+    //! 后半小节（960..1920）的第 1 小节：循环第一遍的窗口就从它中间开始
+    EXPECT_EQ(timeline[1].tick, 960);
+    ASSERT_EQ(timeline[1].measures.size(), size_t(1));
+    EXPECT_EQ(timeline[1].measures.front()->tick().ticks(), 0) << "窗口落在这个小节里，但小节本身还是它";
+}
+
+//! 时间线是**时间**，不只是位置：多出来的那几遍必须真的用掉"循环一段"那么长的时间，
+//! 而且循环区间里的速度变化要**一遍一遍原样重现**，循环之后的音乐则整体平移。
+//! （只把前缀拉长的实现会在这里露馅：循环之后的绝对时间会少掉 (K-1) 个循环长度。）
+TEST_F(MidiEditorNotesTests, TheLoopIsExtraTimeAndNotASeek)
+{
+    m_score->initAutomation();
+
+    //! [GIVEN] 循环起点处 1 bps（60 BPM），循环中间 1440 处回到 2 bps（120 BPM）
+    AutomationPoint slow;
+    slow.value.outValue = normalizeTempo(BeatsPerSecond(1.0));
+    AutomationPoint fast;
+    fast.value.outValue = normalizeTempo(BeatsPerSecond(2.0));
+
+    AutomationPointEdits tempoEdits { { 960, AutomationPointEdit::SetPoint { slow } }, { 1440, AutomationPointEdit::SetPoint { fast } } };
+    m_score->editAutomationPoints(TEMPO_KEY, tempoEdits, /*undoable*/ false);
+
+    const RepeatList& repeats = m_score->repeatList(true);
+    const TempoTimeline& base = m_score->tempoTimeline(true);
+
+    //! [GIVEN] 原生时间线就是按谱面来的：0..960 用默认 2 bps，960..1440 是 1 bps，之后 2 bps
+    EXPECT_NEAR(base.utick2utime(960), 1.0, 1e-9);
+    EXPECT_NEAR(base.utick2utime(1440), 2.0, 1e-9);
+    EXPECT_NEAR(base.utick2utime(1920), 2.5, 1e-9);
+    EXPECT_NEAR(base.utick2utime(TEST_SCORE_TICKS), 4.5, 1e-9);
+
+    const double loopSeconds = base.utick2utime(1920) - base.utick2utime(960);
+    EXPECT_NEAR(loopSeconds, 1.5, 1e-9);
+
+    //! [WHEN] 循环 [960,1920) 原地铺 3 遍
+    PlaybackLoopExpansion loop = testLoopExpansion(repeats, 960, 1920, 3);
+    m_score->setPlaybackLoopExpansion(loop);
+
+    const TempoTimeline& expanded = m_score->tempoTimeline(true);
+
+    //! [THEN] 前缀与第一遍完全没动
+    EXPECT_NEAR(expanded.utick2utime(960), 1.0, 1e-9);
+    EXPECT_NEAR(expanded.utick2utime(1440), 2.0, 1e-9);
+
+    //! [AND] 每一遍正好用掉"循环一段"的时间，一遍接一遍
+    EXPECT_NEAR(expanded.utick2utime(1920), 1.0 + loopSeconds, 1e-9) << "第 1 遍结束";
+    EXPECT_NEAR(expanded.utick2utime(2880), 1.0 + 2 * loopSeconds, 1e-9) << "第 2 遍结束";
+    EXPECT_NEAR(expanded.utick2utime(960 + 3 * 960), 1.0 + 3 * loopSeconds, 1e-9) << "第 3 遍结束";
+
+    //! [AND] 循环里的速度变化一遍一遍原样重现：1440 的 2 bps 在第 2 遍里也是 1440+960
+    EXPECT_NEAR(expanded.tempo(960).val, 1.0, 1e-9) << "循环起点处是 1 bps";
+    EXPECT_NEAR(expanded.tempo(1920).val, 1.0, 1e-9) << "第 2 遍起点也必须是 1 bps（不能继承上一遍结尾的速度）";
+    EXPECT_NEAR(expanded.tempo(2400).val, 2.0, 1e-9) << "第 2 遍里的速度变化点";
+    EXPECT_NEAR(expanded.utick2utime(2400), 1.0 + loopSeconds + 1.0, 1e-9);
+
+    //! [AND] 后缀整体后移 (K-1) 个循环长度，且自己那一份速度保持
+    const int suffixUtick = 1920 + 2 * 960;
+    EXPECT_NEAR(expanded.utick2utime(suffixUtick), 2.5 + 2 * loopSeconds, 1e-9) << "循环之后的音乐没有整体后移";
+    EXPECT_NEAR(expanded.utick2utime(loop.expandedTicks()), 4.5 + 2 * loopSeconds, 1e-9);
+
+    //! [AND] 关掉循环之后，时间线必须**回到原样**（不能留下痕迹）
+    m_score->setPlaybackLoopExpansion(PlaybackLoopExpansion());
+    EXPECT_NEAR(m_score->tempoTimeline(true).utick2utime(TEST_SCORE_TICKS), 4.5, 1e-9);
+}
+
+//! 谱面 tick 与播放时间线 tick 的来回映射：位置显示、游标、seek 全靠它。
+//! "从这里开始播"要的是**第一次出现**；播放器报回来的位置则要映射回谱面里那个小节。
+TEST_F(MidiEditorNotesTests, ARawTickMapsToItsFirstOccurrenceAndComesBackFromEveryPass)
+{
+    const RepeatList& repeats = m_score->repeatList(true);
+    const PlaybackLoopExpansion loop = testLoopExpansion(repeats, 960, 1920, 3);
+
+    //! 循环之前的谱面 tick 原地不动
+    EXPECT_EQ(loop.fromBaseUtick(0), 0);
+    EXPECT_EQ(loop.fromBaseUtick(959), 959);
+
+    //! 循环区间里：第一次出现就是它自己（于是"点哪儿从哪儿播"落在这里）
+    EXPECT_EQ(loop.fromBaseUtick(960), 960);
+    EXPECT_EQ(loop.fromBaseUtick(1440), 1440);
+    EXPECT_EQ(loop.fromBaseUtick(1919), 1919);
+
+    //! 循环之后的谱面 tick 落在后缀上（后移 K-1 个循环长度）
+    EXPECT_EQ(loop.fromBaseUtick(1920), 1920 + 2 * 960);
+    EXPECT_EQ(loop.fromBaseUtick(TEST_SCORE_TICKS), TEST_SCORE_TICKS + 2 * 960);
+
+    //! 反过来：时间线上的任何位置都能回到它对应的谱面位置 —— 第 2、3 遍回到循环区间本身
+    EXPECT_EQ(loop.toBaseUtick(960 + 480), 1440);
+    EXPECT_EQ(loop.toBaseUtick(1920 + 480), 1440) << "第 2 遍里的位置";
+    EXPECT_EQ(loop.toBaseUtick(2880 + 480), 1440) << "第 3 遍里的位置";
+    EXPECT_EQ(loop.toBaseUtick(1920 + 2 * 960 + 100), 2020) << "后缀上的位置";
+
+    //! 每一遍的同一个位置映射回**同一个谱面位置**（这正是游标一遍遍扫过同一段的原因）
+    for (int offset = 0; offset < 960; offset += 240) {
+        EXPECT_EQ(loop.toBaseUtick(loop.fromBaseUtick(960 + offset)), 960 + offset);
+        EXPECT_EQ(loop.toBaseUtick(960 + 960 + offset), 960 + offset);
+    }
+
+    //! 没开循环时两个方向都是恒等映射（普通播放一行都不受影响）
+    const PlaybackLoopExpansion off;
+    EXPECT_FALSE(off.isActive());
+    EXPECT_EQ(off.toBaseUtick(1234), 1234);
+    EXPECT_EQ(off.fromBaseUtick(1234), 1234);
+}
+
+//! 遍数是按"让循环至少能放 EXPANSION_BUDGET_SECS"算出来的，并且两端都夹住：
+//! 太短的循环不会铺出天量的遍数，太长的循环也至少铺两遍（不然等于没有循环）。
+TEST_F(MidiEditorNotesTests, TheNumberOfPassesIsBoundedByTheBudget)
+{
+    const RepeatList& repeats = m_score->repeatList(true);
+
+    //! 4 秒的循环：10 分钟 / 4 秒 = 150 遍 → 夹到上限
+    const PlaybackLoopExpansion shortLoop = makePlaybackLoopExpansion(repeats, 0, TEST_SCORE_TICKS, 4.0, true);
+    EXPECT_TRUE(shortLoop.isActive());
+    EXPECT_EQ(shortLoop.passes, PlaybackLoopExpansion::EXPANSION_MAX_PASSES);
+
+    //! 10 秒的循环：60 遍
+    const PlaybackLoopExpansion tenSeconds = makePlaybackLoopExpansion(repeats, 0, TEST_SCORE_TICKS, 10.0, true);
+    EXPECT_EQ(tenSeconds.passes, 60);
+
+    //! 特别长的循环：至少两遍（否则"循环"根本听不出来）
+    const PlaybackLoopExpansion longLoop = makePlaybackLoopExpansion(repeats, 0, TEST_SCORE_TICKS, 100000.0, true);
+    EXPECT_EQ(longLoop.passes, PlaybackLoopExpansion::MIN_PASSES_WHEN_ACTIVE);
+
+    //! 没开循环 / 空区间：不铺，时间线还是原样
+    EXPECT_FALSE(makePlaybackLoopExpansion(repeats, 0, TEST_SCORE_TICKS, 4.0, false).isActive());
+    EXPECT_FALSE(makePlaybackLoopExpansion(repeats, 960, 960, 4.0, true).isActive());
+    EXPECT_EQ(makePlaybackLoopExpansion(repeats, 0, TEST_SCORE_TICKS, 4.0, false).expandedTicks(), TEST_SCORE_TICKS);
+}
+

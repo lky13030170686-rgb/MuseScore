@@ -1096,6 +1096,16 @@ void PlaybackController::updateLoop()
         return;
     }
 
+    //! NOTE: [our addition] When the loop is part of the playback timeline (the region is played as
+    //! extra repeats, see engraving/playback/playbackloopexpansion.h) the player must NOT loop:
+    //! seeking back would flush the sound sources and cut the seam open again. The player plays
+    //! forward through the repeated region and the loop is seamless by construction.
+    if (notationPlayback()->isLoopExpanded()) {
+        currentPlayer()->resetLoop();
+        enableLoop();
+        return;
+    }
+
     // Convert from raw ticks (visual tick != playback tick due to repeats etc)
     RetVal<tick_t> playbackTickFrom = notationPlayback()->playPositionTickByRawTick(boundaries.loopInTick.ticks());
     RetVal<tick_t> playbackTickTo = notationPlayback()->playPositionTickByRawTick(boundaries.loopOutTick.ticks());

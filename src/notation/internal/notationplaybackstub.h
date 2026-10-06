@@ -65,6 +65,7 @@ public:
     void addLoopBoundary(LoopBoundaryType boundaryType, muse::midi::tick_t tick) override;
     void setLoopBoundariesEnabled(bool enabled) override;
     bool isLoopEnabled() const override;
+    bool isLoopExpanded() const override;
     const LoopBoundaries& loopBoundaries() const override;
     muse::async::Notification loopBoundariesChanged() const override;
 

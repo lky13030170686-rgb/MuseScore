@@ -260,6 +260,16 @@ void MasterScore::setTempoTimelineOverride(std::optional<TempoTimeline> timeline
     m_automationController->setTempoTimelineOverride(std::move(timeline));
 }
 
+void MasterScore::setPlaybackLoopExpansion(const PlaybackLoopExpansion& expansion)
+{
+    if (m_playbackLoopExpansion == expansion) {
+        return;
+    }
+
+    m_playbackLoopExpansion = expansion;
+    m_automationController->setPlaybackLoopExpansion(expansion);
+}
+
 //---------------------------------------------------------
 //   addExcerpt
 //---------------------------------------------------------

@@ -308,13 +308,101 @@ const TempoTimeline& ScoreAutomationController::tempoTimeline(bool expandRepeats
         return *m_tempoTimelineOverride;
     }
 
-    return expandRepeats ? m_tempoTimeline : m_flattenedTempoTimeline;
+    if (!expandRepeats) {
+        return m_flattenedTempoTimeline;
+    }
+
+    //! NOTE: [our addition] The loop is laid out on the playback timeline as extra repeats
+    //! (see playback/playbackloopexpansion.h), which shifts everything after the loop region and
+    //! repeats the region's tempo shape per pass. The tempo timeline has to follow, otherwise every
+    //! timestamp the playback layer derives from a utick would be wrong.
+    if (m_playbackLoopExpansion.isActive()) {
+        if (m_expandedTempoTimelineDirty) {
+            rebuildExpandedTempoTimeline();
+        }
+
+        return m_expandedTempoTimeline;
+    }
+
+    return m_tempoTimeline;
+}
+
+void ScoreAutomationController::setPlaybackLoopExpansion(const PlaybackLoopExpansion& expansion)
+{
+    m_playbackLoopExpansion = expansion;
+    m_expandedTempoTimelineDirty = true;
+}
+
+void ScoreAutomationController::rebuildExpandedTempoTimeline() const
+{
+    TRACEFUNC;
+
+    const PlaybackLoopExpansion& loop = m_playbackLoopExpansion;
+    const int length = loop.loopLength();
+
+    //! NOTE: A value point and a pause can share a utick; rebuild() merges values and pauses itself,
+    //! so pauses are collected separately and only real value points go into the value list.
+    TempoValues values;
+    PausesMap pauses;
+
+    const auto appendRange = [this, &values, &pauses](int fromUtick, int toUtick, int utickShift) {
+        for (const TempoTimePoint& point : m_tempoTimeline.points()) {
+            if (point.utick < fromUtick || point.utick >= toUtick) {
+                continue;
+            }
+
+            const int utick = point.utick + utickShift;
+
+            if (point.pause > 0.0) {
+                pauses.emplace(utick, point.pause);
+                continue;
+            }
+
+            if (!values.empty() && values.back().first == utick) {
+                continue;
+            }
+
+            values.emplace_back(utick, point.bps);
+        }
+    };
+
+    const auto appendTempoAtRegionStart = [this, &values](int baseUtick, int utick) {
+        if (!values.empty() && values.back().first == utick) {
+            return;
+        }
+
+        //! NOTE: looked up on the *native* timeline - the expanded utick says nothing about tempo
+        values.emplace_back(utick, m_tempoTimeline.tempo(baseUtick).val);
+    };
+
+    appendRange(0, loop.loopInUtick, 0);
+
+    for (int pass = 0; pass < loop.passes; ++pass) {
+        const int utickShift = pass * length;
+
+        if (pass > 0) {
+            //! NOTE: The tempo in effect when the loop region starts may come from a point before
+            //! the region (or from the region's own first point). The first pass gets it from the
+            //! prefix, every later pass has to carry it over explicitly, otherwise the pass would
+            //! inherit the tempo the previous pass ended with.
+            appendTempoAtRegionStart(loop.loopInUtick, loop.loopInUtick + utickShift);
+        }
+
+        appendRange(loop.loopInUtick, loop.loopOutUtick, utickShift);
+    }
+
+    appendRange(loop.loopOutUtick, loop.baseTicks, (loop.passes - 1) * length);
+
+    m_expandedTempoTimeline.rebuild(values, pauses);
+    m_expandedTempoTimeline.setTempoMultiplier(m_tempoTimeline.tempoMultiplier());
+    m_expandedTempoTimelineDirty = false;
 }
 
 void ScoreAutomationController::setTempoMultiplier(const BeatsPerSecond& bps)
 {
     m_tempoTimeline.setTempoMultiplier(bps);
     m_flattenedTempoTimeline.setTempoMultiplier(bps);
+    m_expandedTempoTimeline.setTempoMultiplier(bps);
 }
 
 void ScoreAutomationController::setTempoTimelineOverride(std::optional<TempoTimeline> timeline)
@@ -600,6 +688,7 @@ void ScoreAutomationController::update(const UpdateRequest& request, const Autom
         // TempoTimeline falls back to the default tempo when the curve has no points
         m_tempoTimeline.rebuild(*ctx.tempoCurve, ctx.pauses);
         m_flattenedTempoTimeline.rebuild(ctx.noRepeatTempoCurve, ctx.noRepeatPauses);
+        m_expandedTempoTimelineDirty = true;
     }
 
     // Passed through as-is: replaceCurves() clears a key when given an empty curve for it

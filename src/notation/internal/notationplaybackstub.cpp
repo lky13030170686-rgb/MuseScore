@@ -154,6 +154,11 @@ bool NotationPlaybackStub::isLoopEnabled() const
     return false;
 }
 
+bool NotationPlaybackStub::isLoopExpanded() const
+{
+    return false;
+}
+
 const LoopBoundaries& NotationPlaybackStub::loopBoundaries() const
 {
     static const LoopBoundaries dummy;

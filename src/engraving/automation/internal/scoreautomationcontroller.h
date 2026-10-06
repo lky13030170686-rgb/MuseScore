@@ -30,6 +30,7 @@
 #include "engraving/automation/automationdata.h"
 #include "engraving/automation/automationtypes.h"
 #include "engraving/dom/tempotimeline.h"
+#include "engraving/playback/playbackloopexpansion.h"
 #include "engraving/types/types.h"
 
 namespace mu::engraving {
@@ -68,6 +69,11 @@ public:
     void setTempoMultiplier(const BeatsPerSecond& bps);
 
     void setTempoTimelineOverride(std::optional<TempoTimeline> timeline);
+
+    //! NOTE: [our addition] Loop playback as extra repeats (playback/playbackloopexpansion.h).
+    //! The expanded tempo timeline is derived from the normal one on demand, so it can never go
+    //! stale - every rebuild of the normal one marks it dirty again.
+    void setPlaybackLoopExpansion(const PlaybackLoopExpansion& expansion);
 
 private:
     struct UpdateRequest {
@@ -153,6 +159,7 @@ private:
 
     void update(const UpdateRequest& request, const AutomationCurveMap& curves);
     void fullRebuild(AutomationCurveMap& curves, bool includeTempo = true, bool includeDynamics = true);
+    void rebuildExpandedTempoTimeline() const;
 
     static void copyCurvesForRebuild(const AutomationCurveMap& curves, const StaffRange& range, utick_t clearFromUTick, bool includeTempo,
                                      bool includeDynamics, AutomationCurveMap& destCurves);
@@ -207,5 +214,8 @@ private:
     TempoTimeline m_tempoTimeline;
     TempoTimeline m_flattenedTempoTimeline;
     std::optional<TempoTimeline> m_tempoTimelineOverride;
+    PlaybackLoopExpansion m_playbackLoopExpansion;      //! [our addition]
+    mutable TempoTimeline m_expandedTempoTimeline;      //! [our addition] lazy, see tempoTimeline()
+    mutable bool m_expandedTempoTimelineDirty = true;   //! [our addition]
 };
 }

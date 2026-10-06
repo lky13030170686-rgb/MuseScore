@@ -27,6 +27,7 @@
 
 #include "../infrastructure/ifileinfoprovider.h"
 #include "../infrastructure/eidregister.h"
+#include "../playback/playbackloopexpansion.h"
 
 #include "instrument.h"
 #include "score.h"
@@ -126,6 +127,11 @@ public:
     const TempoTimeline& tempoTimeline(bool expandRepeats) const;
     bool setTempoMultiplier(BeatsPerSecond val);
     void setTempoTimelineOverride(std::optional<TempoTimeline> timeline);
+
+    //! NOTE: [our addition] The loop laid out on the playback timeline as extra repeats.
+    //! See playback/playbackloopexpansion.h - playback only, never saved, never laid out.
+    const PlaybackLoopExpansion& playbackLoopExpansion() const { return m_playbackLoopExpansion; }
+    void setPlaybackLoopExpansion(const PlaybackLoopExpansion& expansion);
 
     std::vector<Excerpt*>& excerpts() { return m_excerpts; }
     const std::vector<Excerpt*>& excerpts() const { return m_excerpts; }
@@ -243,6 +249,7 @@ private:
     bool m_updatesLocked = false;
 
     std::array<Fraction, 2> m_loopBoundaries; ///< 0 - LoopIn, 1 - LoopOut
+    PlaybackLoopExpansion m_playbackLoopExpansion; ///< [our addition] see playback/playbackloopexpansion.h
 
     int m_midiPortCount = 0;                           // A count of ALSA midi out ports
     std::vector<MidiMapping> m_midiMapping;

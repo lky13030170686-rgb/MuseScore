@@ -28,6 +28,7 @@
 #include "engraving/automation/automationtypes.h"
 
 #include "../types/types.h"
+#include "playbackloopexpansion.h"
 
 namespace mu::engraving {
 class Segment;
@@ -92,14 +93,14 @@ private:
 
     void handleSegmentAnnotations(const Segment* segment, const int segmentPositionTick, const track_idx_t trackFrom,
                                   const track_idx_t trackTo);
-    void handleSegmentElements(const RepeatSegment* repeat, const Segment* segment, const int segmentPositionTick,
+    void handleSegmentElements(const PlaybackTimelineSegment& repeat, const Segment* segment, const int segmentPositionTick,
                                const track_idx_t trackFrom, const track_idx_t trackTo,
                                std::vector<const MeasureRepeat*>& foundMeasureRepeats);
     void handleMeasureRepeats(const std::vector<const MeasureRepeat*>& measureRepeats, const int tickPositionOffset);
 
     const AutomationCurve* dynamicsCurve(const track_idx_t trackIdx) const;
 
-    bool hasOnlyOneLyricsVerse(const RepeatSegment* repeat, const track_idx_t track) const;
+    bool hasOnlyOneLyricsVerse(const PlaybackTimelineSegment& repeat, const track_idx_t track) const;
 
     const Score* m_score = nullptr;
 
@@ -109,6 +110,10 @@ private:
     //! NOTE: [our addition] storage for the curves that had to be merged out of the shared (no voice) one
     //! and the voice's own - see dynamicsCurve(). `m_dynamicsCurveByTrack` may point into this.
     mutable std::unordered_map<track_idx_t, AutomationCurve> m_mergedDynamicsCurves;
+
+    //! NOTE: [our addition] storage for the same curves with the loop passes laid out on them
+    //! (see playbackloopexpansion.h). `m_dynamicsCurveByTrack` may point into this too.
+    mutable std::unordered_map<track_idx_t, AutomationCurve> m_loopExpandedDynamicsCurves;
 
     SoundPresetsByTrack m_soundPresetsByTrack;
     TextArticulationsByTrack m_textArticulationsByTrack;

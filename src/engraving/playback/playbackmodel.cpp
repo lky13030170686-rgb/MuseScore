@@ -633,16 +633,16 @@ void PlaybackModel::updateEvents(const int tickFrom, const int tickTo, const tra
     const ArticulationsProfilePtr metronomeProfile = defaultActiculationProfile(METRONOME_TRACK_ID);
     PlaybackEventsMap& metronomeEvents = m_playbackDataMap[METRONOME_TRACK_ID].originEvents;
 
-    for (const RepeatSegment* repeatSegment : repeatList()) {
-        int tickPositionOffset = repeatSegment->utick - repeatSegment->tick;
-        int repeatStartTick = repeatSegment->tick;
-        int repeatEndTick = repeatSegment->endTick();
+    for (const PlaybackTimelineSegment& timelineSegment : playbackTimeline()) {
+        const int tickPositionOffset = timelineSegment.utick - timelineSegment.tick;
+        const int segmentFromTick = timelineSegment.tick;
+        const int segmentToTick = timelineSegment.endTick;
 
-        if (repeatStartTick > tickTo || repeatEndTick <= tickFrom) {
+        if (segmentFromTick > tickTo || segmentToTick <= tickFrom) {
             continue;
         }
 
-        for (const Measure* measure : repeatSegment->measureList()) {
+        for (const Measure* measure : timelineSegment.measures) {
             int measureStartTick = measure->tick().ticks();
             int measureEndTick = measure->endTick().ticks();
 
@@ -660,12 +660,22 @@ void PlaybackModel::updateEvents(const int tickFrom, const int tickTo, const tra
                 int segmentStartTick = segment->tick().ticks();
                 int segmentEndTick = segmentStartTick + segment->ticks().ticks();
 
-                if (segmentStartTick > tickTo || segmentEndTick <= tickFrom) {
+                //! NOTE: the counter advances for every chord rest segment of the measure, including
+                //! the ones the window below skips, so "first chord rest segment" keeps its meaning
+                if (segment->isChordRestType()) {
+                    chordRestSegmentNum++;
+                }
+
+                //! NOTE: [our addition] A loop can begin or end in the middle of a measure, so what
+                //! belongs to one pass is the window of the timeline segment, not the whole measure.
+                //! For the native repeat segments the window covers the whole segment, so this
+                //! changes nothing there.
+                if (segmentStartTick < segmentFromTick || segmentStartTick >= segmentToTick) {
                     continue;
                 }
 
-                if (segment->isChordRestType()) {
-                    chordRestSegmentNum++;
+                if (segmentStartTick > tickTo || segmentEndTick <= tickFrom) {
+                    continue;
                 }
 
                 processSegment(tickPositionOffset, segment, staffToProcessIdxSet, chordRestSegmentNum == 0, trackChanges);
@@ -693,10 +703,10 @@ void PlaybackModel::reloadMetronomeEvents()
 
     const ArticulationsProfilePtr metronomeProfile = defaultActiculationProfile(METRONOME_TRACK_ID);
 
-    for (const RepeatSegment* repeatSegment : repeatList()) {
-        int tickPositionOffset = repeatSegment->utick - repeatSegment->tick;
+    for (const PlaybackTimelineSegment& timelineSegment : playbackTimeline()) {
+        const int tickPositionOffset = timelineSegment.utick - timelineSegment.tick;
 
-        for (const Measure* measure : repeatSegment->measureList()) {
+        for (const Measure* measure : timelineSegment.measures) {
             m_renderer.renderMetronome(m_score, measure, tickPositionOffset, metronomeProfile, metronomeData.originEvents);
         }
     }
@@ -882,21 +892,21 @@ void PlaybackModel::clearExpiredEvents(const int tickFrom, const int tickTo, con
         return;
     }
 
-    for (const RepeatSegment* repeatSegment : repeatList()) {
-        const int tickPositionOffset = repeatSegment->utick - repeatSegment->tick;
-        const int repeatStartTick = repeatSegment->tick;
-        const int repeatEndTick = repeatSegment->endTick();
+    for (const PlaybackTimelineSegment& timelineSegment : playbackTimeline()) {
+        const int tickPositionOffset = timelineSegment.utick - timelineSegment.tick;
+        const int segmentFromTick = timelineSegment.tick;
+        const int segmentToTick = timelineSegment.endTick;
 
-        if (repeatStartTick > tickTo || repeatEndTick <= tickFrom) {
+        if (segmentFromTick > tickTo || segmentToTick <= tickFrom) {
             continue;
         }
 
-        int removeEventsFromTick = std::max(tickFrom, repeatStartTick);
+        int removeEventsFromTick = std::max(tickFrom, segmentFromTick);
         timestamp_t removeEventsFrom = timestampFromTicks(m_score, removeEventsFromTick + tickPositionOffset);
 
-        //! NOTE: the end tick of the current repeat segment == the start tick of the next repeat segment
+        //! NOTE: the end tick of the current segment == the start tick of the next one
         //! so subtract 1 to avoid removing events belonging to the next segment
-        int removeEventsToTick = std::min(tickTo, repeatEndTick - 1);
+        int removeEventsToTick = std::min(tickTo, segmentToTick - 1);
         timestamp_t removeEventsTo = timestampFromTicks(m_score, removeEventsToTick + tickPositionOffset);
 
         removeEventsFromRange(trackFrom, trackTo, removeEventsFrom, removeEventsTo, trackChanges);
@@ -905,7 +915,7 @@ void PlaybackModel::clearExpiredEvents(const int tickFrom, const int tickTo, con
             continue;
         }
 
-        for (const Measure* measure : repeatSegment->measureList()) {
+        for (const Measure* measure : timelineSegment.measures) {
             const int measureStartTick = measure->tick().ticks();
             const int measureEndTick = measure->endTick().ticks();
 
@@ -1134,6 +1144,13 @@ const RepeatList& PlaybackModel::repeatList() const
     m_score->masterScore()->setExpandRepeats(m_expandRepeats);
 
     return m_score->repeatList();
+}
+
+std::vector<PlaybackTimelineSegment> PlaybackModel::playbackTimeline() const
+{
+    m_score->masterScore()->setExpandRepeats(m_expandRepeats);
+
+    return buildPlaybackTimeline(m_score->repeatList(), m_score->playbackLoopExpansion());
 }
 
 InstrumentTrackId PlaybackModel::idKey(const EngravingItem* item) const

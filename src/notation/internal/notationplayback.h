@@ -79,6 +79,7 @@ public:
     void addLoopBoundary(LoopBoundaryType boundaryType, muse::midi::tick_t tick) override;
     void setLoopBoundariesEnabled(bool enabled) override;
     bool isLoopEnabled() const override;
+    bool isLoopExpanded() const override;
     muse::async::Channel<bool> loopEnabledChanged() const override;
     const LoopBoundaries& loopBoundaries() const override;
     muse::async::Notification loopBoundariesChanged() const override;
@@ -100,7 +101,14 @@ private:
     void addLoopIn(int tick);
     void addLoopOut(int tick);
     void updateLoopBoundaries();
+    void updateLoopExpansion();
     void updateTotalPlayTime();
+
+    //! [our addition] utick on the native (repeats only) timeline -> utick on the playback timeline
+    int playbackUtickByRawTick(muse::midi::tick_t tick) const;
+
+    //! [our addition] The expansion the score currently holds (shared by all of its notations)
+    const engraving::PlaybackLoopExpansion& loopExpansion() const;
 
     bool doAddSoundFlag(mu::engraving::StaffText* staffText);
 
@@ -114,6 +122,10 @@ private:
     LoopBoundaries m_loopBoundaries;
     muse::async::Notification m_loopBoundariesChanged;
     muse::async::Channel<bool> m_loopEnabledChanged;
+
+    //! [our addition] What this notation last applied to the score - only used to tell whether the
+    //! expansion changed, so a notation that doesn't drive the loop playback never clears it
+    engraving::PlaybackLoopExpansion m_loopExpansion;
 
     muse::audio::secs_t m_totalPlayTime = 0;
     muse::async::Channel<muse::audio::secs_t> m_totalPlayTimeChanged;

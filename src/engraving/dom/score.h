@@ -127,6 +127,7 @@ struct RepeatSegmentInfo;
 class Rest;
 class Score;
 class IEngravingFont;
+struct PlaybackLoopExpansion;
 class Segment;
 class Slur;
 class Spanner;
@@ -689,6 +690,11 @@ public:
     const TempoTimeline& tempoTimeline() const;
     const TempoTimeline& tempoTimeline(bool expandRepeats) const;
     void setTempoTimelineOverride(std::optional<TempoTimeline> timeline);
+
+    //! NOTE: [our addition] The loop, laid out on the playback timeline as extra repeats.
+    //! Playback-only state: it is never saved and never affects layout, export or the Cursor.
+    const PlaybackLoopExpansion& playbackLoopExpansion() const;
+    void setPlaybackLoopExpansion(const PlaybackLoopExpansion& expansion);
 
     virtual size_t npages() const { return m_pages.size(); }
     virtual page_idx_t pageIdx(const Page* page) const { return muse::indexOf(m_pages, page); }

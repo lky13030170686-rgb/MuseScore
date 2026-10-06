@@ -296,19 +296,26 @@ void PlaybackContext::update(const track_idx_t trackFrom, const track_idx_t trac
 
     m_dynamicsCurveByTrack.clear();
     m_mergedDynamicsCurves.clear();
+    m_loopExpandedDynamicsCurves.clear();
 
-    for (const RepeatSegment* repeatSegment : m_score->repeatList(expandRepeats)) {
-        const int repeatStartTick = repeatSegment->tick;
-        const int repeatEndTick = repeatSegment->endTick();
+    //! NOTE: [our addition] The loop is laid out on the playback timeline as extra repeats, so
+    //! everything collected here (playing techniques, sound presets, syllabes) is collected once per
+    //! pass as well - the timeline is what decides where things are, not the score.
+    const PlaybackLoopExpansion loop = expandRepeats ? m_score->playbackLoopExpansion() : PlaybackLoopExpansion();
+    const std::vector<PlaybackTimelineSegment> timeline = buildPlaybackTimeline(m_score->repeatList(expandRepeats), loop);
+
+    for (const PlaybackTimelineSegment& repeatSegment : timeline) {
+        const int repeatStartTick = repeatSegment.tick;
+        const int repeatEndTick = repeatSegment.endTick;
 
         if (repeatStartTick > tickTo || repeatEndTick <= tickFrom) {
             continue;
         }
 
         std::vector<const MeasureRepeat*> measureRepeats;
-        int tickPositionOffset = repeatSegment->utick - repeatSegment->tick;
+        int tickPositionOffset = repeatSegment.utick - repeatSegment.tick;
 
-        for (const Measure* measure : repeatSegment->measureList()) {
+        for (const Measure* measure : repeatSegment.measures) {
             const int measureStartTick = measure->tick().ticks();
             const int measureEndTick = measure->endTick().ticks();
 
@@ -326,6 +333,13 @@ void PlaybackContext::update(const track_idx_t trackFrom, const track_idx_t trac
                     continue;
                 }
 
+                //! NOTE: [our addition] a loop can start or end inside a measure, so what belongs to
+                //! this pass is the segment window - for the native repeat segments the window covers
+                //! the whole segment, so nothing changes there
+                if (segmentTick < repeatStartTick || segmentTick >= repeatEndTick) {
+                    continue;
+                }
+
                 int segmentStartTick = segmentTick + tickPositionOffset;
 
                 handleSegmentElements(repeatSegment, segment, segmentStartTick, trackFrom, trackTo, measureRepeats);
@@ -339,10 +353,10 @@ void PlaybackContext::update(const track_idx_t trackFrom, const track_idx_t trac
 
 void PlaybackContext::clear(const track_idx_t trackFrom, const track_idx_t trackTo, const int tickFrom, const int tickTo)
 {
-    const auto eraseTickRangeByTrack = [trackFrom, trackTo, tickFrom, tickTo](auto& byTrackMap) {
+    const auto eraseTickRangeByTrack = [trackFrom, trackTo](auto& byTrackMap, int fromTick, int toTick) {
         for (auto it = byTrackMap.lower_bound(trackFrom); it != byTrackMap.end() && it->first < trackTo;) {
             auto& innerMap = it->second;
-            innerMap.erase(innerMap.lower_bound(tickFrom), innerMap.upper_bound(tickTo));
+            innerMap.erase(innerMap.lower_bound(fromTick), innerMap.upper_bound(toTick));
 
             if (innerMap.empty()) {
                 it = byTrackMap.erase(it);
@@ -352,11 +366,38 @@ void PlaybackContext::clear(const track_idx_t trackFrom, const track_idx_t track
         }
     };
 
-    eraseTickRangeByTrack(m_soundPresetsByTrack);
-    eraseTickRangeByTrack(m_textArticulationsByTrack);
-    eraseTickRangeByTrack(m_syllablesByTrack);
-    eraseTickRangeByTrack(m_playTechniquesByTrack);
-    eraseTickRangeByTrack(m_multiVerseLyricsPositionMap);
+    //! NOTE: [our addition] everything collected here is keyed by the position on the playback
+    //! timeline, so a range written in the score has to be erased once per occurrence - otherwise
+    //! the loop passes would keep their stale technique/preset/syllable entries
+    std::vector<PlaybackTimelineSegment> timeline;
+    if (m_score) {
+        timeline = buildPlaybackTimeline(m_score->repeatList(), m_score->playbackLoopExpansion());
+    }
+
+    const auto eraseRange = [this, &eraseTickRangeByTrack](int fromTick, int toTick) {
+        eraseTickRangeByTrack(m_soundPresetsByTrack, fromTick, toTick);
+        eraseTickRangeByTrack(m_textArticulationsByTrack, fromTick, toTick);
+        eraseTickRangeByTrack(m_syllablesByTrack, fromTick, toTick);
+        eraseTickRangeByTrack(m_playTechniquesByTrack, fromTick, toTick);
+    };
+
+    if (timeline.empty()) {
+        eraseRange(tickFrom, tickTo);
+    } else {
+        for (const PlaybackTimelineSegment& segment : timeline) {
+            const int fromTick = std::max(tickFrom, segment.tick);
+            const int toTick = std::min(tickTo, segment.endTick - 1);
+            if (fromTick > toTick) {
+                continue;
+            }
+
+            const int offset = segment.utick - segment.tick;
+
+            eraseRange(fromTick + offset, toTick + offset);
+        }
+    }
+
+    eraseTickRangeByTrack(m_multiVerseLyricsPositionMap, tickFrom, tickTo);
 
     muse::remove_if(m_currentVerseNumByChordRest, [trackFrom, trackTo, tickFrom, tickTo](const auto& pair) {
         const track_idx_t track = pair.first->track();
@@ -544,7 +585,7 @@ void PlaybackContext::handleSegmentAnnotations(const Segment* segment, const int
     }
 }
 
-void PlaybackContext::handleSegmentElements(const RepeatSegment* repeat, const Segment* segment,
+void PlaybackContext::handleSegmentElements(const PlaybackTimelineSegment& repeat, const Segment* segment,
                                             const int segmentPositionTick,
                                             const track_idx_t trackFrom, const track_idx_t trackTo,
                                             std::vector<const MeasureRepeat*>& foundMeasureRepeats)
@@ -667,6 +708,27 @@ void PlaybackContext::handleMeasureRepeats(const std::vector<const MeasureRepeat
     }
 }
 
+//! NOTE: [our addition] The dynamics curve is read by utick, and the loop passes are uticks too, so
+//! the curve has to be laid out the same way the timeline is: the loop region repeated in place and
+//! everything after it moved up by (passes - 1) loop lengths. Without this every pass would be
+//! played at whatever level the score happens to end with - heard != seen.
+static void expandCurveForLoop(const mu::engraving::AutomationCurve& curve, const PlaybackLoopExpansion& loop,
+                               mu::engraving::AutomationCurve& result)
+{
+    const int length = loop.loopLength();
+
+    for (const auto& [tick, point] : curve) {
+        if (tick < loop.loopInUtick || tick >= loop.loopOutUtick) {
+            result.insert_or_assign(loop.fromBaseUtick(tick), point);
+            continue;
+        }
+
+        for (int pass = 0; pass < loop.passes; ++pass) {
+            result.insert_or_assign(tick + pass * length, point);
+        }
+    }
+}
+
 const mu::engraving::AutomationCurve* PlaybackContext::dynamicsCurve(const track_idx_t trackIdx) const
 {
     auto cacheIt = m_dynamicsCurveByTrack.find(trackIdx);
@@ -710,11 +772,21 @@ const mu::engraving::AutomationCurve* PlaybackContext::dynamicsCurve(const track
         }
     }
 
+    if (curve && m_score) {
+        const PlaybackLoopExpansion& loop = m_score->playbackLoopExpansion();
+        if (loop.isActive() && !curve->empty()) {
+            mu::engraving::AutomationCurve& expanded = m_loopExpandedDynamicsCurves[trackIdx];
+            expanded.clear();
+            expandCurveForLoop(*curve, loop, expanded);
+            curve = &expanded;
+        }
+    }
+
     m_dynamicsCurveByTrack.emplace(trackIdx, curve);
     return curve;
 }
 
-bool PlaybackContext::hasOnlyOneLyricsVerse(const RepeatSegment* repeat, const track_idx_t track) const
+bool PlaybackContext::hasOnlyOneLyricsVerse(const PlaybackTimelineSegment& repeat, const track_idx_t track) const
 {
     if (m_multiVerseLyricsPositionMap.empty()) {
         return true;
@@ -725,8 +797,8 @@ bool PlaybackContext::hasOnlyOneLyricsVerse(const RepeatSegment* repeat, const t
         return true;
     }
 
-    const int startTick = repeat->tick;
-    const int endTick = repeat->endTick();
+    const int startTick = repeat.tick;
+    const int endTick = repeat.endTick;
     const auto start = trackIt->second.lower_bound(startTick);
     const auto end = trackIt->second.lower_bound(endTick);
 

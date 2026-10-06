@@ -86,6 +86,10 @@ public:
     virtual void addLoopBoundary(LoopBoundaryType boundaryType, muse::midi::tick_t tick) = 0;
     virtual void setLoopBoundariesEnabled(bool enabled) = 0;
     virtual bool isLoopEnabled() const = 0;
+    //! NOTE: [our addition] True when the loop is played as an expansion of the playback timeline
+    //! (extra repeats, no seek back) instead of being looped by the audio player. See
+    //! engraving/playback/playbackloopexpansion.h
+    virtual bool isLoopExpanded() const = 0;
     virtual muse::async::Channel<bool> loopEnabledChanged() const = 0;
     virtual const LoopBoundaries& loopBoundaries() const = 0;
     virtual muse::async::Notification loopBoundariesChanged() const = 0;

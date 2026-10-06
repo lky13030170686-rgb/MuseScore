@@ -1622,6 +1622,18 @@ void Score::setTempoTimelineOverride(std::optional<TempoTimeline> timeline)
     masterScore()->setTempoTimelineOverride(std::move(timeline));
 }
 
+//! NOTE: [our addition] See PlaybackLoopExpansion. Playback-only state, so it lives on the master
+//! score next to the loop boundaries themselves and is shared by the score and its excerpts.
+const PlaybackLoopExpansion& Score::playbackLoopExpansion() const
+{
+    return masterScore()->playbackLoopExpansion();
+}
+
+void Score::setPlaybackLoopExpansion(const PlaybackLoopExpansion& expansion)
+{
+    masterScore()->setPlaybackLoopExpansion(expansion);
+}
+
 //---------------------------------------------------------
 //   scanElementsInRange
 //---------------------------------------------------------
