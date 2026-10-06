@@ -1829,8 +1829,15 @@ Item {
                                     continue
                                 }
 
+                                //! ⚠️ 手柄要和控制点**一眼分得开**：记谱页车道上的同一个手柄也改了
+                                //! （用户 2026-10-06 报「曲点与节点样式有点相似」）。
+                                //! 只把轮廓从圆改成方不够 —— 6px 下一圈描边的圆和一个方块几乎一样。
+                                //! 所以：**大小**（9px vs 半径 3 的 6px）+ **实心方块 vs 圆** +
+                                //! 先描一圈背景色当"垫圈"（曲线从方块下穿过时不会和它糊在一起）。
+                                ctx.fillStyle = root.backgroundColor
+                                ctx.fillRect(bend.x - 6, bend.y - 6, 12, 12)
                                 ctx.fillStyle = root.cursorColor
-                                ctx.fillRect(bend.x - 3, bend.y - 3, 6, 6)
+                                ctx.fillRect(bend.x - 4.5, bend.y - 4.5, 9, 9)
                             }
 
                             //! 控制点：用户的实心，记号的空心（记号生成的点不给删，画成空心区分）。
