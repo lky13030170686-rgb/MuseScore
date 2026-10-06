@@ -23,6 +23,7 @@
 #pragma once
 
 #include <QObject>
+#include <QHash>
 #include <QVariantList>
 #include <QVariantMap>
 #include <qqmlintegration.h>
@@ -81,6 +82,18 @@ class MidiEditorModel : public QObject, public muse::Contextable, public muse::a
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoRedoChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY undoRedoChanged)
 
+    //! 视图状态（滚动 / 横向缩放 / 选中的谱表 / 力度车道与 Curve 两个开关）。
+    //!
+    //! ⚠️ 为什么记在**模型**上：这一页的 QML（central）**只在页面可见时存在** —— `DockPage.qml`
+    //! 里 central 是个 `Loader`，`sourceComponent: visible ? central : null`，所以一离开 MIDI 页
+    //! 整个 `MidiEditorView` 就被销毁、再回来是全新的一份 ⇒ 状态全回初始态。
+    //! 模型不是：`MidiEditorModel {}` 声明在 `MidiEditorPage.qml`（页面对象本身）里，跨页面切换存活。
+    //! 记谱页之所以"记得住"，也是同一个道理 —— 它的缩放/滚动存在 C++ 的 `NotationViewState` 里。
+    //!
+    //! 按乐谱分开记：和记谱页一样，"换一份谱子就是另一套视图"。
+    Q_PROPERTY(QVariantMap viewState READ viewState NOTIFY viewStateChanged)
+    Q_PROPERTY(QString viewStateKey READ viewStateKey NOTIFY viewStateChanged)
+
     muse::ContextInject<context::IGlobalContext> context = { this };
 
     //! The playback position and the solo state are the playback module's, not ours: this page only
@@ -110,6 +123,13 @@ public:
 
     bool canUndo() const;
     bool canRedo() const;
+
+    QVariantMap viewState() const { return m_viewState; }
+    QString viewStateKey() const { return m_viewStateKey; }
+
+    //! 视图离开页面时把自己的状态交回来（QML 侧在 `Component.onDestruction` 里调）。
+    //! 之后重建的视图会用 `viewState` 把自己摆回原样。
+    Q_INVOKABLE void setViewState(const QVariantMap& state);
 
     Q_INVOKABLE void init();
 
@@ -204,6 +224,7 @@ signals:
     void undoRedoChanged();
     void loopChanged();
     void soloChanged();
+    void viewStateChanged();
 
 private:
     void reload();
@@ -268,5 +289,10 @@ private:
     int m_soloStaff = -1;
 
     INotationPtr m_notation;
+
+    //! 视图状态：当前乐谱的那份 + 按乐谱分开存的所有份（见 viewState 属性的说明）。
+    QVariantMap m_viewState;
+    QString m_viewStateKey;
+    QHash<QString, QVariantMap> m_viewStateByScore;
 };
 }

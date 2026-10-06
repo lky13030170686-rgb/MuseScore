@@ -25,6 +25,7 @@
 #include <algorithm>
 
 #include "engraving/dom/measure.h"
+#include "engraving/dom/masterscore.h"
 #include "engraving/dom/part.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/staff.h"
@@ -67,6 +68,32 @@ INotationPlaybackPtr MidiEditorModel::currentPlayback() const
 {
     INotationPtr notation = context()->currentNotation();
     return notation ? notation->masterNotation()->playback() : nullptr;
+}
+
+//! 视图状态按**乐谱**分开记（与记谱页的视图状态一样）。键取工程文件路径；
+//! 还没存过盘的谱子用 EID 兜底 —— 同一份谱子在会话里始终是同一个键。
+static QString viewStateKeyForScore(const Score* score)
+{
+    const MasterScore* master = score ? score->masterScore() : nullptr;
+    if (!master) {
+        return QString();
+    }
+
+    const IFileInfoProviderPtr fileInfo = master->fileInfo();
+    if (fileInfo && !fileInfo->path().empty()) {
+        return fileInfo->path().toQString();
+    }
+
+    return QString::fromStdString(master->eid().toStdString());
+}
+
+void MidiEditorModel::setViewState(const QVariantMap& state)
+{
+    m_viewState = state;
+
+    if (!m_viewStateKey.isEmpty()) {
+        m_viewStateByScore.insert(m_viewStateKey, state);
+    }
 }
 
 Note* MidiEditorModel::noteAt(int row) const
@@ -152,6 +179,12 @@ void MidiEditorModel::connectToCurrentScore()
     if (!score) {
         return;
     }
+
+    //! 换乐谱：换成那份乐谱自己的视图状态（滚动/缩放/选中的谱表/开关）。
+    //! 视图若活着就会收到通知并重新摆位；视图若是刚建的，它会自己来读。
+    m_viewStateKey = viewStateKeyForScore(score);
+    m_viewState = m_viewStateByScore.value(m_viewStateKey);
+    emit viewStateChanged();
 
     //! NOTE: the notation page and this page share one score, so an edit made there has to show up
     //!       here and vice versa. `changesChannel` is the data-changed channel of the engraving

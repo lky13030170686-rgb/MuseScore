@@ -59,6 +59,138 @@ Item {
     //! diminuendo or an fp is. Both need a left-drag in the same strip, hence a mode.
     property bool automationMode: false
 
+    // ── 状态记忆：离开 MIDI 页再回来不该回到初始态 ────────────────────────────
+    //!
+    //! ⚠️ 这一页的 QML **只在页面可见时存在**：`DockPage.qml` 里 central 是个 `Loader`，
+    //! `sourceComponent: (completed && visible) ? central : null` —— 一切到别的页面，本视图就被销毁，
+    //! 再回来是全新的一份，于是滚动/缩放/选中的谱表/两个开关全回初始态（用户 2026-10-06 报的）。
+    //! 记谱页没有这个问题，因为它的缩放/滚动存在 C++ 的 `NotationViewState` 里，不随视图销毁。
+    //! 这里照同样的思路：状态交给**模型**（它声明在 `MidiEditorPage.qml` 的页面对象里，跨页面切换存活）。
+    //!
+    //! 记的是"视图自己的"状态：选中的谱表、横向缩放、两个滚动偏移、力度车道与 Curve 两个开关。
+    //! ⚠️ 其余状态本来就不需要记 —— 播放头在播放控制器里、循环区间在乐谱上（loop in/out）、
+    //! solo 在混音器那条轨上、混音器面板的开合由 dock 自己按页面存取。
+    property var appliedStateKey: null
+    property real pendingScrollX: 0
+    property real pendingScrollY: 0
+    //! 恢复的滚动还没"落定"（视口尺寸可能还没量出来，见 applyPendingScroll）
+    property bool scrollRestorePending: false
+    //! 视图是否已经"摆好位"（读完模型里的状态）。
+    //! ⚠️ **它是一道闸**：新视图刚建出来时，所有属性都还是默认值，而这时候任何一次属性变化都会
+    //! 触发 `syncViewState()` —— **拿默认值把模型里记着的状态覆盖掉** ✗（探针实测：存进去
+    //! `scrollX=600`，再读出来是 0）。所以只有摆好位之后才允许写回。
+    property bool viewReady: false
+
+    //! 状态一变就交回模型。
+    //!
+    //! ⚠️ **闸在 `viewReady` 上**（见上面那条说明）：视图刚建出来 / 正在被拆解时，属性都是默认值，
+    //! 那些变化也会走到这里 —— 放过去就会用默认值把模型里记着的东西覆盖掉。
+    //! 闸门由 `Component.onDestruction` 关上（销毁时只碰自己的属性，不碰模型 ✓）。
+    function syncViewState() {
+        if (model === null || !viewReady) {
+            return
+        }
+
+        model.setViewState({
+            "staff": currentStaff,
+            "pixelsPerTick": pixelsPerTick,
+            "scrollX": scrollX,
+            "scrollY": scrollY,
+            "velocityLane": velocityLaneVisible,
+            "automationMode": automationMode
+        })
+    }
+
+    //! 把模型里记着的那份状态摆回来。
+    //! 顺序有讲究：先谱表（音域跟着它变）→ 再缩放（内容宽度跟着它变）→ 最后滚动
+    //! （`maxScrollX/Y` 要等布局算完，所以推到下一帧）。
+    function applyViewState() {
+        if (model === null || !hasScore) {
+            return
+        }
+
+        var state = model.viewState
+        if (!state) {
+            return
+        }
+
+        if (state.velocityLane !== undefined) {
+            velocityLaneVisible = state.velocityLane
+        }
+        if (state.automationMode !== undefined) {
+            automationMode = state.automationMode
+        }
+        if (state.pixelsPerTick !== undefined) {
+            pixelsPerTick = clamp(state.pixelsPerTick, 0.01, 4.0)
+        }
+        if (state.staff !== undefined) {
+            selectStaff(state.staff)
+        }
+
+        pendingScrollX = state.scrollX !== undefined ? state.scrollX : 0
+        pendingScrollY = state.scrollY !== undefined ? state.scrollY : 0
+        scrollRestorePending = true
+        viewReady = true
+        Qt.callLater(applyPendingScroll)
+    }
+
+    //! ⚠️ **这里不夹取**：恢复的那一刻布局可能还没算完（`maxScrollX/Y` 还是 0），
+    //! 夹一下就把位置夹成 0 —— 用户明明拉到中间，回来却回到最左边（真事，探针量到过：
+    //! 存进去 600、读出来 0）。正常交互时的夹取由 `clampScroll()` / 滚轮 / 缩放负责。
+    function applyPendingScroll() {
+        scrollX = Math.max(0, pendingScrollX)
+        scrollY = Math.max(0, pendingScrollY)
+    }
+
+    //! 视口量出来之后把刚恢复的滚动夹回有效范围（把"夹取"从错误的时机挪到正确的时机）。
+    function settleRestoredScroll() {
+        if (!scrollRestorePending) {
+            return
+        }
+        if (maxScrollX <= 0 && maxScrollY <= 0) {
+            return // 还没量出来，继续等下一次
+        }
+
+        scrollRestorePending = false
+        clampScroll()
+    }
+
+    //! 只在"这一份乐谱还没摆过状态"时摆一次 —— 模型在每次编辑后都会发 `scoreChanged`，
+    //! 若每次都摆，用户一边编辑一边滚动就会被打回原位。
+    function applyViewStateIfNeeded() {
+        if (model === null || !hasScore) {
+            return
+        }
+
+        var key = model.viewStateKey
+        if (appliedStateKey === key) {
+            return
+        }
+
+        appliedStateKey = key
+        applyViewState()
+    }
+
+    Component.onCompleted: applyViewStateIfNeeded()
+
+    //! 销毁时把闸关上：属性在拆解过程中可能被复位，绝不能让那些默认值写回模型
+    //! （探针实测过：存进去的 `scrollX=600` 就是这样被 0 覆盖掉的）。
+    Component.onDestruction: viewReady = false
+
+    Connections {
+        target: root.model
+
+        function onScoreChanged() {
+            root.applyViewStateIfNeeded()
+        }
+
+        //! 模型换了乐谱（或刚把某份乐谱的状态读出来）：允许重新摆一次。
+        function onViewStateChanged() {
+            root.appliedStateKey = null
+            root.applyViewStateIfNeeded()
+        }
+    }
+
     //! The Dynamics automation of the selected staff, as
     //! { tick, value, authored, hasEase, controlT, controlValue, arrival } with the values in 0..1.
     //! Read from the model rather than bound, because it is a Q_INVOKABLE - it is refreshed whenever
@@ -883,10 +1015,20 @@ Item {
         return best
     }
 
-    onScrollXChanged: repaintAll()
-    onScrollYChanged: repaintAll()
+    onScrollXChanged: {
+        repaintAll()
+        syncViewState()
+    }
+    onScrollYChanged: {
+        repaintAll()
+        syncViewState()
+    }
     onRowHeightChanged: repaintAll()
-    onPixelsPerTickChanged: repaintAll()
+    onPixelsPerTickChanged: {
+        repaintAll()
+        syncViewState()
+    }
+    onVelocityLaneVisibleChanged: syncViewState()
     onNotesChanged: {
         //! The model has reported back, so the stored values now match what was painted; the trail
         //! has done its job and the bars switch over to the real data without a visible step.
@@ -913,6 +1055,7 @@ Item {
         automationDragStaff = -1
         automationNewDragging = false
         repaintAll()
+        syncViewState()
     }
     onStaffCountChanged: {
         //! A different score can have fewer staves; keep the selection inside the range.
@@ -933,6 +1076,7 @@ Item {
         }
 
         repaintAll()
+        syncViewState()
     }
     onAutomationPointsChanged: repaintAll()
     onPlaybackTickChanged: {
@@ -946,6 +1090,9 @@ Item {
     onLoopEnabledChanged: repaintAll()
     onHeightChanged: repaintAll()
     onWidthChanged: repaintAll()
+    //! 内容尺寸/视口一变，就把"刚恢复、还没落定"的滚动夹回有效范围（见 settleRestoredScroll）。
+    onMaxScrollXChanged: settleRestoredScroll()
+    onMaxScrollYChanged: settleRestoredScroll()
 
     // ── toolbar ──────────────────────────────────────────────────────────────
     Rectangle {
