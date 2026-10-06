@@ -92,6 +92,7 @@ public:
 
     MOCK_METHOD(void, seekElement, (const engraving::EngravingItem*, bool), (override));
     MOCK_METHOD(void, seekBeat, (int, int, bool), (override));
+    MOCK_METHOD(void, seekTick, (int, bool), (override));
 
     // Backing/reference audio track
     MOCK_METHOD(muse::Ret, importAudioTrack, (), (override));

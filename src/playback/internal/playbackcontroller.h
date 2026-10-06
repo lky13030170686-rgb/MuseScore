@@ -140,6 +140,10 @@ public:
     void seekElement(const engraving::EngravingItem* element, bool flushSound = true) override;
     void seekBeat(int measureIndex, int beatIndex, bool flushSound = true) override;
 
+    //! See IPlaybackController::seekTick(). Used by the MIDI page's piano roll, which has no elements
+    //! to aim at and needs better than beat accuracy.
+    void seekTick(int tick, bool flushSound = true) override;
+
     muse::Ret importAudioTrack() override;
     const std::vector<muse::audio::TrackId>& audioTrackIds() const override;
     muse::async::Channel<muse::audio::TrackId> audioTrackAdded() const override;

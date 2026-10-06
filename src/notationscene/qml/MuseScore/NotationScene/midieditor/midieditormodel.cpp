@@ -36,6 +36,7 @@
 #include "notation/inotation.h"
 #include "notation/inotationelements.h" // IWYU pragma: keep
 #include "notation/inotationplayback.h"
+#include "notation/inotationsolomutestate.h"
 #include "notation/inotationundostack.h"
 
 using namespace mu::engraving;
@@ -62,6 +63,12 @@ Score* MidiEditorModel::currentScore() const
     return notation->elements()->msScore();
 }
 
+INotationPlaybackPtr MidiEditorModel::currentPlayback() const
+{
+    INotationPtr notation = context()->currentNotation();
+    return notation ? notation->masterNotation()->playback() : nullptr;
+}
+
 Note* MidiEditorModel::noteAt(int row) const
 {
     if (row < 0 || row >= int(m_entries.size())) {
@@ -86,13 +93,48 @@ void MidiEditorModel::init()
         updatePlaybackState();
     });
 
+    //! 验证钩子：等播放真的初始化好再动手 —— 播放器是播放初始化时才建出来的，太早 seek 会在
+    //! 上游的 `IF_ASSERT_FAILED(currentPlayer())` 上留一条断言（看起来像回归，其实只是太早）。
+    m_demoPlaybackPending = qEnvironmentVariableIsSet("MUSE_MIDIEDITOR_DEMO_PLAYBACK");
+    playbackController()->playbackInitedChanged().onReceive(this, [this](bool inited) {
+        if (inited) {
+            applyDemoPlaybackIfPending();
+        }
+    });
+
     connectToCurrentScore();
     reload();
+
+    applyDemoPlaybackIfPending();
+}
+
+void MidiEditorModel::applyDemoPlaybackIfPending()
+{
+    if (!m_demoPlaybackPending || !m_hasScore || !playbackController()->isPlaybackInited()) {
+        return;
+    }
+
+    if (m_measures.size() < 2) {
+        return;
+    }
+
+    m_demoPlaybackPending = false;
+
+    const int inTick = m_measures[1].toMap()["tick"].toInt();
+    const int lastIndex = std::min<int>(3, int(m_measures.size()) - 1);
+    const int outTick = m_measures[size_t(lastIndex)].toMap()["endTick"].toInt();
+
+    seekTick(inTick);
+    setLoopRange(inTick, outTick);
 }
 
 void MidiEditorModel::connectToCurrentScore()
 {
     disconnectFromCurrentScore();
+
+    //! A different score (or a fresh one) owns its own solo state; whatever this page soloed in the
+    //! previous project is not ours to carry over.
+    m_soloStaff = -1;
 
     m_notation = context()->currentNotation();
     if (!m_notation) {
@@ -125,6 +167,26 @@ void MidiEditorModel::connectToCurrentScore()
             emit undoRedoChanged();
         });
     }
+
+    //! The loop region is the score's own (the notation page's markers point at the same two ticks),
+    //! so the roll has to follow it when it changes there or in the playback toolbar.
+    if (INotationPlaybackPtr playback = m_notation->masterNotation()->playback()) {
+        playback->loopBoundariesChanged().onNotify(this, [this]() {
+            emit loopChanged();
+        });
+
+        playback->loopEnabledChanged().onReceive(this, [this](bool) {
+            emit loopChanged();
+        });
+    }
+
+    //! Same for solo: the mixer and this page's "only this staff" toggle write one state, so a change
+    //! made in the mixer has to reach the toggle.
+    if (INotationSoloMuteStatePtr soloMute = m_notation->soloMuteState()) {
+        soloMute->trackSoloMuteStateChanged().onReceive(this, [this](const InstrumentTrackId&, const INotationSoloMuteState::SoloMuteState&) {
+            emit soloChanged();
+        });
+    }
 }
 
 void MidiEditorModel::disconnectFromCurrentScore()
@@ -137,6 +199,15 @@ void MidiEditorModel::disconnectFromCurrentScore()
 
         if (INotationUndoStackPtr undoStack = m_notation->undoStack()) {
             undoStack->stackChanged().disconnect(this);
+        }
+
+        if (INotationPlaybackPtr playback = m_notation->masterNotation()->playback()) {
+            playback->loopBoundariesChanged().disconnect(this);
+            playback->loopEnabledChanged().disconnect(this);
+        }
+
+        if (INotationSoloMuteStatePtr soloMute = m_notation->soloMuteState()) {
+            soloMute->trackSoloMuteStateChanged().disconnect(this);
         }
     }
 
@@ -275,6 +346,190 @@ void MidiEditorModel::updatePlaybackState()
     m_isPlaying = playing;
 
     emit playbackTickChanged();
+}
+
+// ── playback: where it plays from, what it loops, and what it plays ──────────────────────────────
+
+int MidiEditorModel::loopInTick() const
+{
+    INotationPlaybackPtr playback = currentPlayback();
+    return playback ? playback->loopBoundaries().loopInTick.ticks() : 0;
+}
+
+int MidiEditorModel::loopOutTick() const
+{
+    INotationPlaybackPtr playback = currentPlayback();
+    return playback ? playback->loopBoundaries().loopOutTick.ticks() : 0;
+}
+
+bool MidiEditorModel::loopEnabled() const
+{
+    INotationPlaybackPtr playback = currentPlayback();
+    return playback ? playback->isLoopEnabled() : false;
+}
+
+void MidiEditorModel::seekTick(int tick)
+{
+    const int wanted = std::max(0, tick);
+
+    playbackController()->seekTick(wanted);
+
+    //! Publish the new position right away rather than waiting for the audio player to report it: while
+    //! stopped it may never do so (upstream's seekRawTick() updates its own tick for exactly this
+    //! reason), and the playhead is the one thing the user is looking at after clicking in the ruler.
+    if (!qFuzzyCompare(double(wanted) + 1.0, m_playbackTick + 1.0)) {
+        m_playbackTick = double(wanted);
+        emit playbackTickChanged();
+    }
+}
+
+QVariantMap MidiEditorModel::loopRangeFromDrag(int draggedTick, int releasedTick, int snapTicks) const
+{
+    const MidiLoopRange range = midiLoopRangeFromDrag(draggedTick, releasedTick, m_totalTicks, snapTicks);
+
+    QVariantMap result;
+    result["inTick"] = range.inTick;
+    result["outTick"] = range.outTick;
+    result["valid"] = range.valid;
+    return result;
+}
+
+void MidiEditorModel::setLoopRange(int inTick, int outTick)
+{
+    INotationPlaybackPtr playback = currentPlayback();
+    if (!playback || outTick <= inTick) {
+        return;
+    }
+
+    int in = std::max(0, inTick);
+    int out = std::max(in + 1, outTick);
+
+    //! ⚠️ Upstream reads a boundary tick of 0, 1 or 2 as a `BoundaryTick` (see inotationplayback.h):
+    //! 1 would mean "wherever the score cursor is" and 2 "the end of the score" - the loop would land
+    //! somewhere nobody asked for. midiLoopRangeFromDrag() cannot produce those, since it snaps to a
+    //! grid step; this is the belt-and-braces for any other caller. 0 is safe either way
+    //! (FirstScoreTick is the start of the score).
+    if (in == 1 || in == 2) {
+        in = 0;
+    }
+    if (out == 1 || out == 2) {
+        out = 3;
+    }
+
+    //! In first: addLoopIn() pushes an out point at or before it to the end of the score, so writing
+    //! them in this order never leaves the loop momentarily inside out.
+    playback->addLoopBoundary(LoopBoundaryType::LoopIn, in);
+    playback->addLoopBoundary(LoopBoundaryType::LoopOut, out);
+    playback->setLoopBoundariesEnabled(true);
+    emit loopChanged();
+}
+
+void MidiEditorModel::clearLoop()
+{
+    INotationPlaybackPtr playback = currentPlayback();
+    if (!playback) {
+        return;
+    }
+
+    //! Clear the two points rather than only the enable flag: the notation page draws its markers from
+    //! them, and "remove the loop" has to look the same on both pages. Out == In == 0 is the "no loop"
+    //! state the score starts in.
+    playback->addLoopBoundary(LoopBoundaryType::LoopIn, 0);
+    playback->addLoopBoundary(LoopBoundaryType::LoopOut, 0);
+    playback->setLoopBoundariesEnabled(false);
+    emit loopChanged();
+}
+
+bool MidiEditorModel::staffIsSoloed(int staffIndex) const
+{
+    Score* score = currentScore();
+    if (!score || staffIndex < 0 || staffIndex >= int(score->nstaves())) {
+        return false;
+    }
+
+    const Staff* staff = score->staff(staffIndex);
+    const Part* part = staff ? staff->part() : nullptr;
+    if (!part) {
+        return false;
+    }
+
+    const InstrumentTrackIdList trackIds = part->instrumentTrackIdList();
+    if (trackIds.empty()) {
+        return false;
+    }
+
+    for (const InstrumentTrackId& trackId : trackIds) {
+        //! Read back rather than remembering: a solo the user switched off in the mixer must reach
+        //! this page's toggle too.
+        if (!playbackController()->trackSoloMuteState(trackId).solo) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void MidiEditorModel::setStaffSolo(int staffIndex, bool solo)
+{
+    Score* score = currentScore();
+    if (!score || staffIndex < 0 || staffIndex >= int(score->nstaves())) {
+        return;
+    }
+
+    const Staff* staff = score->staff(staffIndex);
+    const Part* part = staff ? staff->part() : nullptr;
+    if (!part) {
+        return;
+    }
+
+    //! NOTE: this writes the mixer's own solo state (the same one the mixer panel and the notation
+    //! page's mixer edit), so the channel strip lights up and the engine mutes the others - "only this
+    //! staff" is not a second, private notion of solo.
+    for (const InstrumentTrackId& trackId : part->instrumentTrackIdList()) {
+        INotationSoloMuteState::SoloMuteState state = playbackController()->trackSoloMuteState(trackId);
+        state.solo = solo;
+        playbackController()->setTrackSoloMuteState(trackId, state);
+    }
+}
+
+bool MidiEditorModel::soloActive() const
+{
+    return m_soloStaff >= 0 && staffIsSoloed(m_soloStaff);
+}
+
+void MidiEditorModel::setSoloStaff(int staffIndex)
+{
+    Score* score = currentScore();
+    if (!score || staffIndex < 0 || staffIndex >= int(score->nstaves())) {
+        return;
+    }
+
+    //! Moving to another staff hands the solo over: the one this page took is released, so the solo
+    //! follows the staff being edited rather than piling up.
+    if (m_soloStaff >= 0 && m_soloStaff != staffIndex) {
+        setStaffSolo(m_soloStaff, false);
+    }
+
+    setStaffSolo(staffIndex, true);
+    m_soloStaff = staffIndex;
+    emit soloChanged();
+}
+
+void MidiEditorModel::clearSoloStaff()
+{
+    if (m_soloStaff < 0) {
+        return;
+    }
+
+    const int staff = m_soloStaff;
+    m_soloStaff = -1;
+    setStaffSolo(staff, false);
+    emit soloChanged();
+}
+
+double MidiEditorModel::followScrollX(double scrollX, double playheadX, double viewportWidth, double maxScrollX) const
+{
+    return midiFollowScrollX(scrollX, playheadX, viewportWidth, maxScrollX);
 }
 
 void MidiEditorModel::setNotePitch(int row, int pitch)

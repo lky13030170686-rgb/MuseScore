@@ -222,6 +222,10 @@ void PlaybackControllerStub::seekBeat(int, int, bool)
 {
 }
 
+void PlaybackControllerStub::seekTick(int, bool)
+{
+}
+
 muse::Ret PlaybackControllerStub::importAudioTrack()
 {
     return muse::make_ret(muse::Ret::Code::NotSupported);

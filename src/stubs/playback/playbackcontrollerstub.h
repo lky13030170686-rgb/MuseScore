@@ -87,6 +87,7 @@ public:
 
     void seekElement(const engraving::EngravingItem* element, bool flushSound = true) override;
     void seekBeat(int measureIndex, int beatIndex, bool flushSound = true) override;
+    void seekTick(int tick, bool flushSound = true) override;
 
     // Backing/reference audio track: unavailable without the playback module.
     muse::Ret importAudioTrack() override;

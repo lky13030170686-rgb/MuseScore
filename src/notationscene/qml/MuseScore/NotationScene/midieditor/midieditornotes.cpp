@@ -612,4 +612,53 @@ bool applyAutomationPointMove(Score* score, int staffIndex, int fromTick, int to
 
     return true;
 }
+
+MidiLoopRange midiLoopRangeFromDrag(int draggedTick, int releasedTick, int totalTicks, int snapTicks)
+{
+    MidiLoopRange range;
+
+    const int snap = std::max(1, snapTicks);
+    const int lastTick = std::max(0, totalTicks);
+
+    //! Snapping happens first, so both ends land on the grid whatever the drag did - and so the
+    //! BoundaryTick trap described in the header cannot be reached (a snapped tick is either 0 or at
+    //! least one grid step, never 1 or 2).
+    const auto snapped = [snap, lastTick](int tick) {
+                             const int step = int(std::lround(double(tick) / double(snap))) * snap;
+                             return std::min(std::max(0, step), lastTick);
+                         };
+
+    const int a = snapped(draggedTick);
+    const int b = snapped(releasedTick);
+
+    range.inTick = std::min(a, b);
+    range.outTick = std::max(a, b);
+
+    //! A drag that never left its grid step is a click, not a range. Without this, a plain click in
+    //! the ruler would leave a loop of zero length behind and quietly swallow the seek.
+    range.valid = (range.outTick - range.inTick) >= snap;
+
+    return range;
+}
+
+double midiFollowScrollX(double scrollX, double playheadX, double viewportWidth, double maxScrollX)
+{
+    if (viewportWidth <= 0.0) {
+        return scrollX;
+    }
+
+    const double margin = viewportWidth * midiFollowMargin;
+
+    //! Inside the band: hands off. Following on every single tick would make the score creep under the
+    //! playhead even when it is perfectly readable, and would fight the user's own scrolling.
+    if (playheadX >= margin && playheadX <= viewportWidth - margin) {
+        return scrollX;
+    }
+
+    //! Outside it: put the playhead back at the left end of the band, i.e. scroll by exactly what is
+    //! missing. The clamp matters near both ends of the score, where the requested offset simply
+    //! cannot be honoured.
+    const double wanted = scrollX + (playheadX - margin);
+    return std::min(std::max(0.0, wanted), std::max(0.0, maxScrollX));
+}
 }

@@ -28,9 +28,11 @@
 #include "translation.h"
 
 #include "notation/imasternotation.h"
+#include "notation/inotation.h"
 #include "notation/inotationautomation.h"
 #include "notation/inotationparts.h"
 #include "notation/inotationplayback.h"
+#include "notation/inotationsolomutestate.h"
 
 #include "project/inotationproject.h"
 
@@ -267,6 +269,27 @@ void MixerPanelModel::clear()
 
 void MixerPanelModel::setupConnections()
 {
+    //! The mixer is not the only thing that can solo or mute an instrument track. The MIDI page's
+    //! "play only this staff" switch writes the very same state - that is the whole point of it, one
+    //! solo rather than two - and muting hidden instruments on the notation page does as well. Without
+    //! this subscription the channel strip would keep the state it had when it was built, so its S
+    //! button would contradict what is actually being played.
+    //!
+    //! NOTE: read through `currentNotation()`, which is the same object the controller writes and
+    //! `trackSoloMuteState()` reads (IMasterNotation itself does not expose the solo state).
+    if (INotationPtr notation = context()->currentNotation()) {
+        if (INotationSoloMuteStatePtr soloMuteState = notation->soloMuteState()) {
+            soloMuteState->trackSoloMuteStateChanged().onReceive(
+                this, [this](const InstrumentTrackId& instrumentTrackId,
+                             const INotationSoloMuteState::SoloMuteState& state) {
+                const TrackId trackId = muse::value(controller()->instrumentTrackIdMap(), instrumentTrackId);
+                if (MixerChannelItem* item = findChannelItem(trackId)) {
+                    item->loadSoloMuteState(state);
+                }
+            });
+        }
+    }
+
     audioSettings()->auxSoloMuteStateChanged().onReceive(
         this, [this](const aux_channel_idx_t index,
                      notation::INotationSoloMuteState::SoloMuteState newSoloMuteState) {

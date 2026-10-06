@@ -221,4 +221,43 @@ bool applyAutomationPointMove(engraving::Score* score, int staffIndex, int fromT
 
 //! The default velocity shown for a note the user has never given an explicit velocity.
 int midiDisplayVelocity(int userVelocity);
+
+//! The loop range a drag in the roll's ruler describes, in score ticks.
+struct MidiLoopRange {
+    int inTick = 0;
+    int outTick = 0;
+
+    //! False when the drag was too short to mean a range (i.e. it was a click).
+    //!
+    //! That is not a detail of the maths but the whole gesture: "click in the ruler = play from here"
+    //! and "drag in the ruler = loop this" share one strip, so something has to tell them apart, and
+    //! one grid step is both the natural threshold and the smallest range worth looping.
+    bool valid = false;
+};
+
+//! Turns a ruler drag (in raw ticks, in whichever direction) into a loop range.
+//!
+//! Both ends snap to `snapTicks` and are clamped to `0..totalTicks`, the order of the two ticks does
+//! not matter, and a drag that stays inside one grid step comes back `valid == false` so the caller
+//! can treat it as a click instead.
+//!
+//! ⚠️ **Snapping is also what keeps the loop API out of a trap of its own**: upstream
+//! `INotationPlayback::addLoopBoundary()` reads the tick as one of `BoundaryTick` when it is 0, 1 or 2
+//! (`FirstScoreTick` / `SelectedNoteTick` / `LastScoreTick`, see inotationplayback.h) - so a loop
+//! boundary of "tick 1" silently means "wherever the score cursor is" and "tick 2" means "the end of
+//! the score". Every tick this function returns is a multiple of `snapTicks`, so only 0 can occur,
+//! and 0 means the same thing either way.
+MidiLoopRange midiLoopRangeFromDrag(int draggedTick, int releasedTick, int totalTicks, int snapTicks);
+
+//! Where to scroll so that the playhead stays visible while the score plays.
+//!
+//! `playheadX` is the playhead in viewport pixels (already scrolled). While it sits comfortably inside
+//! the viewport - `midiFollowMargin` of the width at each end - the scroll position is returned
+//! unchanged, so the score does not creep while playing. Once it leaves that band the view jumps just
+//! enough to put the playhead back at `midiFollowMargin` from the left edge, which is what makes a long
+//! score readable while it plays. The result is clamped to `0..maxScrollX`.
+double midiFollowScrollX(double scrollX, double playheadX, double viewportWidth, double maxScrollX);
+
+//! The fraction of the viewport width the playhead is kept away from the edges - see midiFollowScrollX().
+inline constexpr double midiFollowMargin = 0.15;
 }

@@ -1072,3 +1072,75 @@ TEST_F(MidiEditorNotesTests, TheLanesBendWriteReachesTheCurveAndUndoesInOneStep)
     EXPECT_NEAR(straight->controlT, 0.5, 1e-6);
     EXPECT_NEAR(straight->controlValue, 0.5, 1e-6);
 }
+
+//! 标尺上拖出来的一段，就是循环区间：两端按网格吸附、顺序无关、越界夹住。
+TEST_F(MidiEditorNotesTests, ARulerDragBecomesALoopOnTheGrid)
+{
+    const MidiLoopRange forward = midiLoopRangeFromDrag(500, 1400, 1920, 120);
+    EXPECT_TRUE(forward.valid);
+    EXPECT_EQ(forward.inTick, 480);
+    EXPECT_EQ(forward.outTick, 1440);
+
+    //! 反着拖是同一段：手势方向不该改变结果。
+    const MidiLoopRange backward = midiLoopRangeFromDrag(1400, 500, 1920, 120);
+    EXPECT_TRUE(backward.valid);
+    EXPECT_EQ(backward.inTick, forward.inTick);
+    EXPECT_EQ(backward.outTick, forward.outTick);
+
+    //! 拖到谱子外面去：夹在 [0, 总长] 里，而不是画出一段播不到的区域。
+    const MidiLoopRange beyond = midiLoopRangeFromDrag(-5000, 999999, 1920, 120);
+    EXPECT_TRUE(beyond.valid);
+    EXPECT_EQ(beyond.inTick, 0);
+    EXPECT_EQ(beyond.outTick, 1920);
+}
+
+//! 一格都没跨过去的一下，是"点一下"（定位播放起点），不是"拖一段"（循环）——
+//! 两者共用同一条标尺，判据就在这里。
+TEST_F(MidiEditorNotesTests, ARulerClickIsNotALoop)
+{
+    const MidiLoopRange sameCell = midiLoopRangeFromDrag(500, 520, 1920, 120);
+    EXPECT_FALSE(sameCell.valid);
+
+    const MidiLoopRange tiny = midiLoopRangeFromDrag(0, 2, 1920, 120);
+    EXPECT_FALSE(tiny.valid);
+
+    //! ⚠️ 顺便钉住那个上游陷阱：`addLoopBoundary()` 把 0/1/2 当 `BoundaryTick` 读
+    //! （1 = 谱面光标处、2 = 全曲末尾）。吸附之后**只可能**返回 0，不可能是 1 或 2。
+    for (int release = 0; release <= 240; ++release) {
+        const MidiLoopRange range = midiLoopRangeFromDrag(0, release, 1920, 120);
+        EXPECT_NE(range.inTick, 1);
+        EXPECT_NE(range.inTick, 2);
+        EXPECT_NE(range.outTick, 1);
+        EXPECT_NE(range.outTick, 2);
+    }
+
+    //! 一格就是一格：跨过去一格就算数。
+    EXPECT_TRUE(midiLoopRangeFromDrag(0, 120, 1920, 120).valid);
+}
+
+//! 播放时视口跟着走：在舒服的范围内**一动不动**（否则谱子会在播放头下自己爬），
+//! 出了范围才跳到左边留出 15% 余量的位置，并且被谱子的两端夹住。
+TEST_F(MidiEditorNotesTests, TheViewFollowsThePlayheadOnlyWhenItHasTo)
+{
+    const double viewport = 1000.0;
+    const double margin = viewport * midiFollowMargin;
+
+    //! 视野正中：不动。
+    EXPECT_DOUBLE_EQ(midiFollowScrollX(400.0, 500.0, viewport, 5000.0), 400.0);
+    EXPECT_DOUBLE_EQ(midiFollowScrollX(400.0, margin, viewport, 5000.0), 400.0);
+    EXPECT_DOUBLE_EQ(midiFollowScrollX(400.0, viewport - margin, viewport, 5000.0), 400.0);
+
+    //! 跑出右边：滚到"播放头回到左边余量处"为止 —— 900 要落回 150，于是滚动量 = 400 + 750。
+    const double outRight = midiFollowScrollX(400.0, viewport - margin + 50.0, viewport, 5000.0);
+    EXPECT_DOUBLE_EQ(outRight, 1150.0);
+
+    //! 跑出左边（用户往回拖了）：同样补回来 —— 400 + (-100 - 150) = 150。
+    EXPECT_DOUBLE_EQ(midiFollowScrollX(400.0, -100.0, viewport, 5000.0), 150.0);
+
+    //! 两端夹住：不会滚出一个空白的视口。
+    EXPECT_DOUBLE_EQ(midiFollowScrollX(0.0, -500.0, viewport, 5000.0), 0.0);
+    EXPECT_DOUBLE_EQ(midiFollowScrollX(4900.0, 5000.0, viewport, 5000.0), 5000.0);
+
+    //! 视口还没量出来时不动（第一帧）。
+    EXPECT_DOUBLE_EQ(midiFollowScrollX(123.0, 10.0, 0.0, 5000.0), 123.0);
+}

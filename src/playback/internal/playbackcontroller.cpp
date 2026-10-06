@@ -471,6 +471,18 @@ void PlaybackController::seekBeat(int measureIndex, int beatIndex, bool flushSou
     seekRawTick(notationPlayback()->beatToRawTick(measureIndex, beatIndex), flushSound);
 }
 
+void PlaybackController::seekTick(int tick, bool flushSound)
+{
+    if (!notationPlayback()) {
+        return;
+    }
+
+    // Same path as seekElement()/seekBeat(), minus the element and the beat grid: the caller already
+    // has a score tick. seekRawTick() maps it through the repeat list and publishes the new position
+    // right away, so this works while stopped as well as while playing.
+    seekRawTick(tick, flushSound);
+}
+
 void PlaybackController::seekRangeSelection()
 {
     if (!selection()->isRange()) {

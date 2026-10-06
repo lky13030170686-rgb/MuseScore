@@ -41,6 +41,12 @@ Item {
 
     property var model: null
 
+    //! 混音器面板是页面上的一个 DockPanel（见 MidiEditorPage.qml），视图不拥有它 ——
+    //! 这里只接两条线：`mixerOpen` 由页面喂进来（面板的真实开合状态，按钮据此显形），
+    //! 点按钮则发一个请求回去（由页面调面板自己的 open()/close()）。
+    property bool mixerOpen: false
+    signal mixerToggleRequested()
+
     // ── view parameters ──────────────────────────────────────────────────────
     property real rowHeight: 12
     property real pixelsPerTick: 0.09
@@ -176,6 +182,31 @@ Item {
     readonly property real maxScrollX: Math.max(0, contentWidth - viewportWidth)
     readonly property real maxScrollY: Math.max(0, contentHeight - viewportHeight)
 
+    // ── playback: 定位 / 循环 / 只播这个谱表 ─────────────────────────────────
+    //!
+    //! ⚠️ 这三件事**都不是这一页自己的状态**：定位走 `IPlaybackController::seekTick()`，循环写的是
+    //! 乐谱自己的 loop in/out（记谱页那两个循环标记指的就是这两个 tick），独奏写的是**混音器那条
+    //! 轨的 solo**。所以下面全是"从模型读回来"，而不是在 QML 里另存一份 —— 两页/混音器必须始终
+    //! 是同一个状态。
+
+    //! 播放头的位置就是上面那个 `playbackTick`（停止时也画：点一下标尺定位之后，
+    //! 用户要能看见自己点在哪 —— 原来的实现只在 `isPlaying` 时画，点完什么都看不到）。
+
+    readonly property int loopInTick: (model !== null && model.hasScore) ? model.loopInTick : 0
+    readonly property int loopOutTick: (model !== null && model.hasScore) ? model.loopOutTick : 0
+    readonly property bool loopEnabled: model !== null && model.hasScore && model.loopEnabled
+
+    //! 正在标尺上拖出来的循环区间（-1 = 没在拖）：拖动中只预览，松手才发一次命令。
+    property int loopDragAnchorTick: -1
+    property int loopDragPreviewTick: -1
+
+    //! 循环区间的吸附：1/16 音符（480 tick = 四分音符）。比这更细的循环没有音乐意义，
+    //! 而且吸附也是**绕开上游 `BoundaryTick` 陷阱**的手段（见 midiLoopRangeFromDrag 的说明）。
+    readonly property int loopSnapTicks: 120
+
+    //! "只播放当前谱表"—— 打开时把选中谱表的轨道 solo 掉（就是混音器上那个 solo）。
+    readonly property bool soloActive: model !== null && model.hasScore && model.soloActive
+
     // ── theme ────────────────────────────────────────────────────────────────
     readonly property color backgroundColor: ui.theme.backgroundPrimaryColor
     readonly property color panelColor: ui.theme.backgroundSecondaryColor
@@ -217,6 +248,12 @@ Item {
     readonly property int playSnapTicks: 60
 
     property int hoveredNoteIndex: -1
+
+    //! 网格上"点了一下空白"的定位（见 rollMouse 的 onPressed/onReleased）：
+    //! 按下时记下位置，松手时若既没抓到音符、也没怎么移动，就把播放位置挪到那儿 ——
+    //! 记谱页也是"点空白 = 把游标挪过去"，这一页没理由不一样。
+    property real rollPressX: 0
+    property int rollPressSeekTick: -1
 
     property bool velocityDragging: false
     //! Which staff the current velocity drag edits. The lane is split into one horizontal band per
@@ -394,6 +431,50 @@ Item {
         pixelsPerTick = clamp(viewportWidth / totalTicks, 0.01, 4.0)
         scrollX = 0
         repaintAll()
+    }
+
+    // ── playback: 定位 / 循环 / 跟随 ─────────────────────────────────────────
+
+    //! 把播放位置移到某个 tick —— 点标尺（或网格空白处）就是这一下。
+    //! 不做吸附：在钢琴卷帘里"从这里开始播"要能落在两个音之间，吸附反而挡住这件事。
+    function seekToTick(tick) {
+        if (!hasScore || model === null) {
+            return
+        }
+
+        model.seekTick(clamp(Math.round(tick), 0, totalTicks))
+    }
+
+    //! 标尺上拖出来的一段 → 循环区间。**数学在模型那一侧**（`midiLoopRangeFromDrag`，有单测）：
+    //! 顺序无关、按网格吸附、越界夹住，而且"没跨过一格"会返回 valid=false ⇒ 那就是一次点击。
+    function applyLoopDrag(anchorTick, releasedTick) {
+        if (!hasScore || model === null) {
+            return false
+        }
+
+        var range = model.loopRangeFromDrag(Math.round(anchorTick), Math.round(releasedTick), loopSnapTicks)
+        if (!range.valid) {
+            return false
+        }
+
+        model.setLoopRange(range.inTick, range.outTick)
+        return true
+    }
+
+    //! 播放时让视口跟着播放头走 —— **算在模型里**（`midiFollowScrollX`，有单测），这里只喂当前
+    //! 视口的四个数。没在播放时一个像素都不动：用户自己滚到哪里就停在哪里。
+    function followPlayhead() {
+        if (!isPlaying || !hasScore) {
+            return
+        }
+
+        var x = xForTick(playbackTick)
+        var next = model !== null
+                   ? model.followScrollX(scrollX, x, viewportWidth, maxScrollX)
+                   : scrollX
+        if (Math.abs(next - scrollX) > 0.5) {
+            scrollX = next
+        }
     }
 
     function noteIndexAt(x, y) {
@@ -844,10 +925,25 @@ Item {
     onCurrentStaffChanged: {
         //! Each staff has its own Dynamics curve, so the one on screen has to follow the selection.
         reloadAutomation()
+
+        //! "只播放当前谱表"跟着选中的谱表走：换谱表时把独奏交接过去（模型只释放它自己 solo 的那条轨，
+        //! 用户在混音器里自己按下的 solo 不动）。
+        if (soloActive && model !== null) {
+            model.setSoloStaff(currentStaff)
+        }
+
         repaintAll()
     }
     onAutomationPointsChanged: repaintAll()
-    onPlaybackTickChanged: repaintAll()
+    onPlaybackTickChanged: {
+        //! 播放时视口跟着走；停止时**一个像素都不动**（用户滚到哪儿就停在哪儿，
+        //! 点标尺定位也不会把视图弹走 —— 他点的位置本来就在屏幕上）。
+        followPlayhead()
+        repaintAll()
+    }
+    onLoopInTickChanged: repaintAll()
+    onLoopOutTickChanged: repaintAll()
+    onLoopEnabledChanged: repaintAll()
     onHeightChanged: repaintAll()
     onWidthChanged: repaintAll()
 
@@ -878,23 +974,90 @@ Item {
         }
 
         Text {
+            id: hintLabel
+
             anchors.left: titleLabel.right
             anchors.leftMargin: 16
+            //! 右边**必须**让给按钮行：工具栏这一行的高度只有 36px，而提示文字比按钮行还长 ——
+            //! 让它自由伸展的话，多一个按钮（Solo、混音器开关）就会把文字压到按钮底下，
+            //! 两边叠在一起（2026-10-06 实拍发现：窄窗口下 "clear loop" 的碎片从按钮缝里露出来）。
+            //! 现在文字有确定的宽度、放不下就省略号，按钮行永远是完整的。
+            anchors.right: toolButtons.left
+            anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
 
             visible: root.hasScore
+            elide: Text.ElideRight
 
-            text: qsTrc("notationscene", "Drag a note's right edge = played length · Shift+drag = played start · velocity lane: pick a staff in the toolbar, drag = own velocity, right-click = follow dynamics")
+            text: qsTrc("notationscene", "Drag a note's right edge = played length · Shift+drag = played start · velocity lane: pick a staff in the toolbar, drag = own velocity, right-click = follow dynamics · ruler: click = play from here, drag = loop, right-click = clear loop")
 
             color: root.dimTextColor
             font: ui.theme.bodyFont
         }
 
         Row {
+            id: toolButtons
+
             anchors.right: parent.right
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
+
+            //! 混音器开关。面板本身在页面上（MidiEditorPage.qml），这里只是它的入口 ——
+            //! 与记谱页的 View → Mixer 是同一个混音器（同一份轨道、同一份音量/静音/独奏）。
+            //!
+            //! ⚠️ 这两个开关刻意用 `FlatButton` 而不是旁边那种"Rectangle + MouseArea"：
+            //!  * **键盘/无障碍可达**（工具条本来就有导航区，自绘矩形进不去）；
+            //!  * **机器可验** —— 只有真实的 Button 才会出现在无障碍树里，于是
+            //!    `tools/ui-probe.ps1 -Action click -Name Solo -ControlType Button` 点得中它。
+            //!    本环境里**画布上的合成鼠标是无效的**（见 `维护手册.md` §7.6），
+            //!    工具条上的按钮却是可以的 —— 这正是"只播当前谱表"这条链路能被自动验的原因。
+            FlatButton {
+                id: mixerButton
+
+                height: 22
+
+                text: qsTrc("notationscene", "Mixer")
+                transparent: !root.mixerOpen
+                accentButton: root.mixerOpen
+
+                toolTipTitle: qsTrc("notationscene", "Mixer")
+                toolTipDescription: qsTrc("notationscene", "Show or hide the mixer - the very tracks the score plays through")
+
+                accessible.name: text + "  " + (root.mixerOpen ? qsTrc("global", "On") : qsTrc("global", "Off"))
+
+                onClicked: root.mixerToggleRequested()
+            }
+
+            //! 只播放当前谱表：打开后**只有选中谱表的轨道**发声（写的就是混音器上那个 solo，
+            //! 所以混音器里那一路会同时亮起来）。单谱表时没有可挑的，隐藏。
+            FlatButton {
+                id: soloButton
+
+                visible: root.staffCount > 1
+                height: 22
+
+                text: qsTrc("notationscene", "Solo")
+                transparent: !root.soloActive
+                accentButton: root.soloActive
+
+                toolTipTitle: qsTrc("notationscene", "Solo")
+                toolTipDescription: qsTrc("notationscene", "Play only the staff being edited (turns the mixer's solo on for it)")
+
+                accessible.name: text + "  " + (root.soloActive ? qsTrc("global", "On") : qsTrc("global", "Off"))
+
+                onClicked: {
+                    if (root.model === null) {
+                        return
+                    }
+
+                    if (root.soloActive) {
+                        root.model.clearSoloStaff()
+                    } else {
+                        root.model.setSoloStaff(root.currentStaff)
+                    }
+                }
+            }
 
             Repeater {
                 model: [
@@ -1343,6 +1506,55 @@ Item {
                         }
                     }
 
+                    //! 循环区间：标尺上这一段染色 + 两条边界线。它与记谱页那两个循环标记指的是
+                    //! **同一对 tick**（乐谱自己的 loop in/out），所以在哪一页设的循环都看得见。
+                    //! 拖动中画的是**预览**（松手才写模型），因此拖的时候就已经知道要循环哪一段。
+                    var loopIn = root.loopInTick
+                    var loopOut = root.loopOutTick
+                    var showingLoop = root.loopEnabled
+                    if (root.loopDragAnchorTick >= 0) {
+                        loopIn = Math.min(root.loopDragAnchorTick, root.loopDragPreviewTick)
+                        loopOut = Math.max(root.loopDragAnchorTick, root.loopDragPreviewTick)
+                        showingLoop = loopOut > loopIn
+                    }
+
+                    if (showingLoop && loopOut > loopIn) {
+                        var lx0 = root.xForTick(loopIn)
+                        var lx1 = root.xForTick(loopOut)
+
+                        ctx.fillStyle = ui.theme.accentColor
+                        ctx.globalAlpha = 0.22
+                        ctx.fillRect(lx0, 0, lx1 - lx0, h)
+                        ctx.globalAlpha = 1.0
+
+                        ctx.fillRect(lx0, 0, Math.max(1, lx1 - lx0), 3)   //! 顶上一条，像 DAW 的循环条
+                        ctx.fillRect(lx0, 0, 1, h)
+                        ctx.fillRect(lx1 - 1, 0, 1, h)
+                    }
+
+                    //! 播放头：**停止时也画**。原来的实现只在 `isPlaying` 时画，于是"点标尺定位"
+                    //! 这一下在画面上没有任何反馈（用户会以为没生效）。播放中画粗一点，
+                    //! 一眼分得清"正在播"和"停在这里"。
+                    if (root.hasScore) {
+                        var phx = root.xForTick(root.playbackTick)
+                        if (phx >= -1 && phx <= w + 1) {
+                            ctx.strokeStyle = root.cursorColor
+                            ctx.lineWidth = root.isPlaying ? 2 : 1
+                            ctx.beginPath()
+                            ctx.moveTo(Math.round(phx) + 0.5, 0)
+                            ctx.lineTo(Math.round(phx) + 0.5, h)
+                            ctx.stroke()
+
+                            ctx.fillStyle = root.cursorColor
+                            ctx.beginPath()
+                            ctx.moveTo(phx - 4, 0)
+                            ctx.lineTo(phx + 4, 0)
+                            ctx.lineTo(phx, 6)
+                            ctx.closePath()
+                            ctx.fill()
+                        }
+                    }
+
                     ctx.restore()
 
                     ctx.strokeStyle = root.gridColor
@@ -1351,6 +1563,70 @@ Item {
                     ctx.moveTo(0, h - 0.5)
                     ctx.lineTo(w, h - 0.5)
                     ctx.stroke()
+                }
+            }
+
+            //! 标尺上的手势：**点一下 = 从这儿播** · **拖一段 = 循环这一段** · **右击 = 取消循环**。
+            //! 三条手势共用一条 24px 高的带子，所以"点"和"拖"的区分交给 `midiLoopRangeFromDrag`
+            //! （没跨过一格就是点击）—— 判据与单测都在模型那一侧，这里不做第二套判断。
+            MouseArea {
+                id: rulerMouse
+
+                anchors.fill: rulerCanvas
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                hoverEnabled: true
+
+                onPressed: function(mouse) {
+                    if (mouse.button !== Qt.LeftButton) {
+                        return
+                    }
+
+                    root.loopDragAnchorTick = Math.round(root.clamp(root.tickForX(mouse.x), 0, root.totalTicks))
+                    root.loopDragPreviewTick = root.loopDragAnchorTick
+                }
+
+                onPositionChanged: function(mouse) {
+                    if (!pressed || root.loopDragAnchorTick < 0) {
+                        return
+                    }
+
+                    var tick = Math.round(root.clamp(root.tickForX(mouse.x), 0, root.totalTicks))
+                    if (tick !== root.loopDragPreviewTick) {
+                        root.loopDragPreviewTick = tick
+                        rulerCanvas.requestPaint()
+                    }
+                }
+
+                onReleased: function(mouse) {
+                    if (mouse.button !== Qt.LeftButton || root.loopDragAnchorTick < 0) {
+                        return
+                    }
+
+                    var anchor = root.loopDragAnchorTick
+                    var released = root.loopDragPreviewTick
+
+                    root.loopDragAnchorTick = -1
+                    root.loopDragPreviewTick = -1
+
+                    //! 拖出区间 → 循环；只是点了一下 → 把播放位置挪到那儿。
+                    if (!root.applyLoopDrag(anchor, released)) {
+                        root.seekToTick(anchor)
+                    }
+
+                    rulerCanvas.requestPaint()
+                }
+
+                onClicked: function(mouse) {
+                    if (mouse.button === Qt.RightButton && root.model !== null) {
+                        //! 右击 = 取消循环（与力度条上"右击 = 取消覆盖"是同一种"把它拿走"）。
+                        root.model.clearLoop()
+                    }
+                }
+
+                ToolTip {
+                    text: qsTrc("notationscene", "Click = play from here · drag = loop this range · right-click = clear the loop")
+                    visible: rulerMouse.containsMouse
+                    delay: 600
                 }
             }
 
@@ -1377,6 +1653,26 @@ Item {
                     ctx.clip()
 
                     var rowH = root.rowHeight
+
+                    //! 循环区间（画在音符**下面**：它是一块"这片区域会反复播"的底色，
+                    //! 不该把音符盖住）。与标尺上那一段是同一对 tick。
+                    var loopIn = root.loopInTick
+                    var loopOut = root.loopOutTick
+                    var showingLoop = root.loopEnabled
+                    if (root.loopDragAnchorTick >= 0) {
+                        loopIn = Math.min(root.loopDragAnchorTick, root.loopDragPreviewTick)
+                        loopOut = Math.max(root.loopDragAnchorTick, root.loopDragPreviewTick)
+                        showingLoop = loopOut > loopIn
+                    }
+
+                    if (showingLoop && loopOut > loopIn) {
+                        var lx0 = root.xForTick(loopIn)
+                        var lx1 = root.xForTick(loopOut)
+                        ctx.fillStyle = ui.theme.accentColor
+                        ctx.globalAlpha = 0.12
+                        ctx.fillRect(lx0, 0, lx1 - lx0, h)
+                        ctx.globalAlpha = 1.0
+                    }
 
                     // black-key rows
                     for (var pitch = root.lowestPitch; pitch <= root.highestPitch; ++pitch) {
@@ -1496,12 +1792,12 @@ Item {
                         }
                     }
 
-                    // playback cursor
-                    if (root.isPlaying) {
+                    //! 播放头：停止时也画（点标尺定位之后必须看得见点在哪），播放中画粗一点。
+                    if (root.hasScore) {
                         var cx = root.xForTick(root.playbackTick)
                         if (cx >= 0 && cx <= w) {
                             ctx.strokeStyle = root.cursorColor
-                            ctx.lineWidth = 2
+                            ctx.lineWidth = root.isPlaying ? 2 : 1
                             ctx.beginPath()
                             ctx.moveTo(Math.round(cx) + 0.5, 0)
                             ctx.lineTo(Math.round(cx) + 0.5, h)
@@ -1526,6 +1822,13 @@ Item {
                 onPressed: function(mouse) {
                     //! An index into visibleRows - only the selected staff is drawn and clickable.
                     var index = root.noteIndexAt(mouse.x, mouse.y)
+
+                    //! 空白处：先只**记下**位置，松手时再决定是不是要定位（见 onReleased）——
+                    //! 免得"想拖音符但没点中"的那一下把播放位置甩到别处去。
+                    root.rollPressX = mouse.x
+                    root.rollPressSeekTick = (index < 0 && root.hasScore)
+                                             ? Math.round(root.clamp(root.tickForX(mouse.x), 0, root.totalTicks))
+                                             : -1
 
                     if (index < 0) {
                         //! NOTE: only the miss is logged, so normal use stays quiet while a "the drag
@@ -1638,6 +1941,14 @@ Item {
                     root.dragNoteIndex = -1
                     root.dragPreviewPitch = -1
                     root.dragMode = root.dragModePitch
+
+                    //! 点空白 = 把播放位置挪到这儿（记谱页同款）。判据两条：没抓到音符，
+                    //! 而且几乎没移动过 —— 拖动空白不是定位手势。
+                    if (root.rollPressSeekTick >= 0 && Math.abs(mouse.x - root.rollPressX) <= 3) {
+                        root.seekToTick(root.rollPressSeekTick)
+                    }
+                    root.rollPressSeekTick = -1
+
                     gridCanvas.requestPaint()
                 }
 
@@ -1724,6 +2035,26 @@ Item {
                     var minTick = root.tickForX(-8)
                     var maxTick = root.tickForX(w + 8)
                     var visible = root.visibleRows
+
+                    //! 循环区间也铺在这条车道上（很淡，柱子仍然看得清）：改力度时最想知道的就是
+                    //! "我现在改的这段会不会反复播"。与标尺上那一段是同一对 tick。
+                    var loopIn = root.loopInTick
+                    var loopOut = root.loopOutTick
+                    var showingLoop = root.loopEnabled
+                    if (root.loopDragAnchorTick >= 0) {
+                        loopIn = Math.min(root.loopDragAnchorTick, root.loopDragPreviewTick)
+                        loopOut = Math.max(root.loopDragAnchorTick, root.loopDragPreviewTick)
+                        showingLoop = loopOut > loopIn
+                    }
+
+                    if (showingLoop && loopOut > loopIn) {
+                        var lx0 = root.xForTick(loopIn)
+                        var lx1 = root.xForTick(loopOut)
+                        ctx.fillStyle = ui.theme.accentColor
+                        ctx.globalAlpha = 0.10
+                        ctx.fillRect(lx0, 0, lx1 - lx0, h)
+                        ctx.globalAlpha = 1.0
+                    }
 
                     for (var i = 0; i < visible.length; ++i) {
                         var note = visible[i].note
@@ -1853,6 +2184,19 @@ Item {
                                     ctx.stroke()
                                 }
                             }
+                        }
+                    }
+
+                    //! 播放头在这条车道上也画一条：力度是"跟着播放听"才改得准的。
+                    if (root.hasScore) {
+                        var phx = root.xForTick(root.playbackTick)
+                        if (phx >= 0 && phx <= w) {
+                            ctx.strokeStyle = root.cursorColor
+                            ctx.lineWidth = root.isPlaying ? 2 : 1
+                            ctx.beginPath()
+                            ctx.moveTo(Math.round(phx) + 0.5, 0)
+                            ctx.lineTo(Math.round(phx) + 0.5, h)
+                            ctx.stroke()
                         }
                     }
 

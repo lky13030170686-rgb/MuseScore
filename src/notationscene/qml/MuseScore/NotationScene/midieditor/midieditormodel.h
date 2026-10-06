@@ -24,6 +24,7 @@
 
 #include <QObject>
 #include <QVariantList>
+#include <QVariantMap>
 #include <qqmlintegration.h>
 
 #include <functional>
@@ -34,6 +35,8 @@
 #include "context/iglobalcontext.h"
 
 #include "notation/inotation.h"
+
+#include "playback/iplaybackcontroller.h"
 
 #include "midieditornotes.h"
 
@@ -64,12 +67,25 @@ class MidiEditorModel : public QObject, public muse::Contextable, public muse::a
     Q_PROPERTY(double playbackTick READ playbackTick NOTIFY playbackTickChanged)
     Q_PROPERTY(bool isPlaying READ isPlaying NOTIFY playbackTickChanged)
 
+    //! The loop region of the score, as the roll's ruler sets it. These are the very loop in/out points
+    //! the notation page's markers and the playback toolbar use - one loop, two views.
+    Q_PROPERTY(int loopInTick READ loopInTick NOTIFY loopChanged)
+    Q_PROPERTY(int loopOutTick READ loopOutTick NOTIFY loopChanged)
+    Q_PROPERTY(bool loopEnabled READ loopEnabled NOTIFY loopChanged)
+
+    //! True while the roll is soloing "the staff being edited" (see setSoloStaff()).
+    Q_PROPERTY(bool soloActive READ soloActive NOTIFY soloChanged)
+
     //! MIDI 页自己报"能不能撤销"：记谱页的 UndoRedoToolBar（Ctrl+Z 真正绑定的地方）不挂在这一页，
     //! 而 `UNDO_COMMAND` 自己的 `InputSchema()` 是空的 —— 所以这一页必须自己给入口。
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoRedoChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY undoRedoChanged)
 
     muse::ContextInject<context::IGlobalContext> context = { this };
+
+    //! The playback position and the solo state are the playback module's, not ours: this page only
+    //! asks for them (see seekTick() / setSoloStaff()).
+    muse::ContextInject<playback::IPlaybackController> playbackController = { this };
 
 public:
     explicit MidiEditorModel(QObject* parent = nullptr);
@@ -87,14 +103,57 @@ public:
     double playbackTick() const { return m_playbackTick; }
     bool isPlaying() const { return m_isPlaying; }
 
+    int loopInTick() const;
+    int loopOutTick() const;
+    bool loopEnabled() const;
+    bool soloActive() const;
+
     bool canUndo() const;
     bool canRedo() const;
 
     Q_INVOKABLE void init();
 
-    //! 撤销 / 重做：走**记谱页同一套** undo stack（两页编辑同一份乐谱，也就该是同一条历史）。
+    //! Undo / redo：走**记谱页同一套** undo stack（两页编辑同一份乐谱，也就该是同一条历史）。
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
+
+    //! Playback -------------------------------------------------------------------------------------
+    //!
+    //! Moves the playback position to an exact score tick - what a click in the roll's ruler does.
+    //!
+    //! Neither seek upstream already had fits a piano roll: `seekElement()` aims at a notation element
+    //! (the roll only has ticks) and `seekBeat()` lands on a beat, which at a slow tempo can be most of
+    //! a second away from where the user clicked. Hence the third entry point, `IPlaybackController::
+    //! seekTick()`.
+    Q_INVOKABLE void seekTick(int tick);
+
+    //! Turns a drag in the ruler (two raw ticks, in whichever direction) into a loop range, using the
+    //! maths of `midiLoopRangeFromDrag()`: snapping, clamping, order, and "was that a click?".
+    //! Returns { inTick, outTick, valid }.
+    Q_INVOKABLE QVariantMap loopRangeFromDrag(int draggedTick, int releasedTick, int snapTicks) const;
+
+    //! Sets the loop region and turns looping on, so that dragging a range in the ruler can be heard
+    //! right away. Writes the score's own loop in/out points (the notation page's markers follow).
+    Q_INVOKABLE void setLoopRange(int inTick, int outTick);
+
+    //! Removes the loop region again (right-click in the ruler). Clears the points, not just the
+    //! enable flag, so that both pages stop showing it.
+    Q_INVOKABLE void clearLoop();
+
+    //! "Only play the staff I am editing."
+    //!
+    //! This is the mixer's own solo state, not a second one: the track(s) of that staff get `solo =
+    //! true`, the playback controller then mutes everything else, and the mixer shows the same button
+    //! lit. The staff it soloed is remembered so that switching the toggle off, or moving to another
+    //! staff, releases exactly the track it took - a solo the user set in the mixer is left alone.
+    Q_INVOKABLE void setSoloStaff(int staffIndex);
+
+    //! Releases the solo this page set (no-op when it set none).
+    Q_INVOKABLE void clearSoloStaff();
+
+    //! Where to scroll so that the playhead stays visible while playing - see `midiFollowScrollX()`.
+    //! Exposed so the view uses the tested maths rather than a copy of it.
+    Q_INVOKABLE double followScrollX(double scrollX, double playheadX, double viewportWidth, double maxScrollX) const;
 
     //! NOTE: `row` is an index into notes(), and is only stable until the score changes.
     //!       The view is expected to submit one edit when the mouse is released (not on every
@@ -143,6 +202,8 @@ signals:
     void scoreChanged();
     void playbackTickChanged();
     void undoRedoChanged();
+    void loopChanged();
+    void soloChanged();
 
 private:
     void reload();
@@ -162,6 +223,27 @@ private:
     engraving::Score* currentScore() const;
     engraving::Note* noteAt(int row) const;
 
+    //! The playback facade of the current score (the same object the notation page's playback uses).
+    INotationPlaybackPtr currentPlayback() const;
+
+    //! Solos / unsolos every instrument track of one staff. Writes through the playback controller so
+    //! the mixer, the audio engine and this page all see the same state. No-op for an unknown staff.
+    void setStaffSolo(int staffIndex, bool solo);
+
+    //! Whether that staff's tracks are soloed right now (read back, so a change made in the mixer is
+    //! seen here too).
+    bool staffIsSoloed(int staffIndex) const;
+
+    //! ⚠️ 验证用钩子（**有意保留**，见 `维护手册.md` §7.6）：标尺上的定位/循环都是**画布上的鼠标手势**，
+    //! 而本环境里合成鼠标到不了 Qt Quick 画布 —— 于是"循环带画出来没有、seek 到底有没有把播放位置
+    //! 挪走"这两件事没法用脚本验。设了 `MUSE_MIDIEDITOR_DEMO_PLAYBACK=1` 时，这一页在打开工程后
+    //! **自己**进入一个已知状态：播放头落在第 2 小节、循环区间 = 第 2..4 小节。
+    //! 只在设了环境变量时走这条路，正常使用一行都不会执行。
+    void applyDemoPlaybackIfPending();
+
+    //! Set by the demo hook above; cleared once it has been applied.
+    bool m_demoPlaybackPending = false;
+
     std::vector<MidiNoteItem> m_entries;
     QVariantList m_notes;
     QVariantList m_measures;
@@ -180,6 +262,10 @@ private:
 
     double m_playbackTick = 0.0;
     bool m_isPlaying = false;
+
+    //! The staff whose tracks this page soloed (-1 = none). Kept so that releasing the solo, or moving
+    //! to another staff, gives back exactly what it took.
+    int m_soloStaff = -1;
 
     INotationPtr m_notation;
 };

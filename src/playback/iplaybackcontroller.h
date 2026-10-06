@@ -122,6 +122,15 @@ public:
     virtual void seekElement(const engraving::EngravingItem* element, bool flushSound = true) = 0;
     virtual void seekBeat(int measureIndex, int beatIndex, bool flushSound = true) = 0;
 
+    //! Moves the playback position to an exact score tick.
+    //!
+    //! The two seeks above both need something the piano roll does not have: `seekElement()` aims at a
+    //! notation element (the roll only knows ticks) and `seekBeat()` can only land on a beat, which is
+    //! up to an eighth note away from where the user clicked. The tick goes through the very same path
+    //! as the other two (repeat list mapping, position updated before the player answers), so the
+    //! toolbar, the notation cursor and the roll all follow one seek.
+    virtual void seekTick(int tick, bool flushSound = true) = 0;
+
     //! Backing/reference audio track ------------------------------------------------
     //! Prompts for an audio file and adds it as a track that plays alongside the score.
     //! Supported containers are those the audiotrack module can decode with libsndfile
