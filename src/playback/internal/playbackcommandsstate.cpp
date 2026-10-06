@@ -34,6 +34,16 @@ using namespace mu::notation;
 
 static const muse::Uri PROJECT_PAGE_URI("musescore://notation");
 
+//! NOTE: The MIDI page (`musescore://midi`) shows the very same score as the notation page, as a piano
+//! roll. It is a second *view* of one project, not a second project, so "a project is opened" has to be
+//! true there as well - otherwise every playback command is disabled on that page and **nothing plays**
+//! (the play button is drawn enabled, so it simply does nothing when clicked).
+//!
+//! ⚠️ This is the very same trap that was fixed for the notation commands in `NotationCommandsState`
+//! (see 进度快照.md 第 61 条): `isProjectOpened()` short-circuits `commandState()` on its first line, and
+//! a disabled command is silently skipped - the log shows the click, the sound never starts.
+static const muse::Uri MIDI_PAGE_URI("musescore://midi");
+
 std::string PlaybackCommandsState::moduleName() const
 {
     return "playback";
@@ -216,7 +226,12 @@ bool PlaybackCommandsState::isProjectOpened() const
         return false;
     }
 
-    if (!interactive() || !interactive()->isOpened(PROJECT_PAGE_URI).val) {
+    //! NOTE: 记谱页**或** MIDI 页打开着都算"工程已打开" —— 两页是同一个工程的两个视图
+    //! （见文件顶部 MIDI_PAGE_URI 的说明）。用户实测「MIDI 页无法播放」的根因就在这里：
+    //! 切到 MIDI 页后记谱页不再"打开" ⇒ **整页播放命令全部 disabled** ⇒ 播放按钮画得像能用、
+    //! 点了什么都不发生（disabled 的命令被静默跳过，日志里只有点击、没有声音）。
+    if (!interactive()
+        || (!interactive()->isOpened(PROJECT_PAGE_URI).val && !interactive()->isOpened(MIDI_PAGE_URI).val)) {
         return false;
     }
 
