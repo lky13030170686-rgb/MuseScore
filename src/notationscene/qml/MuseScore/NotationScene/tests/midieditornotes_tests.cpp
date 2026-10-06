@@ -42,6 +42,8 @@
 
 #include "mpe/automationpoint.h"
 
+#include "uicomponents/qml/Muse/UiComponents/internal/polylinebend.h"
+
 #include "notationscene/qml/MuseScore/NotationScene/midieditor/midieditornotes.h"
 
 using namespace mu;
@@ -110,6 +112,18 @@ static muse::mpe::AutomationCurve<int> playableCurve(const AutomationCurve& curv
     }
 
     return result;
+}
+
+//! 一个"带弯折的到达段"的 mpe 点：起点值 prevOut 由调用方给，本点的到达值与弯折在这里。
+static muse::mpe::AutomationPoint bentPoint(double arrival, double easeT, double easeValue)
+{
+    muse::mpe::AutomationPoint point;
+    point.outValue = muse::real_t::make(arrival);
+    point.inValue = muse::mpe::AutomationPoint::ExplicitArrival {
+        muse::real_t::make(arrival),
+        muse::mpe::AutomationPoint::Ease { muse::real_t::make(easeT), muse::real_t::make(easeValue) },
+    };
+    return point;
 }
 
 //! The roll must describe exactly the notes the score has - this is what "the MIDI page and the
@@ -816,6 +830,8 @@ TEST_F(MidiEditorNotesTests, ADrawnPointSlopesIntoTheNextOneInsteadOfStepping)
 }
 
 //! 拖手柄 = 改二次贝塞尔的弯折点（`Ease`）。写进去、读得回来、形状真的变了、一次撤销能还原。
+//! 一条力度曲线有两把键（不带 voice 的共用曲线 / 带 voice 的声部曲线），这里测的是
+//! 记谱页与 MIDI 页都写的那把（见 §4.8「两把键」）。
 TEST_F(MidiEditorNotesTests, TheHandleBendsTheSegmentAndUndoStraightensIt)
 {
     m_score->initAutomation();
@@ -882,4 +898,177 @@ TEST_F(MidiEditorNotesTests, AControlPointCanBeMoved)
     const std::vector<MidiAutomationPoint> undone = collectAutomationPoints(m_score, 0);
     EXPECT_NE(findAutomationPoint(undone, 1920), nullptr) << "撤销没有把点移回去";
     EXPECT_EQ(findAutomationPoint(undone, 1440), nullptr);
+}
+
+//! ⭐ **记谱页车道画出来的那一段，就是合成器播放的那一段。**
+//!
+//! 这是记谱页曲率的全部要害。车道把一段画成两条在弯折点相切的二次贝塞尔弧
+//! （`polylinebend.h`，`PolylinePlot` 用它绘制），播放则是 `muse::mpe::evaluateAt()` 的同一套
+//! 两段贝塞尔。两边一旦算得不一样，屏幕上就出现一条**看着像渐强、听着是台阶**的线 ——
+//! 这类 bug 不报错、不崩，只是"看到的 ≠ 听到的"，是这个编辑器里最难查的一种。
+//! 所以这里不去复刻公式对照，而是**直接拿播放侧那份函数**逐点比对。
+TEST_F(MidiEditorNotesTests, TheDrawnSegmentIsTheSegmentTheSynthesiserPlays)
+{
+    const double prevOut = 0.2;
+    const double arrival = 0.8;
+    const double easeT = 0.3;
+    const double easeValue = 0.8;   // 先快后慢
+
+    const muse::mpe::AutomationPoint played = bentPoint(arrival, easeT, easeValue);
+
+    //! 屏幕上的纵轴是"值 → 显示"的仿射映射：MIDI 页是 0..1 直接画，记谱页把 pp..ffff 铺满谱表框
+    //! （也是一次仿射变换）。仿射不改变"两条贝塞尔弧"这个形状，所以两种映射都试：
+    //! 若哪天有人把绘制换成折线或换一套控制点，仿射下也照样会被抓出来。
+    const auto displayMaps = std::vector<std::pair<double, double> > {
+        { 0.0, 1.0 },      // MIDI 页：值 0..1 直接就是 0..1
+        { 0.12, 0.92 },    // 记谱页：pp..ffff 的显示子区间（缩放 + 平移）
+    };
+
+    for (const auto& [displayFrom, displayTo] : displayMaps) {
+        const auto yFor = [displayFrom, displayTo](double value) {
+            return 1.0 - (displayFrom + value * (displayTo - displayFrom));
+        };
+
+        const QPointF from(100.0, yFor(prevOut));
+        const QPointF to(500.0, yFor(arrival));
+
+        //! 弯折手柄的落点：横向在段的 t 处，纵向在弯折值（prevOut + 幅度 × 该段行程）的高度上。
+        //! 这正是记谱页车道 `bendHandlePoint()` 与 MIDI 页 `automationHandleAt()` 算的东西。
+        const QPointF bend(from.x() + (to.x() - from.x()) * easeT,
+                           yFor(prevOut + easeValue * (arrival - prevOut)));
+
+        for (int i = 0; i <= 20; ++i) {
+            const double s = i / 20.0;
+            const QPointF drawn = muse::uicomponents::polyline::bendPointAt(from, to, bend, s);
+
+            //! 画出来的点的横向位置反算回"这一段的比例" —— 顺便钉住"x 对参数是线性的"，
+            //! 否则曲线在时间轴上会被拉歪（画出来的 x 与求值用的 t 不是一回事）。
+            const double t = (drawn.x() - from.x()) / (to.x() - from.x());
+            EXPECT_NEAR(t, s, 1e-9) << "画出来的横向位置与参数不成线性（s=" << s << "）";
+
+            const double playedValue = double(muse::mpe::evaluateAt(played, muse::real_t::make(prevOut), muse::real_t::make(t)));
+            EXPECT_NEAR(drawn.y(), yFor(playedValue), 1e-9)
+                << "画出来的曲线与播放的曲线不是同一条（s=" << s << "，显示区间 "
+                << displayFrom << ".." << displayTo << "）";
+        }
+    }
+}
+
+//! 没有弯折（`Ease::none()`）时，画出来的两段弧必须**正好**是直线 —— 手柄落在弦的中点，
+//! 而中点的手柄不能把线画弯（否则"没调过曲率的段"看上去也像调过）。
+TEST_F(MidiEditorNotesTests, AHandleAtTheMiddleOfTheChordDrawsAStraightLine)
+{
+    const QPointF from(0.0, 80.0);
+    const QPointF to(400.0, 10.0);
+    const QPointF midOfChord((from.x() + to.x()) * 0.5, (from.y() + to.y()) * 0.5);
+
+    for (int i = 0; i <= 20; ++i) {
+        const double s = i / 20.0;
+        const QPointF drawn = muse::uicomponents::polyline::bendPointAt(from, to, midOfChord, s);
+        EXPECT_NEAR(drawn.x(), from.x() + (to.x() - from.x()) * s, 1e-9);
+        EXPECT_NEAR(drawn.y(), from.y() + (to.y() - from.y()) * s, 1e-9)
+            << "落在弦中点的手柄把直线画弯了（s=" << s << "）";
+    }
+}
+
+//! 改曲率**只改弯折**：到达值（`ExplicitArrival::value`）必须原样保留。
+//! 那可能是渐强线终点、或记谱页上某个点自己的到达值 —— 拖手柄把它换成 outValue，
+//! 等于悄悄改了另一件事（那一段会停在错的值上）。
+TEST_F(MidiEditorNotesTests, BendingKeepsTheArrivalValueOfTheSegment)
+{
+    AutomationPoint existing;
+    existing.value.outValue = muse::real_t::make(0.9);
+    existing.value.inValue = AutomationPoint::ExplicitArrival { muse::real_t::make(0.4), AutomationPoint::Ease::none() };
+
+    const std::optional<AutomationPoint> bent = bentAutomationPoint(existing, 0.25, 0.75);
+    ASSERT_TRUE(bent.has_value());
+
+    EXPECT_NEAR(double(bent->value.outValue), 0.9, 1e-9) << "出值被改了";
+    const AutomationPoint::ExplicitArrival& arrival = std::get<AutomationPoint::ExplicitArrival>(bent->value.inValue);
+    EXPECT_NEAR(double(arrival.value), 0.4, 1e-9) << "到达值没有保留（这一段现在会停在错的值上）";
+    EXPECT_NEAR(double(arrival.ease.t), 0.25, 1e-9);
+    EXPECT_NEAR(double(arrival.ease.value), 0.75, 1e-9);
+}
+
+//! 原本是 `ArrivalFromPrevious`（一段平的跳变）的点，一拖手柄就升级成"到达本点的值" ——
+//! 否则这一段的行程是 0，怎么弯都是平的（用户拖了半天什么都没变）。
+TEST_F(MidiEditorNotesTests, BendingAFlatArrivalMakesItASlopeFirst)
+{
+    AutomationPoint existing;
+    existing.value.outValue = muse::real_t::make(0.6);
+    existing.value.inValue = AutomationPoint::ArrivalFromPrevious {};
+
+    const std::optional<AutomationPoint> bent = bentAutomationPoint(existing, 0.5, 0.5);
+    ASSERT_TRUE(bent.has_value());
+
+    const AutomationPoint::ExplicitArrival& arrival = std::get<AutomationPoint::ExplicitArrival>(bent->value.inValue);
+    EXPECT_NEAR(double(arrival.value), 0.6, 1e-9) << "升级后的到达值应当是本点自己的值";
+}
+
+//! 记号生成的点一被碰就**归用户**（清 `generated` / `itemId`）—— 与"拖点即接管"同一条规则。
+//! 不清的话，记号会在下一次重建时把旧形状原样生成回来，用户看到的是"拖了又弹回去"。
+TEST_F(MidiEditorNotesTests, BendingTakesThePointOverFromTheMarkThatGeneratedIt)
+{
+    AutomationPoint existing;
+    existing.value.outValue = muse::real_t::make(0.5);
+    existing.value.inValue = AutomationPoint::ExplicitArrival { muse::real_t::make(0.9), AutomationPoint::Ease::none() };
+    existing.generated = true;
+    existing.itemId = EID::newUnique();
+
+    const std::optional<AutomationPoint> bent = bentAutomationPoint(existing, 0.3, 0.3);
+    ASSERT_TRUE(bent.has_value());
+    EXPECT_FALSE(bent->generated);
+    EXPECT_FALSE(bent->itemId.has_value());
+}
+
+//! 弯折点没变、点又已经是用户的 → **什么都不写**：一次没改变任何东西的手势不该压一个撤销步
+//! （否则 Ctrl+Z 看起来"没反应"）。
+TEST_F(MidiEditorNotesTests, AHandleDragThatChangesNothingWritesNothing)
+{
+    AutomationPoint existing;
+    existing.value.outValue = muse::real_t::make(0.5);
+    existing.value.inValue = AutomationPoint::ExplicitArrival {
+        muse::real_t::make(0.9), AutomationPoint::Ease { muse::real_t::make(0.3), muse::real_t::make(0.7) }
+    };
+
+    EXPECT_FALSE(bentAutomationPoint(existing, 0.3, 0.7).has_value());
+    EXPECT_TRUE(bentAutomationPoint(existing, 0.3, 0.71).has_value());
+
+    //! 但**记号生成的点**即使弯折一样也要写：那一次写入的意义是"接管"。
+    existing.generated = true;
+    EXPECT_TRUE(bentAutomationPoint(existing, 0.3, 0.7).has_value());
+}
+
+//! 车道写入走的那条路（`bentAutomationPoint` + `SetPoint`）确实落到曲线上、并且一次撤销能还原 ——
+//! 记谱页控制器用的就是这个组合（它把同一个 `SetPoint` 交给 `INotationAutomation::editPoints`）。
+TEST_F(MidiEditorNotesTests, TheLanesBendWriteReachesTheCurveAndUndoesInOneStep)
+{
+    m_score->initAutomation();
+
+    ASSERT_EQ(applyAutomationPoints(m_score, 0, { { 0, 0.2 }, { 1920, 0.8 } }), 2);
+
+    const AutomationCurveKey key = notationPageKey(m_score, 0);
+    const AutomationCurve& before = m_score->automationData()->curve(key);
+    const auto it = before.find(1920);
+    ASSERT_NE(it, before.end());
+
+    const std::optional<AutomationPoint> written = bentAutomationPoint(it->second, 0.3, 0.8);
+    ASSERT_TRUE(written.has_value());
+
+    m_score->startCmd(muse::TranslatableString("test", "Bend"));
+    AutomationPointEdits edits { { 1920, AutomationPointEdit::SetPoint { *written } } };
+    m_score->editAutomationPoints(key, edits);
+    m_score->endCmd();
+
+    const MidiAutomationPoint* readBack = findAutomationPoint(collectAutomationPoints(m_score, 0), 1920);
+    ASSERT_NE(readBack, nullptr);
+    EXPECT_TRUE(readBack->hasEase);
+    EXPECT_NEAR(readBack->controlT, 0.3, 1e-6);
+    EXPECT_NEAR(readBack->controlValue, 0.8, 1e-6);
+
+    m_score->undoRedo(true, nullptr);
+    const MidiAutomationPoint* straight = findAutomationPoint(collectAutomationPoints(m_score, 0), 1920);
+    ASSERT_NE(straight, nullptr);
+    EXPECT_NEAR(straight->controlT, 0.5, 1e-6);
+    EXPECT_NEAR(straight->controlValue, 0.5, 1e-6);
 }

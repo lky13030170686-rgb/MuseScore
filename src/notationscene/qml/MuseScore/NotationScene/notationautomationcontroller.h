@@ -110,6 +110,18 @@ private:
         int tick = -1;
         QPointF qPointF;
         PointType pointType = PointType::UNKNOWN;
+
+        //! 曲率（上游 `AutomationPoint::Ease`）：**到达本点的那一段**（前一点 → 本点）是否有坡度，
+        //! 也就是有没有可拖的弯折手柄。平的段（`ArrivalFromPrevious`，或到达值等于前一点的值）
+        //! 没有弯折可言 —— 与 MIDI 页同一条判据。
+        //!
+        //! ⚠️ 弯折记在**到达点**上，不是记在段起点上：段起点的数据在"只刷新一段"时会被保留下来
+        //! （`updateStaffPointsInRange` 只替换范围内的点），而弯折是到达点的属性，
+        //! 记在到达点上才不会被留成陈旧的绝对坐标。
+        bool hasBend = false;
+        //! 弯折手柄的位置，坐标与 `qPointF` 同一套。段还没有弯折（`Ease::none()`）时它就是弦的中点，
+        //! 与 MIDI 页给的位置一致 —— 手柄一开始就落在线上，拖它才开始弯。
+        QPointF bendPointF;
     };
 
     using PointsDataMap = std::map<SysStaffKey, QVector<PointData> >;
@@ -157,7 +169,25 @@ private:
     bool requestEditPoint(const PointData& oldPointData, const SysStaffKey& key, qreal x, qreal y);
     bool requestAddPoint(const SysStaffKey& key, qreal x, qreal y);
     bool requestRemovePoint(const PointData& pointData, const SysStaffKey& key);
+    //! Drags the bend handle of the segment arriving at `arrivalPointData`: `fromPointF` is where that
+    //! segment starts (display coordinates, same as `qPointF`), `x`/`y` where the handle was dropped.
+    bool requestEditPointEase(const PointData& arrivalPointData, const QPointF& fromPointF, const SysStaffKey& key,
+                              qreal x, qreal y);
     void editAutomationPoints(const mu::engraving::AutomationCurveKey& key, mu::engraving::AutomationPointEdits& edits);
+
+    //! The bend list the polyline is drawn from: one entry per segment of `pointsData` (segment i joins
+    //! points i and i + 1), taken from the segment's arrival point.
+    static QVector<QPointF> bendsForPolyline(const QVector<PointData>& pointsData);
+
+    //! Where the bend handle of the segment arriving at `tick` sits when that segment runs from
+    //! `fromPointF` to `toPointF`. `std::nullopt` means the segment cannot be bent at all (a flat one, a
+    //! vertical jump, or nothing precedes it in the curve) - the same rule the MIDI page's lane uses, so
+    //! the two lanes offer handles in exactly the same places.
+    //!
+    //! The ease itself is read from the model, which is what lets a handle keep its position *within*
+    //! its segment while the segment's ends move (dragging a control point).
+    std::optional<QPointF> bendHandleFor(const mu::engraving::Staff* staff, int tick, const QPointF& fromPointF,
+                                         const QPointF& toPointF) const;
 
     const mu::engraving::AutomationPoint* automationPointAt(const SysStaffKey& key, int tick) const;
 

@@ -485,6 +485,36 @@ bool eraseAutomationPoint(Score* score, int staffIndex, int tick, bool openComma
     return true;
 }
 
+std::optional<AutomationPoint> bentAutomationPoint(const AutomationPoint& existing, double t, double value)
+{
+    const AutomationPoint::Ease bend { real_t::make(std::clamp(t, 0.0, 1.0)),
+                                       real_t::make(std::clamp(value, 0.0, 1.0)) };
+
+    const std::optional<AutomationPoint::Ease> currentBend = ease(existing);
+    if (currentBend.has_value() && *currentBend == bend
+        && !existing.generated && !existing.itemId.has_value()) {
+        return std::nullopt;   // 弯折点没变、这个点也已经是用户的：不写，也不压一个空的撤销步
+    }
+
+    AutomationPoint written = existing;
+
+    //! 到达值取哪一个，是这里唯一的判断：
+    //!  * 原本就显式写过（渐强线的终点、记谱页编辑过的点）→ **保留它**，只换弯折 —— 别把上游
+    //!    或记谱页的语义丢掉；
+    //!  * 原本是 `ArrivalFromPrevious`（一段"平的"跳变）→ 升级成"到达本点的值"，这样拖手柄
+    //!    才真的把这一段变成弯的；否则这一段的 range 是 0，怎么弯都是平的（白拖）。
+    const real_t arrival = currentBend.has_value()
+                           ? std::get<AutomationPoint::ExplicitArrival>(written.value.inValue).value
+                           : written.value.outValue;
+    written.value.inValue = AutomationPoint::ExplicitArrival { arrival, bend };
+
+    //! ⚠️ **接管**：碰过一下，这个点就是用户的了（理由见 applyAutomationPointMove）。
+    written.generated = false;
+    written.itemId = std::nullopt;
+
+    return written;
+}
+
 bool applyAutomationPointEase(Score* score, int staffIndex, int tick, double t, double value, bool openCommand)
 {
     const AutomationCurveKey key = dynamicsKey(score, staffIndex);
@@ -503,30 +533,12 @@ bool applyAutomationPointEase(Score* score, int staffIndex, int tick, double t, 
         return false;
     }
 
-    const AutomationPoint::Ease bend { real_t::make(std::clamp(t, 0.0, 1.0)),
-                                       real_t::make(std::clamp(value, 0.0, 1.0)) };
-    const std::optional<AutomationPoint::Ease> currentBend = ease(it->second);
-    if (currentBend.has_value() && *currentBend == bend) {
-        return false;   // 弯折点没变：不写，也不压一个空的撤销步
+    const std::optional<AutomationPoint> written = bentAutomationPoint(it->second, t, value);
+    if (!written.has_value()) {
+        return false;
     }
 
-    AutomationPoint written = it->second;
-
-    //! 到达值取哪一个，是这里唯一的判断：
-    //!  * 原本就显式写过（渐强线的终点、记谱页编辑过的点）→ **保留它**，只换弯折 —— 别把上游
-    //!    或记谱页的语义丢掉；
-    //!  * 原本是 `ArrivalFromPrevious`（一段"平的"跳变）→ 升级成"到达本点的值"，这样拖手柄
-    //!    才真的把这一段变成弯的；否则这一段的 range 是 0，怎么弯都是平的（白拖）。
-    const real_t arrival = currentBend.has_value()
-                           ? std::get<AutomationPoint::ExplicitArrival>(written.value.inValue).value
-                           : written.value.outValue;
-    written.value.inValue = AutomationPoint::ExplicitArrival { arrival, bend };
-
-    //! ⚠️ **接管**：碰过一下，这个点就是用户的了（理由见 applyAutomationPointMove）。
-    written.generated = false;
-    written.itemId = std::nullopt;
-
-    AutomationPointEdits edits { { tick, AutomationPointEdit::SetPoint { written } } };
+    AutomationPointEdits edits { { tick, AutomationPointEdit::SetPoint { *written } } };
 
     if (openCommand) {
         score->startCmd(TranslatableString("midieditor", "Bend dynamics curve"));

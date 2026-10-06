@@ -22,12 +22,15 @@
 
 #pragma once
 
+#include <optional>
 #include <utility>
 #include <vector>
 
 namespace mu::engraving {
 class Score;
 class Note;
+struct AutomationPoint;
+struct AutomationCurveKey;
 }
 
 namespace mu::notation {
@@ -189,6 +192,23 @@ bool eraseAutomationPoint(engraving::Score* score, int staffIndex, int tick, boo
 //! 点不存在、不是本谱表的曲线、或值没变时返回 false（**不写**、不压撤销步）。
 bool applyAutomationPointEase(engraving::Score* score, int staffIndex, int tick, double t, double value,
                               bool openCommand = true);
+
+//! 拖手柄之后那个点应该长什么样 —— **这就是"改曲率"的全部语义**，两个页面共用：
+//!  * 到达值（`ExplicitArrival::value`）取原本就显式写过的那个，**不改成 outValue** ——
+//!    渐强线终点、记谱页编辑过的点都带着自己的到达值，那是它们的语义，拖手柄不该把它丢掉；
+//!  * 原本是 `ArrivalFromPrevious`（"到达值 = 前一点"，即一段平的跳变）的点没有显式到达值，
+//!    升级成"到达本点的值"，否则这一段的 range 是 0，怎么弯都是平的（白拖）；
+//!  * **接管**：碰过一下这个点就是用户的了（清 `generated` / `itemId`）—— 否则记号会在下一次
+//!    重建时把旧形状原样生成回来，用户看到的是"拖了又弹回去"。
+//!
+//! 返回 **nullopt** 表示"没什么可写"（弯折点一模一样、而且这个点已经是用户的），
+//! 调用方据此**不要开命令** —— 不然一次没改变任何东西的手势也会压一个空的撤销步。
+//!
+//! 刻意做成纯函数（不碰 score、不开事务）：两个页面的事务机制不同且**必须**不同
+//! （记谱页走 `INotationUndoStack::transaction()`，MIDI 页走同一套但由调用方开），
+//! 所以共用的只能是"写成什么"，不是"怎么提交"。
+std::optional<engraving::AutomationPoint> bentAutomationPoint(const engraving::AutomationPoint& existing,
+                                                              double t, double value);
 
 //! 把一个点移到另一个 tick（可同时改值），走上游的 `MovePoint`：目标 tick 上的点被它取代，
 //! 原 tick 上的点消失 —— 这就是"拖动控制点"。

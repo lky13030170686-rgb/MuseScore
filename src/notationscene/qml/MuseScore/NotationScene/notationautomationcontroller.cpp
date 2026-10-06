@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <optional>
 #include <set>
 
@@ -41,6 +42,8 @@
 #include "notation/inotation.h"
 #include "notation/inotationautomation.h"
 #include "notation/inotationelements.h" // IWYU pragma: keep
+
+#include "midieditor/midieditornotes.h"
 
 #include "global/async/async.h"
 #include "global/containers.h"
@@ -65,6 +68,12 @@ constexpr static qreal POLYLINE_SELECTED_MIDDLE_RING_WIDTH = 1.5;
 constexpr static int POLYLINE_SELECTED_HOVERED_ALPHA = 127;
 constexpr static int POLYLINE_GENERATED_AREA_ALPHA = 51;
 constexpr static int POLYLINE_EDITED_AREA_ALPHA = 102;
+
+//! How far a bend handle is allowed to go along its own segment. Upstream reads `t <= 0` or `t >= 1`
+//! as "no bend at all" (see `muse::mpe::evaluateAt`), so a handle dragged onto an end would silently
+//! stop doing anything - the same margin the MIDI page keeps.
+constexpr static double BEND_T_MIN = 0.05;
+constexpr static double BEND_T_MAX = 0.95;
 
 static bool polylinePointIndexIsValid(const PolylinePlot* polyline, int pointIdx)
 {
@@ -202,6 +211,26 @@ static muse::real_t automationValueFromDisplay(AutomationType type, double displ
     }
 
     return muse::real_t(displayValue);
+}
+
+//! Where the bend handle of one segment sits, in the same display coordinates as the polyline's own
+//! points: the ease's position along the segment horizontally, and the value it bends the segment to
+//! vertically. With `Ease::none()` that is the middle of the chord - which is exactly where the line
+//! already passes, so the handle starts out sitting on the curve instead of floating next to it.
+//!
+//! ⚠️ 这是**记谱页车道的曲率画法**：手柄位置由"值 → 显示"的同一个映射算出来
+//! （`automationValueToDisplay`），与画点用的是同一套，所以手柄所在的高度就是那个弯折值的高度。
+static QPointF bendHandlePoint(const QPointF& from, const QPointF& to, AutomationType type,
+                               muse::real_t prevOutValue, muse::real_t arrivalValue,
+                               const std::optional<mu::engraving::AutomationPoint::Ease>& bend)
+{
+    const double t = bend ? std::clamp(double(bend->t), 0.0, 1.0) : 0.5;
+    const double fraction = bend ? std::clamp(double(bend->value), 0.0, 1.0) : 0.5;
+
+    const double bendValue = double(prevOutValue) + fraction * (double(arrivalValue) - double(prevOutValue));
+
+    return QPointF(from.x() + (to.x() - from.x()) * t,
+                   1.0 - automationValueToDisplay(type, bendValue));
 }
 
 static const Segment* lastSegmentOfSystem(const System* system)
@@ -430,6 +459,8 @@ muse::uicomponents::PolylinePlot* NotationAutomationController::createPolylineFo
         pointsForPolyline.emplace_back(pointData.qPointF);
     }
     polyline->setPoints(pointsForPolyline);
+    //! ⚠️ 弯折（曲率）与点**必须一起**交给 polyline：两者是按索引对齐的，只给一半就画错了。
+    polyline->setBends(bendsForPolyline(pointsData));
 
     applyPolylineStyle(polyline, key);
     polyline->setVisible(false);
@@ -458,6 +489,33 @@ muse::uicomponents::PolylinePlot* NotationAutomationController::createPolylineFo
             QVector<QPointF> points = polyline->points();
             points.replace(pointIdx, point);
             polyline->setPoints(points);
+
+            //! 段的两端动了，而弯折手柄在段里的**相对**位置（ease 的 t 与幅度）没变 ——
+            //! 所以手柄的绝对位置要跟着重算。不重算的话，拖动过程中曲线会经过一个陈旧的
+            //! 弯折点：画面与松手后的结果不一致（"看到的 ≠ 听到的"的拖动版）。
+            const auto pointsDataIt = m_pointsDataByStaff.find(key);
+            if (pointsDataIt != m_pointsDataByStaff.end()) {
+                const QVector<PointData>& pointsData = pointsDataIt->second;
+                QVector<QPointF> bends = bendsForPolyline(pointsData);
+
+                if (pointIdx >= 1 && pointIdx < pointsData.size() && pointsData.at(pointIdx).hasBend) {
+                    const Staff* staff = score() ? score()->staff(key.staffIdx) : nullptr;
+                    if (const std::optional<QPointF> bend = bendHandleFor(staff, pointsData.at(pointIdx).tick,
+                                                                         pointsData.at(pointIdx - 1).qPointF, point)) {
+                        bends[pointIdx - 1] = *bend;
+                    }
+                }
+                if (pointIdx + 1 < pointsData.size() && pointsData.at(pointIdx + 1).hasBend) {
+                    const Staff* staff = score() ? score()->staff(key.staffIdx) : nullptr;
+                    if (const std::optional<QPointF> bend = bendHandleFor(staff, pointsData.at(pointIdx + 1).tick, point,
+                                                                         pointsData.at(pointIdx + 1).qPointF)) {
+                        bends[pointIdx] = *bend;
+                    }
+                }
+
+                polyline->setBends(bends);
+            }
+
             applyPolylineColorsUnderLine(polyline, key);
             polyline->update(); // TODO: pass update rect?
         };
@@ -507,7 +565,69 @@ muse::uicomponents::PolylinePlot* NotationAutomationController::createPolylineFo
         QVector<QPointF> points = polyline->points();
         points.insert(insertIdx, { x, y });
         polyline->setPoints(points);
+
+        //! 按下落在**线上**，所以这个新顶点就在它切开的那一段上：原来属于该段的弯折（记在下一个
+        //! 点上）现在描述的这一段两端变了，手柄位置要跟着重算。这是一次手势内的预览 ——
+        //! 松手时的模型写入会按曲线把这一段整个重建。
+        QVector<QPointF> bends = bendsForPolyline(pointsData);
+        if (insertIdx + 1 < pointsData.size() && pointsData.at(insertIdx + 1).hasBend) {
+            const Staff* staff = score() ? score()->staff(key.staffIdx) : nullptr;
+            if (const std::optional<QPointF> bend = bendHandleFor(staff, pointsData.at(insertIdx + 1).tick,
+                                                                 pointsData.at(insertIdx).qPointF,
+                                                                 pointsData.at(insertIdx + 1).qPointF)) {
+                bends[insertIdx] = *bend;
+            }
+        }
+        //! 新顶点自己带不了弯折：它还没有进入模型，形状也未定 —— 这时给它一个抓手，
+        //! 只会让人以为功能坏了。松手写入之后它就有了。
+        polyline->setBends(bends);
         applyPolylineColorsUnderLine(polyline, key);
+    });
+
+    QObject::connect(polyline, &muse::uicomponents::PolylinePlot::bendMoved,
+                     [this, key, polyline](int segmentIdx, qreal x, qreal y, bool completed) {
+        const auto pointsDataIt = m_pointsDataByStaff.find(key);
+        IF_ASSERT_FAILED(pointsDataIt != m_pointsDataByStaff.end()) {
+            return;
+        }
+        QVector<PointData>& pointsData = pointsDataIt->second;
+        if (segmentIdx < 0 || segmentIdx + 1 >= pointsData.size()) {
+            return;
+        }
+
+        PointData& arrival = pointsData[segmentIdx + 1];
+        if (!arrival.hasBend) {
+            // A flat segment has nothing to bend, and a vertical jump is not a segment in time
+            return;
+        }
+
+        const QPointF from = pointsData.at(segmentIdx).qPointF;
+        const QPointF to = arrival.qPointF;
+
+        //! 预览与写入用**同一套夹取**，否则松手时手柄会跳一下：
+        //! 横向留在段内（两端各留 5%，理由见 BEND_T_MIN），纵向留在这段值的范围内
+        //! （`Ease::value` 的含义就是"落在起止值之间的比例"）。
+        const qreal minX = from.x() + (to.x() - from.x()) * BEND_T_MIN;
+        const qreal maxX = from.x() + (to.x() - from.x()) * BEND_T_MAX;
+        const qreal minY = std::min(from.y(), to.y());
+        const qreal maxY = std::max(from.y(), to.y());
+
+        const QPointF preview(std::clamp(x, minX, maxX), std::clamp(y, minY, maxY));
+
+        //! 拖动中只把预览写进**显示数据**（跟手），模型一个字都不写 —— 松手才提交一次。
+        arrival.bendPointF = preview;
+        polyline->setBends(bendsForPolyline(pointsData));
+
+        if (!completed) {
+            return;
+        }
+
+        const int fromTick = pointsData.at(segmentIdx).tick;
+        if (!requestEditPointEase(arrival, from, key, preview.x(), preview.y())) {
+            // 什么都没写（手柄回到原地、或写入被拒）：立刻按模型重画这一段，
+            // 免得画面停在一个曲线并不存在的位置上（§"松手后立刻按真实数据重画"）。
+            updateStaffPointsInRange(key, fromTick, arrival.tick);
+        }
     });
 
     QObject::connect(polyline, &muse::uicomponents::PolylinePlot::pointRemoved,
@@ -566,12 +686,35 @@ QVector<NotationAutomationController::PointData> NotationAutomationController::p
         // Point in/out values are rescaled to the display range - higher value == lower Y...
         const mu::engraving::AutomationPoint& autoPoint = it->second;
         const mu::engraving::real_t resolvedIn = mu::engraving::resolveInValue(curve, it);
+
+        //! 曲率：到达本点的这一段能不能弯、弯折手柄在哪。判据与画法都在 `bendHandleFor()` 里 ——
+        //! 与 MIDI 页、与这里的拖动预览共用同一份（三处算法不一致，就会出现"拖的时候一个样、
+        //! 松手另一个样"这种最难查的偏差）。
+        //! ⚠️ 折线上还没有上一个顶点时（本范围内的第一个点）算不出这一段，这就是"不能弯"；
+        //! `updateStaffPointsInRange()` 会用范围外保留下来的那个顶点补上（见那里的说明）。
+        const bool hasPrevVertex = !points.isEmpty();
+        const QPointF prevVertex = hasPrevVertex ? points.last().qPointF : QPointF();
+
+        const auto applyBend = [&](PointData& pointData, const QPointF& toPointF) {
+            if (!hasPrevVertex) {
+                return;
+            }
+            if (const std::optional<QPointF> bend = bendHandleFor(staff, tick, prevVertex, toPointF)) {
+                pointData.hasBend = true;
+                pointData.bendPointF = *bend;
+            }
+        };
+
         if (resolvedIn == autoPoint.value.outValue) {
             const QPointF qpf(pointXInStaff, 1.0 - automationValueToDisplay(type, resolvedIn));
-            points.emplace_back(PointData(currentPointIndex++, tick, qpf, PointData::PointType::BOTH));
+            PointData pointData(currentPointIndex++, tick, qpf, PointData::PointType::BOTH);
+            applyBend(pointData, qpf);
+            points.emplace_back(pointData);
         } else {
             const QPointF qpfIn(pointXInStaff, 1.0 - automationValueToDisplay(type, resolvedIn));
-            points.emplace_back(PointData(currentPointIndex++, tick, qpfIn, PointData::PointType::IN));
+            PointData inPointData(currentPointIndex++, tick, qpfIn, PointData::PointType::IN);
+            applyBend(inPointData, qpfIn);
+            points.emplace_back(inPointData);
 
             const QPointF qpfOut(pointXInStaff, 1.0 - automationValueToDisplay(type, autoPoint.value.outValue));
             points.emplace_back(PointData(currentPointIndex++, tick, qpfOut, PointData::PointType::OUT));
@@ -600,6 +743,10 @@ void NotationAutomationController::applyPolylineStyle(PolylinePlot* polyline, co
 
     polyline->setGhostPointsEnabled(false);
     polyline->setSelectedPointsEnabled(true);
+
+    //! 曲率：车道给出"有坡度的段"的弯折手柄，拖它调曲率（写上游的 `AutomationPoint::Ease`）。
+    //! 与 MIDI 页同一套手势、同一份语义 —— 两页编辑的是同一条曲线，只是画在两处。
+    polyline->setBendHandlesEnabled(true);
 
     PolylinePointStyle* standard = polyline->standardPointStyle();
     standard->setCenterRadius(POLYLINE_STANDARD_CENTER_RADIUS);
@@ -973,14 +1120,76 @@ void NotationAutomationController::updateStaffPointsInRange(const SysStaffKey& k
     }
     pointsData = updatedPointsData;
 
+    //! ⚠️ 局部刷新算不出**范围内第一个点**的到达段：那一段的起点在范围之外，是被保留下来的那个顶点。
+    //! 不补这一步，范围内任何一次编辑都会让第一个点的弯折手柄消失（要等下一次整表重建才回来）。
+    if (firstIdx > 0 && firstIdx < pointsData.size() && pointsData.at(firstIdx).tick != pointsData.at(firstIdx - 1).tick) {
+        PointData& first = pointsData[firstIdx];
+        const QPointF prevVertex = pointsData.at(firstIdx - 1).qPointF;
+        if (const std::optional<QPointF> bend = bendHandleFor(staff, first.tick, prevVertex, first.qPointF)) {
+            first.hasBend = true;
+            first.bendPointF = *bend;
+        } else {
+            first.hasBend = false;
+            first.bendPointF = QPointF();
+        }
+    }
+
     QVector<QPointF> points;
     points.reserve(pointsData.size());
     for (const PointData& pointData : pointsData) {
         points.push_back(pointData.qPointF);
     }
     polyline->setPoints(points);
+    polyline->setBends(bendsForPolyline(pointsData));
     applyPolylineColorsUnderLine(polyline, key);
     polyline->update();
+}
+
+QVector<QPointF> NotationAutomationController::bendsForPolyline(const QVector<PointData>& pointsData)
+{
+    if (pointsData.size() < 2) {
+        return {};
+    }
+
+    //! 一条折线有 n-1 段，而"这一段能不能弯"记在段的**到达点**上，所以弯折表比点表短一个。
+    QVector<QPointF> bends;
+    bends.reserve(pointsData.size() - 1);
+    for (int i = 1; i < pointsData.size(); ++i) {
+        const PointData& arrival = pointsData.at(i);
+        bends.push_back(arrival.hasBend ? arrival.bendPointF : PolylinePlot::noBend());
+    }
+
+    return bends;
+}
+
+std::optional<QPointF> NotationAutomationController::bendHandleFor(const mu::engraving::Staff* staff, int tick,
+                                                                   const QPointF& fromPointF, const QPointF& toPointF) const
+{
+    const AutomationDataConstPtr data = automationData();
+    if (!staff || !data) {
+        return std::nullopt;
+    }
+
+    const AutomationCurveKey curveKey = curveKeyFor(currentAutomationType(), staff);
+    const AutomationCurve& curve = data->curve(curveKey);
+
+    //! ⚠️ 前一个点要取**曲线上**的前一个点，不是折线上的前一个顶点：折线上的前一个顶点可能是同一个
+    //! 点的 `OUT`（被拆成 IN/OUT 的点），那样算出来的是那个"竖跳"，不是这一段。
+    const auto it = curve.find(tick);
+    if (it == curve.end() || it == curve.begin()) {
+        return std::nullopt;
+    }
+
+    const auto prevIt = std::prev(it);
+    const muse::real_t arrivalValue = mu::engraving::resolveInValue(curve, it);
+    if (muse::RealIsEqual(prevIt->second.value.outValue, arrivalValue)) {
+        //! 平的段没有弯折可言：`Ease::value` 是"落在起止值之间的比例"，起止值相同就没有比例可言，
+        //! 拖了也不会弯。给它一个抓手只会让人以为功能坏了。
+        return std::nullopt;
+    }
+
+    return bendHandlePoint(fromPointF, toPointF, currentAutomationType(), prevIt->second.value.outValue,
+                           arrivalValue, mu::engraving::ease(it->second));
 }
 
 void NotationAutomationController::mergePendingChanges(const mu::engraving::AutomationChanges& changes)
@@ -1167,6 +1376,72 @@ bool NotationAutomationController::requestAddPoint(const SysStaffKey& key, qreal
         { *newTick, SetPoint { newPoint } }
     };
 
+    editAutomationPoints(curveKey, edits);
+
+    return true;
+}
+
+bool NotationAutomationController::requestEditPointEase(const PointData& arrivalPointData, const QPointF& fromPointF,
+                                                        const SysStaffKey& key, qreal x, qreal y)
+{
+    IF_ASSERT_FAILED(key.isValid() && arrivalPointData.hasBend) {
+        return false;
+    }
+
+    const Staff* staff = score() ? score()->staff(key.staffIdx) : nullptr;
+    const AutomationDataConstPtr data = automationData();
+    IF_ASSERT_FAILED(staff && data) {
+        return false;
+    }
+
+    const AutomationCurveKey curveKey = curveKeyFor(currentAutomationType(), staff);
+    const AutomationCurve& curve = data->curve(curveKey);
+
+    const auto existingIt = curve.find(arrivalPointData.tick);
+    IF_ASSERT_FAILED(existingIt != curve.end()) {
+        return false;
+    }
+
+    //! 这一段的两端：本点（到达点）与它在上游曲线里的前一个点。
+    //! ⚠️ 用曲线里的前一个点，而不是折线上的前一个顶点 —— 折线上的前一个顶点可能是**同一个点**
+    //! 的 `OUT`（拆开的点），那样算出来的段是那个"竖跳"，不是这一段。
+    const auto prevIt = (existingIt == curve.begin()) ? curve.end() : std::prev(existingIt);
+    if (prevIt == curve.end()) {
+        return false;
+    }
+
+    const muse::real_t prevOutValue = prevIt->second.value.outValue;
+    const muse::real_t arrivalValue = mu::engraving::resolveInValue(curve, existingIt);
+    if (muse::RealIsEqual(prevOutValue, arrivalValue)) {
+        // 平的段没有弯折可言（range 是 0，怎么弯都是平的）
+        return false;
+    }
+
+    //! 横向：手柄在段内的位置（同一套 5% 夹取，与拖动预览一致）
+    const double spanX = arrivalPointData.qPointF.x() - fromPointF.x();
+    if (spanX <= 0.0) {
+        return false;
+    }
+    const double t = std::clamp((double(x) - fromPointF.x()) / spanX, BEND_T_MIN, BEND_T_MAX);
+
+    //! 纵向：手柄高度 → 自动化值 → 落在"前一点的值 .. 到达值"之间的比例，这就是 `Ease::value`
+    const double draggedValue = automationValueFromDisplay(currentAutomationType(), 1.0 - double(y));
+    const double range = double(arrivalValue) - double(prevOutValue);
+    const double fraction = std::clamp((draggedValue - double(prevOutValue)) / range, 0.0, 1.0);
+
+    //! 写成什么，与 MIDI 页共用同一个函数 —— 两页拖出来的曲率语义必须一模一样。
+    const std::optional<AutomationPoint> written = bentAutomationPoint(existingIt->second, t, fraction);
+    if (!written.has_value()) {
+        return false;
+    }
+
+    mu::engraving::AutomationPointEdits edits {
+        { arrivalPointData.tick, SetPoint { *written } }
+    };
+
+    //! ⚠️ 走 `INotationAutomation::editPoints`（记谱页的撤销栈事务），**不要**在这里自己
+    //! `startCmd`/`endCmd`：只有記谱页那条路会在提交后通知"栈变了"，撤销/重做命令状态、
+    //! 主菜单与 Ctrl+Z 才会跟上（维护手册 §4.8）。
     editAutomationPoints(curveKey, edits);
 
     return true;
