@@ -147,6 +147,21 @@ public:
     //! seekTick()`.
     Q_INVOKABLE void seekTick(int tick);
 
+    //! 试听一个音符：**按下音符块就出声**。
+    //!
+    //! 走的是**记谱页点音符时那条一模一样的路** —— `IPlaybackController::playElements()`：
+    //! 记谱页在 `NotationViewInputController::handleLeftClick()` 里对点中的元素就是这一句，
+    //! 所以「编辑时播放音符」（`score/note/playOnClick`，默认开）、试听时长
+    //! （`notePlayDurationMilliseconds`）这些设置对两页同时生效，不需要在这一页再抄一份开关。
+    //!
+    //! ⚠️ 与记谱页唯一的差别是**传谁**：记谱页点中的是**和弦**（`isChord()` → 整串音一起响），
+    //! 而卷帘窗里一个方块就是**一个音**，所以这里传 `Note` —— 点哪个响哪个，这也正是卷帘窗
+    //! 里试听该有的语义（想听整个和弦，记谱页那边点一下即可）。
+    //!
+    //! `row` 是 `notes()` 的下标（视图侧要先用 `visibleRows[i].row` 把**可见列表**的下标映射回来）。
+    //! 越界、音符已失效、或这一页没有工程时都是**无操作**：试听不该因为一次失手而改变任何状态。
+    Q_INVOKABLE void playNote(int row);
+
     //! Turns a drag in the ruler (two raw ticks, in whichever direction) into a loop range, using the
     //! maths of `midiLoopRangeFromDrag()`: snapping, clamping, order, and "was that a click?".
     //! Returns { inTick, outTick, valid }.

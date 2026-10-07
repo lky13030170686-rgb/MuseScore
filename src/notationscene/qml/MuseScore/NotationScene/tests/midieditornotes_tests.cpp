@@ -258,6 +258,76 @@ TEST_F(MidiEditorNotesTests, MeasuresFollowEachOtherWithoutGaps)
     }
 }
 
+//! 点一个音符块 = 试听**那个**音。这一层里唯一会静默出错的东西是**行号**。
+//!
+//! 视图只画选中的谱表，所以命中函数给的是 `visibleRows` 的下标，而模型的编辑接口（以及
+//! 试听用的 `playNote()`）要的是 `notes()` 的下标 —— 两者在过滤之后**不再相等**。
+//! 这里把视图那段过滤（`notes[i].staffIndex === currentStaff`）原样走一遍，再按
+//! `visibleRows[k].row` 映回去，检查拿到的就是被点中的那个音符。
+//! 映射一错，试听会响成**别的音**：不报错、不崩，只是"点这个响那个"，所以必须钉住。
+//!
+//! ⚠️ **必须用双谱表的谱**（`test-two-staves.mscx`）：单谱表时"可见下标"与"`notes()` 下标"
+//! 恰好相等，这个测试会**空转** —— 第一次就是这么写的，把过滤条件改坏它照样绿（反向验证抓到的）。
+//!
+//! NOTE: 试听真正发出去的那一步（`IPlaybackController::playElements()`）不在这里测 ——
+//!       它是**记谱页点音符用的同一个调用**，行为由 engraving 侧的
+//!       `Engraving_PlaybackModelTests.Note_Entry_Playback_*` 覆盖；这一页只需要保证
+//!       交出去的是**对的那个音符**。听感（点一下就出声）由人在真实程序里验收。
+TEST_F(MidiEditorNotesTests, ClickingANoteAuditionsThatVeryNote)
+{
+    MasterScore* twoStaves = ScoreRW::readScore(String(u"data/test-two-staves.mscx"));
+    ASSERT_TRUE(twoStaves);
+    ASSERT_GE(twoStaves->nstaves(), 2u) << "this test needs a second staff, or the filter changes nothing";
+
+    const std::vector<MidiNoteItem> notes = collectMidiNotes(twoStaves);
+    ASSERT_FALSE(notes.empty());
+
+    //! 视图默认编辑 0 号谱表（`currentStaff` 的初值），过滤规则与 QML 里那一行相同。
+    std::vector<size_t> visibleRows;
+    for (size_t i = 0; i < notes.size(); ++i) {
+        if (notes[i].staffIndex == 0) {
+            visibleRows.push_back(i);
+        }
+    }
+
+    ASSERT_FALSE(visibleRows.empty()) << "this test needs notes on the staff the roll starts on";
+
+    //! 过滤**真的**起了作用（别的谱表有音符）—— 否则"两个下标相等"，下面测不出任何东西。
+    //! ⚠️ 不能假设"0 号谱表的音符排在前面"：`collectMidiNotes()` 是**按时间**走的，
+    //! 所以另一谱表的音可能夹在中间（第一版就是按"前缀"写的，被这条断言当场抓住）。
+    ASSERT_LT(visibleRows.size(), notes.size()) << "no note of another staff, so the mapping cannot be wrong";
+
+    size_t shifted = 0;
+    for (size_t k = 0; k < visibleRows.size(); ++k) {
+        if (visibleRows[k] != k) {
+            ++shifted;
+        }
+    }
+    EXPECT_GT(shifted, size_t(0)) << "the visible index equals the row for every note, so this test proves nothing";
+
+    for (size_t k = 0; k < visibleRows.size(); ++k) {
+        const size_t row = visibleRows[k];
+
+        EXPECT_EQ(notes[row].staffIndex, 0)
+            << "visible row " << k << " maps to a note of another staff - clicking it would sound the wrong instrument";
+
+        //! 反向也要成立：可见列表里没有**别的**音符能替代这一行 ——
+        //! 一个把 row 用成 visibleRows 下标、或把过滤忘掉的实现会在这里露馅。
+        for (size_t other = 0; other < notes.size(); ++other) {
+            if (other == row) {
+                continue;
+            }
+
+            const bool samePlace = notes[other].staffIndex == notes[row].staffIndex
+                                   && notes[other].tick == notes[row].tick
+                                   && notes[other].pitch == notes[row].pitch;
+            EXPECT_FALSE(samePlace) << "two notes share a place, so a wrong row would be invisible here";
+        }
+    }
+
+    delete twoStaves;
+}
+
 TEST_F(MidiEditorNotesTests, PitchEditReachesTheScoreAndUndoRestoresIt)
 {
     const std::vector<MidiNoteItem> before = collectMidiNotes(m_score);

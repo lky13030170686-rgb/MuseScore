@@ -362,6 +362,11 @@ Item {
     property int dragPreviewPitch: -1
     property real dragStartY: 0
 
+    //! 拖动中**上一次已经试听过**的音高（-1 = 还没响过）。用它当判据，音高真的变了才再响一声 ——
+    //! 否则鼠标每移动一像素都会发一次音。记谱页拖动音符也是"音高变了才播"（见 `dragPlayedPitch`
+    //! 的用法，以及 `维护手册.md` §4.8 里"试听"那一行）。
+    property int dragPlayedPitch: -1
+
     //! What the current drag edits. Dorico draws the played extent over the notated one; grabbing the
     //! right edge of a block edits the played length, Shift+dragging edits the played start, and a
     //! plain drag still edits the pitch.
@@ -2001,6 +2006,16 @@ Item {
                         root.dragPreviewPlayStart = grabbed.playTick
                         root.dragPreviewPlayDuration = grabbed.playDurationTicks
 
+                        //! 试听：**按下就出声** —— 记谱页点音符是同一个动作
+                        //! （`NotationViewInputController::handleLeftClick()` 里那句
+                        //! `playbackController()->playElements({ hitElement })`），这里走模型的
+                        //! `playNote()`，而它调的就是同一个播放接口，所以"编辑时播放音符"这个
+                        //! 设置两页一起生效。
+                        //! 记在 `dragPlayedPitch` 上：拖动中只在音高**真的变了**时才再响一声，
+                        //! 免得鼠标每动一像素都发一次音（记谱页拖动也是这个判据）。
+                        root.dragPlayedPitch = root.dragStartPitch
+                        root.model.playNote(grabbed.row)
+
                         //! NOTE: which part of the block was grabbed decides what the drag edits.
                         //!       The edge test uses the PLAYED bar, not the notated block: that bar is
                         //!       what the user sees on top and aims at, and the two only coincide when
@@ -2039,6 +2054,13 @@ Item {
                         var pitch = root.clamp(root.dragStartPitch - deltaRows, 0, 127)
                         if (pitch !== root.dragPreviewPitch) {
                             root.dragPreviewPitch = pitch
+                            //! 拖到另一个音高时试听**记谱上的**那个音高：与记谱页拖动音符一样，
+                            //! 它只在新音高与上一次响过的不同时才出声。真正的写入仍在松手那一次
+                            //! （拖动中提交是这个项目踩过的坑，见 `维护手册.md` §4.8）。
+                            if (pitch !== root.dragPlayedPitch && root.dragNoteIndex < root.visibleRows.length) {
+                                root.dragPlayedPitch = pitch
+                                root.model.playNote(root.visibleRows[root.dragNoteIndex].row)
+                            }
                             gridCanvas.requestPaint()
                         }
                         return
@@ -2087,6 +2109,7 @@ Item {
 
                     root.dragNoteIndex = -1
                     root.dragPreviewPitch = -1
+                    root.dragPlayedPitch = -1
                     root.dragMode = root.dragModePitch
 
                     //! 点空白 = 把播放位置挪到这儿（记谱页同款）。判据两条：没抓到音符，

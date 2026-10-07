@@ -423,6 +423,21 @@ void MidiEditorModel::seekTick(int tick)
     }
 }
 
+void MidiEditorModel::playNote(int row)
+{
+    //! 行 → 音符**现在**解析一次（不缓存指针）：`notes` 每次乐谱变更都会重建，而这一页所有的
+    //! 编辑接口都是"拿 row 现查"（见 noteAt() 的说明）—— 试听走同一条规矩，就不会有悬空指针。
+    Note* note = noteAt(row);
+    if (!note) {
+        return;
+    }
+
+    //! ⚠️ 只管"哪个音"，不管"要不要响"：**开关与时长都由播放层自己判**
+    //! （`playElements()` 里查 `playNotesWhenEditing()`）。记谱页那一声也是这么来的，
+    //! 所以这一页不需要、也不该另建一套试听设置。
+    playbackController()->playElements({ note });
+}
+
 QVariantMap MidiEditorModel::loopRangeFromDrag(int draggedTick, int releasedTick, int snapTicks) const
 {
     const MidiLoopRange range = midiLoopRangeFromDrag(draggedTick, releasedTick, m_totalTicks, snapTicks);
