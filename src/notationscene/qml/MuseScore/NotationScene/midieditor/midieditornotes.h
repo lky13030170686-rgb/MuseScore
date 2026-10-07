@@ -117,6 +117,26 @@ int applyNoteVelocities(engraving::Score* score, const std::vector<std::pair<eng
 bool applyNotePlayOverride(engraving::Score* score, engraving::Note* note,
                            int startTick, int durationTicks, int velocityPercent, bool openCommand = true);
 
+//! 一个"只用来发声"的临时音符（见 `midiNoteToAudition()`）。`note` 是要交给
+//! `IPlaybackController::playElements()` 的那个音符，`chord` 是它的宿主 —— **删除 `chord` 即可**，
+//! 它会连同 `note` 一起删掉（`Chord::~Chord()` 里 `DeleteAll(m_notes)`）。
+struct MidiAuditionNote {
+    engraving::Note* note = nullptr;
+    engraving::Chord* chord = nullptr;
+
+    bool isValid() const { return note != nullptr; }
+};
+
+//! 造一个音高可以**不是**谱面上那个的临时音符，用来在拖动中试听"拖到的音高"。
+//!
+//! 卷帘窗拖动改音高只预览、不写谱（松手才提交），而播放层从 engraving 模型渲染事件 —— 直接播原来
+//! 那个 `Note*` 的话，响的永远是拖动前的音高。记谱页拖动之所以响的是拖到的音，是因为它的
+//! `viewInteraction()->drag()` 实时改谱；这一页不那样做，所以走"临时元素"。
+//!
+//! 除了音高，其余（track / staffIdx / voice / 位置）都从**原音符**抄过来，播放层才认得出这条轨道。
+//! `pitch` 会夹到 0..127。返回的 `chord` 由调用方删除；音符为空表示"没法发声"（不抛错）。
+MidiAuditionNote midiNoteToAudition(engraving::Score* score, engraving::Note* note, int pitch);
+
 //! One point of the Dynamics automation curve of a staff: a tick, and a level in 0..1.
 struct MidiAutomationPoint {
     int tick = 0;

@@ -32,6 +32,7 @@
 #include "engraving/automation/automationdata.h"
 #include "engraving/automation/automationtypes.h"
 #include "engraving/dom/chord.h"
+#include "engraving/dom/factory.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/noteevent.h"
@@ -298,6 +299,66 @@ bool applyNotePlayOverride(Score* score, Note* note, int startTick, int duration
 
     return true;
 }
+
+//! 造一个"只用来发声"的临时音符，音高可以**不是**谱面上那个。
+//!
+//! 为什么要临时元素：卷帘窗拖动改音高时**只预览、不写谱**（松手才提交一次，见 §4.8），
+//! 而播放层是从 engraving 模型渲染事件的 —— 拿原来的 `Note*` 去播，响的永远是**拖动前**的音高
+//! （用户 2026-10-07 报的「上下拖动响的是同一个音」）。记谱页拖动时之所以响的是拖到的音，
+//! 是因为 `viewInteraction()->drag()` **实时改谱**；这一页不能那么做，所以改"造一个临时音符"。
+//!
+//! 记谱页点音符走的是 `IPlaybackController::playElements()`，这里给的仍然是**同一个接口、
+//! 同一种元素**（一个 `Note`），所以"编辑时播放音符"这个设置照旧管着它 —— 只是元素是临时的。
+//!
+//! 三个字段必须从**原音符**抄过来，否则播放层认不出这条轨道：
+//! `track`（→ `part()`，`makeInstrumentTrackId()` 用它找轨道）、`staffIdx`、`voice`；
+//! 位置（`tick`）由父元素（和弦/段）带出来，所以临时元素挂在**原音符所在的段**上。
+//!
+//! ⚠️ `chordOut` 归调用方删除，**而删除和弦就会删掉它自己的音符**（`Chord::~Chord()` 里
+//! `DeleteAll(m_notes)`）—— 所以**不要**再单独 delete `note`，否则是二次释放。
+MidiAuditionNote midiNoteToAudition(engraving::Score* score, engraving::Note* note, int pitch)
+{
+    MidiAuditionNote result;
+    if (!score || !note) {
+        return result;
+    }
+
+    const Chord* sourceChord = note->chord();
+    Segment* segment = sourceChord ? sourceChord->segment() : nullptr;
+
+    //! NOTE: 父元素给的是"能解析出 score、能带出 tick"的归属链。
+    //! ⚠️ `Factory::createChord(segment)` **只把段记成构造参数**，并不建立**归属**关系 ——
+    //! 而 `EngravingItem::tick()` 是沿 `ownershipParent()` 往上找段/小节的，`ownershipParent()`
+    //! 又只在**显式设置过**时才返回父对象 ⇒ 不显式设的话临时音符的 tick 恒为 0
+    //! （试听就会响在曲子开头，而不是这个音所在的位置）。单元测试量到的就是这一点。
+    Chord* chord = Factory::createChord(segment);
+    if (!chord) {
+        return result;
+    }
+
+    if (segment) {
+        chord->setOwnershipParent(segment);
+    }
+
+    chord->setTrack(note->track());
+    chord->setStaffIdx(note->staffIdx());
+    chord->setVoice(note->voice());
+
+    Note* temp = Factory::createNote(chord);
+    temp->setOwnershipParent(chord);
+    temp->setTrack(note->track());
+    temp->setStaffIdx(note->staffIdx());
+    temp->setVoice(note->voice());
+
+    NoteVal nval;
+    nval.pitch = std::clamp(pitch, 0, 127);
+    temp->setNval(nval);
+
+    result.note = temp;
+    result.chord = chord;
+    return result;
+}
+
 //! The Dynamics curve key of one staff, built the way the notation page builds it
 //! (NotationAutomationController::curveKeyFor -> ScoreAutomationController::resolveKeys), so that the
 //! two pages address ONE curve. A staff index outside the score yields an invalid key, and every entry

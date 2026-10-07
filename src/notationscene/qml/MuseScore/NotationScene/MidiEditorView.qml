@@ -536,14 +536,22 @@ Item {
     //!
     //! 收成一个函数是**有意为之**：按下音符块与拖动改音高是两条路径，而"可见行下标 → 模型要的
     //! `notes()` 下标"这个映射**只在这里写一次** —— 两个调用点各写一遍迟早会分叉，而分叉的表现是
-    //! "点这个响那个"（不报错、不崩，最难查的一类）。模型侧的 `playNote()` 也自带越界保护。
-    function auditionNoteAt(visibleIndex) {
+    //! "点这个响那个"（不报错、不崩，最难查的一类）。模型侧的两个入口都自带越界保护。
+    //!
+    //! `pitch` 不给（< 0）时响**谱面上那个音**；拖动时传**拖到的音高** —— 拖动中卷帘窗不写谱，
+    //! 所以必须让模型造个临时音符才响得出"拖到的那个音"（用户 2026-10-07 报的「上下拖动响的是
+    //! 同一个音」）。记谱页拖动响的是拖到的音，这里与它一致。
+    function auditionNoteAt(visibleIndex, pitch) {
         var list = visibleRows
         if (visibleIndex < 0 || visibleIndex >= list.length) {
             return
         }
 
-        model.playNote(list[visibleIndex].row)
+        if (pitch === undefined || pitch < 0) {
+            model.playNote(list[visibleIndex].row)
+        } else {
+            model.playNoteAtPitch(list[visibleIndex].row, pitch)
+        }
     }
 
     function repaintAll() {
@@ -2068,12 +2076,13 @@ Item {
                         var pitch = root.clamp(root.dragStartPitch - deltaRows, 0, 127)
                         if (pitch !== root.dragPreviewPitch) {
                             root.dragPreviewPitch = pitch
-                            //! 拖到另一个音高时试听**记谱上的**那个音高：与记谱页拖动音符一样，
-                            //! 它只在新音高与上一次响过的不同时才出声。真正的写入仍在松手那一次
-                            //! （拖动中提交是这个项目踩过的坑，见 `维护手册.md` §4.8）。
+                            //! 试听**拖到的那个音高**（不是谱面上原有的那个）：与记谱页拖动音符
+                            //! 一致 —— 拖到哪个音就响哪个音。卷帘窗拖动中不写谱，所以模型会造一个
+                            //! 临时音符来发声（`playNoteAtPitch`）。判据仍是"音高真的变了才响"，
+                            //! 免得鼠标每动一像素都发一次音；真正的写入仍在松手那一次。
                             if (pitch !== root.dragPlayedPitch) {
                                 root.dragPlayedPitch = pitch
-                                root.auditionNoteAt(root.dragNoteIndex)
+                                root.auditionNoteAt(root.dragNoteIndex, pitch)
                             }
                             gridCanvas.requestPaint()
                         }

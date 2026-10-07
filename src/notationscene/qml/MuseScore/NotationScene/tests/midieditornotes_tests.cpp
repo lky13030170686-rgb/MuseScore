@@ -328,10 +328,72 @@ TEST_F(MidiEditorNotesTests, ClickingANoteAuditionsThatVeryNote)
     delete twoStaves;
 }
 
+//! 拖动改音高时要响**拖到的那个音高**（用户 2026-10-07 报的「上下拖动响的是同一个音」）。
+//!
+//! 卷帘窗拖动中**不写谱**（松手才提交一次），所以播放层拿原音符渲染的话，响的永远是拖动前的音高。
+//! 修法是造一个临时音符（`midiNoteToAudition()`）交给**同一个** `playElements()`。这里钉住临时音符
+//! 必须满足的两件事：
+//!
+//!   1. 音高 = **要试听的那个**（这就是修的东西）；
+//!   2. 轨道/谱表/声部与原音符**一致** —— 播放层靠 `makeInstrumentTrackId()`（→ `item->part()`）
+//!      找轨道，认不出来就**静默无声**（不报错、不崩），所以这一条必须钉住。
+TEST_F(MidiEditorNotesTests, AuditioningAPitchBuildsANoteThatSoundsIt)
+{
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_FALSE(items.empty());
+
+    for (size_t i = 0; i < items.size(); ++i) {
+        const Note* source = items[i].note;
+        const int target = (source->pitch() + 7) % 128;      //! 一个与原来不同的音高
+
+        const MidiAuditionNote audition = midiNoteToAudition(m_score, items[i].note, target);
+        ASSERT_TRUE(audition.isValid()) << "no temporary note at index " << i;
+
+        EXPECT_EQ(audition.note->pitch(), target) << "the temporary note does not sound the requested pitch";
+        EXPECT_NE(audition.note->pitch(), source->pitch()) << "this test needs a different pitch";
+
+        EXPECT_EQ(audition.note->track(), source->track()) << "a different track means a different instrument";
+        EXPECT_EQ(audition.note->staffIdx(), source->staffIdx());
+        EXPECT_EQ(audition.note->voice(), source->voice());
+
+        //! 播放层就是拿这个找轨道的（PlaybackModel::idKey -> makeInstrumentTrackId -> item->part()）。
+        ASSERT_NE(audition.note->part(), nullptr) << "the playback layer cannot resolve a track without a part";
+        EXPECT_EQ(audition.note->part(), source->part());
+
+        //! 同一个时间位置：试听不该把音挪到别处去。
+        EXPECT_EQ(audition.note->tick(), source->tick());
+
+        //! 删除和弦就够了 —— 它会删掉自己的音符（`Chord::~Chord()` 里 DeleteAll(m_notes)），
+        //! 所以**不能**再单独 delete note（那是二次释放）。这一行同时也是"清理真的能跑"的验证。
+        delete audition.chord;
+    }
+}
+
+//! 音高夹到 MIDI 范围、空输入不炸：拖动时指针可能算出界，试听不该因此改状态或崩。
+TEST_F(MidiEditorNotesTests, AuditioningClampsThePitchAndSurvivesNothing)
+{
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    ASSERT_FALSE(items.empty());
+
+    Note* source = items.front().note;
+
+    const MidiAuditionNote low = midiNoteToAudition(m_score, source, -5);
+    ASSERT_TRUE(low.isValid());
+    EXPECT_EQ(low.note->pitch(), 0);
+    delete low.chord;
+
+    const MidiAuditionNote high = midiNoteToAudition(m_score, source, 999);
+    ASSERT_TRUE(high.isValid());
+    EXPECT_EQ(high.note->pitch(), 127);
+    delete high.chord;
+
+    EXPECT_FALSE(midiNoteToAudition(nullptr, source, 60).isValid());
+    EXPECT_FALSE(midiNoteToAudition(m_score, nullptr, 60).isValid());
+}
+
 TEST_F(MidiEditorNotesTests, PitchEditReachesTheScoreAndUndoRestoresIt)
 {
-    const std::vector<MidiNoteItem> before = collectMidiNotes(m_score);
-    ASSERT_FALSE(before.empty());
+    const std::vector<MidiNoteItem> before = collectMidiNotes(m_score);    ASSERT_FALSE(before.empty());
 
     Note* note = before.front().note;
     const int originalPitch = note->pitch();

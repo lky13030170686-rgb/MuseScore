@@ -438,6 +438,26 @@ void MidiEditorModel::playNote(int row)
     playbackController()->playElements({ note });
 }
 
+void MidiEditorModel::playNoteAtPitch(int row, int pitch)
+{
+    Note* note = noteAt(row);
+    if (!note) {
+        return;
+    }
+
+    //! 拖动中只预览、不写谱，所以这里必须拿**临时音符**去播（详见 midiNoteToAudition()）：
+    //! 直接播原音符的话，响的永远是拖动前的音高。
+    const MidiAuditionNote audition = midiNoteToAudition(currentScore(), note, pitch);
+    if (!audition.isValid()) {
+        return;
+    }
+
+    //! ⚠️ 先播、再删。`playElements()` 同步走完渲染与发送，所以事件已经出去了；而删除和弦会把它的
+    //! 音符一起删掉（`Chord::~Chord()`），所以这里**只删和弦**，不能再删 `audition.note`。
+    playbackController()->playElements({ audition.note });
+    delete audition.chord;
+}
+
 QVariantMap MidiEditorModel::loopRangeFromDrag(int draggedTick, int releasedTick, int snapTicks) const
 {
     const MidiLoopRange range = midiLoopRangeFromDrag(draggedTick, releasedTick, m_totalTicks, snapTicks);

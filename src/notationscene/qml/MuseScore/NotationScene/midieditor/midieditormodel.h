@@ -162,6 +162,16 @@ public:
     //! 越界、音符已失效、或这一页没有工程时都是**无操作**：试听不该因为一次失手而改变任何状态。
     Q_INVOKABLE void playNote(int row);
 
+    //! 试听**某个音高**上的那个音符 —— 拖动改音高时用。
+    //!
+    //! 与 `playNote()` 的区别只有一个：音高。拖动中卷帘窗**不写谱**（松手才提交一次），所以原音符
+    //! 还是拖动前的音高，直接播它就永远响同一个音（用户 2026-10-07 报的正是这个）。这里让模型造一个
+    //! 临时音符（`midiNoteToAudition()`，track/staff/voice/位置都从原音符抄），音高用**拖到的**那个 ——
+    //! 于是听感与记谱页拖动一致：**拖到哪个音就响哪个音**。
+    //!
+    //! 仍然是同一个播放接口（`playElements()`），所以"编辑时播放音符"这个设置照旧管着它。
+    Q_INVOKABLE void playNoteAtPitch(int row, int pitch);
+
     //! Turns a drag in the ruler (two raw ticks, in whichever direction) into a loop range, using the
     //! maths of `midiLoopRangeFromDrag()`: snapping, clamping, order, and "was that a click?".
     //! Returns { inTick, outTick, valid }.
