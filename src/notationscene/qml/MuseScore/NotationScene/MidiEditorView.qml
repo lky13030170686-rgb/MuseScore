@@ -355,6 +355,11 @@ Item {
     readonly property color noteColor: ui.theme.accentColor
     readonly property color cursorColor: ui.theme.fontPrimaryColor
 
+    //! 录制预览的颜色。刻意**不**用音符那套调色板：这些音还没写进乐谱，按停止才会真的落下去，
+    //! 画成一样的颜色会让人以为"已经在谱里了"。
+    readonly property color recordColor: "#e2554f"
+    readonly property color recordHeldColor: "#ff8a5c"
+
     //! NOTE: one colour per staff so that several instruments stay distinguishable,
     //!       the same idea as Dorico's track colours.
     readonly property var staffPalette: [
@@ -420,6 +425,29 @@ Item {
     //! rather than a thing you infer from where the pointer happens to be.
     property int currentStaff: 0
 
+    //! ── 实时录制（工具条上那组控件就是它的全部入口）──────────────────────────────────
+    //!
+    //! 谁在做主：**模型**。这一页只做三件事：把"录到哪个谱表"（视图才知道的选中）传进去、
+    //! 画模型给出来的实时预览、显示状态。量化的档位与强度、时间戳怎么变成 tick、
+    //! 停止时怎么写进乐谱，全在 `MidiEditorModel` / `MidiRecorder` 里。
+    //!
+    //! 录到哪个谱表在**开始时**就定死（`recordStaff`），中途换谱表不会把预览画到别的谱表上。
+    property int recordStaff: 0
+
+    readonly property bool recording: model !== null && model.isRecording
+    readonly property var recordedRows: (model !== null) ? model.recordedNotes : []
+    readonly property var quantizeGrids: (model !== null) ? model.quantizeGrids : []
+    readonly property bool metronomeOn: model !== null && model.metronomeEnabled
+    readonly property string takeSummary: (model !== null) ? model.lastTakeSummary : ""
+
+    readonly property string quantizeLabel: {
+        if (quantizeGrids.length === 0) {
+            return "—"
+        }
+        var index = Math.max(0, Math.min(model.quantizeGridIndex, quantizeGrids.length - 1))
+        return quantizeGrids[index].label
+    }
+
     readonly property int staffCount: (model !== null && model.hasScore) ? Math.max(1, model.staffCount) : 1
 
     readonly property var staffNames: (model !== null && model.hasScore) ? model.staffNames : []
@@ -460,26 +488,37 @@ Item {
 
     //! The pitch range follows the VISIBLE notes, not the whole score - otherwise selecting an
     //! instrument with a narrow range would squeeze its notes into the middle of a mostly empty grid.
+    //!
+    //! ⚠️ 录制的实时预览**也要算进来**：空谱表上录一个低音时，只按已有音符算范围的话它会被画到
+    //! 屏幕外面去 —— 用户看到的是"按了键什么都没发生"（而音其实录到了）。
+    readonly property var rangeRows: (recording && currentStaff === recordStaff) ? recordedRows : []
+
     readonly property int lowestPitch: {
-        var list = visibleRows
-        if (list.length === 0) {
-            return 60
-        }
         var lo = 127
+        var list = visibleRows
         for (var i = 0; i < list.length; ++i) {
             lo = Math.min(lo, list[i].note.pitch)
+        }
+        for (var r = 0; r < rangeRows.length; ++r) {
+            lo = Math.min(lo, rangeRows[r].pitch)
+        }
+        if (lo > 127) {
+            return 60
         }
         return Math.max(0, lo - 2)
     }
 
     readonly property int highestPitch: {
-        var list = visibleRows
-        if (list.length === 0) {
-            return 72
-        }
         var hi = 0
+        var list = visibleRows
         for (var i = 0; i < list.length; ++i) {
             hi = Math.max(hi, list[i].note.pitch)
+        }
+        for (var r = 0; r < rangeRows.length; ++r) {
+            hi = Math.max(hi, rangeRows[r].pitch)
+        }
+        if (hi <= 0) {
+            return 72
         }
         return Math.min(127, hi + 2)
     }
@@ -1112,6 +1151,20 @@ Item {
         syncViewState()
     }
     onAutomationPointsChanged: repaintAll()
+    onRecordedRowsChanged: {
+        //! 录制的实时预览每一帧都在变（还按着的音在长），所以这一条必须便宜：
+        //! `repaintAll()` 只请求四个画布重绘，不重建任何数据，也不写视图状态
+        //! （滚动/缩放没变，写了反而是每 60ms 一次无用的回写）。
+        repaintAll()
+    }
+    onRecordingChanged: {
+        if (recording) {
+            //! 起录时把"录到哪个谱表"定死（视图才知道这个选中），并让模型知道 ——
+            //! 模型看不到视图的 `currentStaff`，所以由这里传进去。
+            recordStaff = currentStaff
+        }
+        repaintAll()
+    }
     onPlaybackTickChanged: {
         //! 播放时视口跟着走；停止时**一个像素都不动**（用户滚到哪儿就停在哪儿，
         //! 点标尺定位也不会把视图弹走 —— 他点的位置本来就在屏幕上）。
@@ -1182,6 +1235,192 @@ Item {
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
+
+            //! ── 实时录制 ─────────────────────────────────────────────────────────────
+            //!
+            //! 一个按钮管"开始/停止"，一个下拉管量化网格，一个开关管节拍器。
+            //! 三个都用**真控件**（`FlatButton` / 真 `MouseArea` 的矩形）而不是画布上的自绘：
+            //! 本环境里合成鼠标到不了 Qt Quick 画布，但工具条上的控件进得了无障碍树 ——
+            //! `tools/ui-probe.ps1 -Action click -Name Record -ControlType Button` 点得中它，
+            //! "按一下能不能真的开始录"因此是**机器可验**的（见 `维护手册.md` §7.6）。
+            FlatButton {
+                id: recordButton
+
+                height: 22
+                enabled: root.recording || (root.model !== null && root.model.canRecord)
+
+                text: root.recording
+                      ? qsTrc("notationscene", "Stop") + " (" + root.model.recordedNoteCount + ")"
+                      : qsTrc("notationscene", "Record")
+                transparent: !root.recording
+                accentButton: root.recording
+
+                toolTipTitle: root.recording
+                              ? qsTrc("notationscene", "Stop recording")
+                              : qsTrc("notationscene", "Record")
+                toolTipDescription: {
+                    if (root.recording) {
+                        return qsTrc("notationscene", "Stop and write what was played into the score (one undo step)")
+                    }
+                    if (root.model !== null && !root.model.canRecord) {
+                        return qsTrc("notationscene", "No MIDI input device: pick one in Preferences → Audio & MIDI")
+                    }
+                    return qsTrc("notationscene", "Play along from the playhead: everything you play is captured, "
+                                                  + "then quantized and written into the selected staff")
+                }
+
+                accessible.name: text + "  " + (root.recording ? qsTrc("global", "On") : qsTrc("global", "Off"))
+
+                onClicked: {
+                    if (root.model === null) {
+                        return
+                    }
+
+                    //! ⚠️ 录到哪个谱表必须在**按下这一刻**告诉模型：它看不到视图的 `currentStaff`
+                    //! （模型里没有"选中谱表"这个概念，选中是视图的会话状态）。
+                    root.recordStaff = root.currentStaff
+                    root.model.toggleRecording(root.currentStaff)
+                }
+            }
+
+            //! 量化网格。用 Popup 而不是 ComboBox：与旁边的谱表选择器同一套做法，
+            //! 不受控件样式影响，而且这一行的 36px 高度也放不下一个下拉框。
+            Rectangle {
+                id: quantizeSelector
+
+                height: 22
+                width: Math.max(52, quantizeLabelText.implicitWidth + 20)
+                radius: 3
+                color: quantizePopup.opened ? ui.theme.buttonColor : "transparent"
+                border.width: 1
+                border.color: root.gridColor
+
+                Text {
+                    id: quantizeLabelText
+
+                    anchors.centerIn: parent
+                    text: root.quantizeLabel
+                    color: root.textColor
+                    font: ui.theme.bodyFont
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: quantizePopup.open()
+                }
+
+                ToolTip {
+                    text: qsTrc("notationscene", "Quantize grid applied when the take is written")
+                    visible: quantizePopup.opened === false && quantizeSelectorHover.containsMouse
+                    delay: 600
+                }
+
+                MouseArea {
+                    id: quantizeSelectorHover
+
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                }
+
+                Popup {
+                    id: quantizePopup
+
+                    parent: quantizeSelector
+                    x: 0
+                    y: quantizeSelector.height + 2
+                    width: Math.max(quantizeSelector.width, 120)
+                    padding: 4
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                    background: Rectangle {
+                        color: root.panelColor
+                        border.width: 1
+                        border.color: root.gridColor
+                        radius: 3
+                    }
+
+                    contentItem: Column {
+                        spacing: 2
+
+                        Repeater {
+                            model: root.quantizeGrids
+
+                            delegate: Rectangle {
+                                id: quantizeOption
+
+                                required property var modelData
+                                required property int index
+
+                                width: quantizePopup.width - 8
+                                height: 24
+                                radius: 2
+                                color: (index === root.model.quantizeGridIndex || quantizeOptionMouse.containsMouse)
+                                       ? ui.theme.buttonColor : "transparent"
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: quantizeOption.modelData.label
+                                    color: root.textColor
+                                    font: ui.theme.bodyFont
+                                }
+
+                                MouseArea {
+                                    id: quantizeOptionMouse
+
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    onClicked: {
+                                        root.model.quantizeGridIndex = quantizeOption.index
+                                        quantizePopup.close()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            //! 节拍器：与记谱页播放工具条上那个是**同一个**设置（`toggleMetronome()` 写的就是它），
+            //! 所以两页会同时亮。录制时靠它对齐拍子 —— 这一页原本没有它的入口。
+            FlatButton {
+                id: metronomeButton
+
+                height: 22
+                visible: root.hasScore
+
+                text: qsTrc("notationscene", "Metro")
+                transparent: !root.metronomeOn
+                accentButton: root.metronomeOn
+
+                toolTipTitle: qsTrc("notationscene", "Metronome")
+                toolTipDescription: qsTrc("notationscene", "Count the beats while recording (same switch as the notation page's playback toolbar)")
+
+                accessible.name: text + "  " + (root.metronomeOn ? qsTrc("global", "On") : qsTrc("global", "Off"))
+
+                onClicked: {
+                    if (root.model !== null) {
+                        root.model.toggleMetronome()
+                    }
+                }
+            }
+
+            //! 上一次录制的结果（"录了 4 个音，写入 4 个，跳过 0 个"）。空串 = 这次会话还没录过。
+            //! 放在工具条上而不是弹对话框：录制是"看一眼就知道成不成"的事，弹窗只会多一次点击。
+            Text {
+                id: takeSummaryLabel
+
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.hasScore && root.takeSummary.length > 0
+                text: root.takeSummary
+                color: root.dimTextColor
+                font: ui.theme.bodyFont
+                elide: Text.ElideRight
+                width: Math.min(implicitWidth, 220)
+            }
 
             //! 混音器开关。面板本身在页面上（MidiEditorPage.qml），这里只是它的入口 ——
             //! 与记谱页的 View → Mixer 是同一个混音器（同一份轨道、同一份音量/静音/独奏）。
@@ -1969,6 +2208,36 @@ Item {
                             ctx.strokeStyle = root.cursorColor
                             ctx.lineWidth = 1
                             ctx.strokeRect(nx + 0.5, ny + 0.5, Math.max(1, nw - 1), Math.max(1, nh - 1))
+                        }
+                    }
+
+                    //! 录制实时预览：**还没写进乐谱**的音。
+                    //! 画的是"按停止会写成什么样"（模型已经按当前量化设置算过），所以换网格时
+                    //! 这一层会跟着动 —— 用户能在提交之前就看见量化会把他的演奏挪到哪。
+                    //! 用红色而不是谱表调色板：这些音还没落进谱里，画成一样会让人以为已经在谱里了。
+                    if (root.recording && root.currentStaff === root.recordStaff) {
+                        var live = root.recordedRows
+                        for (var r = 0; r < live.length; ++r) {
+                            var take = live[r]
+                            if (take.pitch < root.lowestPitch || take.pitch > root.highestPitch) {
+                                continue
+                            }
+
+                            var tx = root.xForTick(take.tick)
+                            var tw = Math.max(2, take.durationTicks * root.pixelsPerTick - 1)
+                            if (tx > w || tx + tw < 0) {
+                                continue
+                            }
+
+                            var ty = root.yForPitch(take.pitch)
+                            if (ty > h || ty + nh < 0) {
+                                continue
+                            }
+
+                            ctx.fillStyle = take.held ? root.recordHeldColor : root.recordColor
+                            ctx.globalAlpha = take.held ? 0.9 : 0.7
+                            ctx.fillRect(tx, ty, tw, nh)
+                            ctx.globalAlpha = 1.0
                         }
                     }
 

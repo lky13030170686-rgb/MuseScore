@@ -24,22 +24,28 @@
 
 #include <QObject>
 #include <QHash>
+#include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
 #include <qqmlintegration.h>
 
+#include <atomic>
 #include <functional>
+#include <mutex>
 
 #include "async/asyncable.h"
 
 #include "modularity/ioc.h"
 #include "context/iglobalcontext.h"
+#include "midi/imidiinport.h"
 
 #include "notation/inotation.h"
+#include "notation/inotationconfiguration.h"
 
 #include "playback/iplaybackcontroller.h"
 
 #include "midieditornotes.h"
+#include "midirecorder.h"
 
 namespace mu::engraving {
 class Score;
@@ -77,6 +83,38 @@ class MidiEditorModel : public QObject, public muse::Contextable, public muse::a
     //! True while the roll is soloing "the staff being edited" (see setSoloStaff()).
     Q_PROPERTY(bool soloActive READ soloActive NOTIFY soloChanged)
 
+    //! ── 实时录制 ────────────────────────────────────────────────────────────────────
+    //!
+    //! 数据流：**播放**（录制时自动起播）→ **演奏**（MIDI 键盘）→ **实时记录**（本模型按端口时间戳
+    //! 记下未量化的 tick）→ **量化**（停止时按网格与强度夹到格子上）→ 一次事务写进乐谱。
+    //! 这一页**不另造发声机制**：演奏时能听见自己弹，是上游记谱页的 MIDI 输入试听在管
+    //! （`NotationMidiInput`，非音符输入模式下每个 MIDI 音都会试听）—— 这里只管"记下来"。
+
+    Q_PROPERTY(bool isRecording READ isRecording NOTIFY recordChanged)
+
+    //! 本次已经记下的音数（含还按着的）。工具条上的读数就是它。
+    Q_PROPERTY(int recordedNoteCount READ recordedNoteCount NOTIFY recordChanged)
+    Q_PROPERTY(int recordedHeldCount READ recordedHeldCount NOTIFY recordChanged)
+
+    //! 实时预览：**按当前量化设置算出来**的一串 { tick, durationTicks, pitch, velocity, held }。
+    //! 画在卷帘窗里就是"停止之后会写成什么样"，所以中途改量化设置，预览会跟着变。
+    Q_PROPERTY(QVariantList recordedNotes READ recordedNotes NOTIFY recordedNotesChanged)
+
+    //! 量化设置（下拉框的选项与当前档位）。改它只影响**提交**，不会动已经记下的演奏。
+    Q_PROPERTY(QVariantList quantizeGrids READ quantizeGrids NOTIFY recordSettingsChanged)
+    Q_PROPERTY(int quantizeGridIndex READ quantizeGridIndex WRITE setQuantizeGridIndex NOTIFY recordSettingsChanged)
+    Q_PROPERTY(int quantizeStrength READ quantizeStrength WRITE setQuantizeStrength NOTIFY recordSettingsChanged)
+
+    //! 节拍器（与记谱页播放工具条上那个是**同一个**设置，不是这一页的第二份）。
+    Q_PROPERTY(bool metronomeEnabled READ metronomeEnabled NOTIFY metronomeChanged)
+
+    //! 上一次录制写进了什么（"录了 12 个音，写入 12 个，跳过 0 个"）。空 = 这一会话还没录过。
+    Q_PROPERTY(QString lastTakeSummary READ lastTakeSummary NOTIFY recordChanged)
+
+    //! 能不能开始录制：有工程、有 MIDI 输入设备（没设备时录制按钮画成禁用并说明原因）。
+    Q_PROPERTY(bool canRecord READ canRecord NOTIFY recordChanged)
+    Q_PROPERTY(QString midiInputDeviceName READ midiInputDeviceName NOTIFY recordChanged)
+
     //! MIDI 页自己报"能不能撤销"：记谱页的 UndoRedoToolBar（Ctrl+Z 真正绑定的地方）不挂在这一页，
     //! 而 `UNDO_COMMAND` 自己的 `InputSchema()` 是空的 —— 所以这一页必须自己给入口。
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoRedoChanged)
@@ -99,6 +137,13 @@ class MidiEditorModel : public QObject, public muse::Contextable, public muse::a
     //! The playback position and the solo state are the playback module's, not ours: this page only
     //! asks for them (see seekTick() / setSoloStaff()).
     muse::ContextInject<playback::IPlaybackController> playbackController = { this };
+
+    //! 录制要听的 MIDI 输入端口。⚠️ **全球注入**（与 `MidiInputOutputController` 拿的是同一个）：
+    //! 端口是进程级的，不是某一页的。
+    muse::GlobalInject<muse::midi::IMidiInPort> midiInPort;
+
+    //! 节拍器开关归记谱配置管（`PlaybackController::toggleMetronome()` 写的就是它）。
+    muse::GlobalInject<INotationConfiguration> configuration;
 
 public:
     explicit MidiEditorModel(QObject* parent = nullptr);
@@ -216,6 +261,42 @@ public:
     //! Releases the solo this page set (no-op when it set none).
     Q_INVOKABLE void clearSoloStaff();
 
+    //! ── 实时录制 ────────────────────────────────────────────────────────────────────
+
+    bool isRecording() const { return m_isRecording.load(); }
+    int recordedNoteCount() const { return m_recorder.noteCount(); }
+    int recordedHeldCount() const { return m_recorder.heldCount(); }
+    QVariantList recordedNotes() const { return m_recordedNotes; }
+
+    QVariantList quantizeGrids() const;
+    int quantizeGridIndex() const { return m_quantizeGridIndex; }
+    void setQuantizeGridIndex(int index);
+    int quantizeStrength() const { return m_quantizeStrength; }
+    void setQuantizeStrength(int percent);
+
+    bool metronomeEnabled() const;
+    Q_INVOKABLE void toggleMetronome();
+
+    QString lastTakeSummary() const { return m_lastTakeSummary; }
+
+    bool canRecord() const;
+    QString midiInputDeviceName() const;
+
+    //! **开始 / 停止**（同一个入口，工具条上那一个按钮就是它）。
+    //!
+    //! 开始：从**当前播放头**起播，同时开始采集（`staffIndex` = 录到哪个谱表，就是卷帘窗里
+    //! 正选中的那个 —— 模型看不到视图的选中，所以由调用方传进来）。
+    //! 停止：把还在按着的音封口 → 量化 → **一次事务**写进乐谱 → 停止播放。
+    //!
+    //! ⚠️ 播放自己停下来（放到曲子末尾）也算停止：见 `init()` 里对播放状态的订阅。
+    Q_INVOKABLE void toggleRecording(int staffIndex);
+
+    //! 停止并**放弃**这一次采集（一个音都不写）。
+    Q_INVOKABLE void cancelRecording();
+
+    //! 把队列里剩下的 MIDI 事件收尾、停止采集，并按 `commit` 决定写不写谱。
+    void finishRecording(bool commit);
+
     //! Where to scroll so that the playhead stays visible while playing - see `midiFollowScrollX()`.
     //! Exposed so the view uses the tested maths rather than a copy of it.
     Q_INVOKABLE double followScrollX(double scrollX, double playheadX, double viewportWidth, double maxScrollX) const;
@@ -270,6 +351,10 @@ signals:
     void loopChanged();
     void soloChanged();
     void viewStateChanged();
+    void recordChanged();
+    void recordedNotesChanged();
+    void recordSettingsChanged();
+    void metronomeChanged();
 
 private:
     void reload();
@@ -309,6 +394,82 @@ private:
 
     //! Set by the demo hook above; cleared once it has been applied.
     bool m_demoPlaybackPending = false;
+
+    //! 录制版的验证钩子（`MUSE_MIDIEDITOR_DEMO_RECORD`）：没设 = 假，一行都不会执行。
+    bool m_demoRecordPending = false;
+
+    //! 验证钩子：喂一小段固定时刻的"演奏"进采集队列，再按当前设置提交。
+    void applyDemoRecordingIfPending();
+
+    //! 上面那个钩子的正体（延时到点之后才跑）。
+    void runDemoRecording();
+
+    //! ── 实时录制 ────────────────────────────────────────────────────────────────────
+
+    //! 一条待处理的 MIDI 事件。**只有这三个字段 + 到达时刻**：音高/力度是整数，时间戳是墙钟毫秒。
+    //!
+    //! ⚠️ 为什么不直接用端口给的 `tick`（Windows 上是 `timeGetTime()` 的毫秒）：它与播放位置
+    //! （`QDateTime` 墙钟）**不同源**，混用要先测两个时钟的偏移。到达时刻与播放位置同源，
+    //! 而 WinMM 回调的调度抖动是毫秒级 —— 对"之后还要量化"的录制来说足够了。
+    struct PendingMidiEvent {
+        int opcode = 0;
+        int note = 0;
+        int velocity = 0;
+        qint64 arrivalMs = 0;
+    };
+
+    //! MIDI 端口在自己的线程上发事件（WinMM 回调 → `WinMidiInPort::doProcess()`），
+    //! 而这个模型只被主线程碰。所以**不能**在订阅回调里直接改模型状态：
+    //! 事件先进队列（加锁），再由 `m_midiProcessTimer` 搬到主线程处理 ——
+    //! 与上游 `NotationMidiInput`（20ms 一个 QTimer）是同一个做法。
+    void onMidiPortEvent(int opcode, int note, int velocity);
+    void processMidiEvents();
+
+    //! 事件到达时刻 → **未量化**的分数 tick（double）。
+    //! 最近一次播放位置（分数秒）+ 它被采到时的墙钟，用事件与它之间的墙钟差补上中间那一段。
+    double recordTickAt(qint64 eventMs) const;
+
+    //! 重算实时预览（按当前量化设置）。`force == false` 时按 `RECORD_OVERLAY_INTERVAL_MS` 节流。
+    void updateRecordedNotes(bool force);
+
+    void startRecording(int staffIndex);
+
+    //! 当前档位对应的量化设置（网格来自 `midiQuantizeGrids()` 的下标）。
+    MidiQuantizeSettings quantizeSettings() const;
+
+    static qint64 nowMs();
+
+    MidiRecorder m_recorder;
+
+    std::mutex m_midiMutex;
+    std::vector<PendingMidiEvent> m_midiQueue;
+    QTimer* m_midiProcessTimer = nullptr;
+
+    //! ⚠️ **原子**：MIDI 端口线程要用它判断"现在是不是在录"（不在录就整串事件都不收）。
+    std::atomic<bool> m_isRecording { false };
+
+    //! 录到哪个谱表（视图把当前选中的谱表传进来，模型看不到视图的选中）。
+    int m_recordStaff = 0;
+
+    //! 播放位置 + 采到它时的墙钟。**原子**：位置是从播放线程/音频线程上发出来的，
+    //! 主线程只读（写-写竞争会让时间戳与位置对不上，录制就会整体偏一个音频块）。
+    std::atomic<double> m_recordPosSecs { 0.0 };
+    std::atomic<qint64> m_recordPosWallMs { 0 };
+    std::atomic<bool> m_recordPosRunning { false };
+
+    //! 播放真的进入过 Playing 吗。用来区分"刚起播时的 Stopped 瞬态"与"放到头了"——
+    //! 前者不能当成"停止录制"（那会让每次录制一开始就立刻提交一个空 take）。
+    bool m_recordSawPlaying = false;
+
+    QVariantList m_recordedNotes;
+    qint64 m_lastOverlayMs = 0;
+
+    //! 上一次报给界面的音数（录制中那个读数只在**变了**的时候才发通知，见 updateRecordedNotes）。
+    int m_lastRecordedCount = 0;
+
+    int m_quantizeGridIndex = 4;    //!< `midiQuantizeGrids()` 的下标：默认 1/16
+    int m_quantizeStrength = 100;
+    QString m_lastTakeSummary;
 
     std::vector<MidiNoteItem> m_entries;
     QVariantList m_notes;

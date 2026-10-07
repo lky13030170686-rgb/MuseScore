@@ -68,6 +68,8 @@ qt_add_qml_module(notationscene_qml
         midieditor/midieditormodel.h
         midieditor/midieditornotes.cpp
         midieditor/midieditornotes.h
+        midieditor/midirecorder.cpp
+        midieditor/midirecorder.h
         notationautomationcontroller.h
         notationautomationcontroller.cpp
         notationcontextmenumodel.cpp

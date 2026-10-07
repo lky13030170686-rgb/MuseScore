@@ -32,14 +32,20 @@
 #include "engraving/automation/automationdata.h"
 #include "engraving/automation/automationtypes.h"
 #include "engraving/dom/chord.h"
+#include "engraving/dom/chordrest.h"
 #include "engraving/dom/factory.h"
+#include "engraving/dom/input.h"
 #include "engraving/dom/measure.h"
+#include "engraving/dom/mscore.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/noteevent.h"
+#include "engraving/dom/noteval.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/segment.h"
 #include "engraving/dom/staff.h"
 #include "engraving/editing/editnote.h"
+#include "engraving/editing/noteinput.h"
+#include "engraving/editing/transaction/transaction.h"
 
 using namespace mu::engraving;
 using namespace muse;
@@ -356,6 +362,251 @@ MidiAuditionNote midiNoteToAudition(engraving::Score* score, engraving::Note* no
 
     result.note = temp;
     result.chord = chord;
+    return result;
+}
+
+// ── 实时录制的写回（见 midirecorder.h 里的数据流图）──────────────────────────────────────────────
+
+//! tick 之前**最后一个** ChordRest 段（同一个小节内）。
+//!
+//! ⚠️ 不能用 `Score::tick2segment()` 代替：它只返回"正好落在 tick 上"的段，
+//! 而这里要的恰恰是"包含这个 tick 的那一段"（空谱表整小节只有一个小节休止符，
+//! 网格位置上一个段都没有）。
+static Segment* chordRestSegmentAtOrBefore(Measure* measure, const Fraction& tick)
+{
+    Segment* found = nullptr;
+    for (Segment* segment = measure->first(SegmentType::ChordRest); segment;
+         segment = segment->next(SegmentType::ChordRest)) {
+        if (segment->tick() > tick) {
+            break;
+        }
+        found = segment;
+    }
+
+    return found;
+}
+
+//! 让 `tick` 处**存在**一个 ChordRest 段，并返回它。
+//!
+//! 为什么需要：`Score::setNoteRest()` 要求一个"段"，而记谱模型里的段只在 ChordRest 的**起点**上
+//! （空谱表一个小节只有一个小节休止符，1/16 网格上的位置一个段都没有）。所以录制写回的第一步
+//! 是"把既有那一段从 tick 处切开"。
+//!
+//! 切开**不是抹掉**：前半按原样重建（音高 + 力度；连音线/记号不在复刻之列），
+//! 后半由 `makeGap()` 自己克隆（`addClone(cr, ...)`，见 `维护手册.md` §4.8.4 的边界那一节）。
+//! 于是"在某音中间落一个新的录制音"结果是那个音被切成两半，而不是消失。
+//!
+//! `scratch` 是一个**临时**的 `InputState`：`setNoteRest()` 末尾会往它里面写段/轨，
+//! 不传它的话写的是**用户的**输入光标，而且走 `select()` 分支改掉用户在当前谱面的选中。
+//!
+//! ⚠️⚠️ **`Segment*` 不能跨 `setNoteRest()` 复用**：它内部的 `makeGap()` 会把正在被替换的
+//! ChordRest **移除**，而空掉的段会被**一并删掉**（`Score::undoRemoveElement()` 末尾那句
+//! `if (s->empty()) doUndoRemoveElement(s);`）⇒ 新音符落在**另一个**段对象上，而手里那个
+//! 已经是悬空的（表现为 `segment->element(track) == nullptr`，静默跳过，一个音都写不进去）。
+//! 所以本文件每一步都**从乐谱里按 tick 重新找段**，绝不缓存段指针。
+static Segment* recordSegmentAt(Score* score, const Fraction& tick, track_idx_t track, InputState& scratch)
+{
+    Measure* measure = score->tick2measure(tick);
+    if (!measure) {
+        return nullptr;
+    }
+
+    if (Segment* existing = measure->findSegment(SegmentType::ChordRest, tick)) {
+        return existing;
+    }
+
+    Segment* previous = chordRestSegmentAtOrBefore(measure, tick);
+    if (!previous || previous->tick() >= tick) {
+        return nullptr;
+    }
+
+    const Fraction previousTick = previous->tick();
+
+    EngravingItem* item = previous->element(track);
+    ChordRest* cr = (item && item->isChordRest()) ? toChordRest(item) : nullptr;
+    if (!cr) {
+        //! 这一声部在这里是空的（voice 1..3 的空隙）。不处理是对的：段是**各声部共用**的，
+        //! 同一个 tick 上的 0 声部先写（见 applyRecordedChords 的排序），段已经由它建出来了。
+        return nullptr;
+    }
+
+    const Fraction length = tick - previousTick;
+    if (length <= Fraction(0, 1) || length >= cr->ticks()) {
+        return nullptr;
+    }
+
+    if (cr->isRest()) {
+        //! 休止符：直接切。`makeGap()` 会把余下的部分重新铺成休止符。
+        score->setNoteRest(previous, track, NoteVal(), length, DirectionV::AUTO, false, {}, false, &scratch);
+    } else {
+        //! 和弦：前半按原样重建，否则那个音被覆盖到的部分会变成一个休止符（等于被抹掉）。
+        const Chord* chord = toChord(cr);
+        std::vector<NoteVal> values;
+        for (const Note* note : chord->notes()) {
+            NoteVal value(note->pitch());
+            value.velocityOverride = note->userVelocity();
+            values.push_back(value);
+        }
+
+        if (values.empty()) {
+            return nullptr;
+        }
+
+        score->setNoteRest(previous, track, values.front(), length, DirectionV::AUTO, false, {}, false, &scratch);
+
+        //! 前半所在的段**重新找**（`previous` 可能已经在上一步里被删掉，见函数头那段说明）。
+        Segment* headSegment = measure->findSegment(SegmentType::ChordRest, previousTick);
+        EngravingItem* headItem = headSegment ? headSegment->element(track) : nullptr;
+        Chord* head = (headItem && headItem->isChord()) ? toChord(headItem) : nullptr;
+        if (head) {
+            Transaction& tx = score->transactionManager()->currentOrDummyTransaction();
+            for (size_t i = 1; i < values.size(); ++i) {
+                NoteInput::addPitchToChord(tx, score, values[i], head, &scratch, false);
+            }
+
+            for (Note* note : head->notes()) {
+                for (const NoteVal& value : values) {
+                    if (value.pitch == note->pitch()) {
+                        writeNoteVelocity(note, value.velocityOverride);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    return measure->findSegment(SegmentType::ChordRest, tick);
+}
+
+//! 这个和弦的所有音（`setNoteRest` 会按 request 的时值把音拆成连音线，所以建出来的可能不止一个和弦）。
+static std::vector<Chord*> chordChainAt(Segment* segment, track_idx_t track)
+{
+    std::vector<Chord*> chords;
+
+    for (Segment* current = segment; current; current = current->next(SegmentType::ChordRest)) {
+        EngravingItem* item = current->element(track);
+        if (!item || !item->isChord()) {
+            break;
+        }
+
+        Chord* chord = toChord(item);
+        if (chord->isGrace()) {
+            break;
+        }
+
+        chords.push_back(chord);
+
+        //! 连音线的下一半一定紧接着这一段；没有 tieFor 就说明这个音写完了。
+        if (chord->notes().empty() || !chord->notes().front()->tieFor()) {
+            break;
+        }
+    }
+
+    return chords;
+}
+
+MidiRecordedWriteResult applyRecordedChords(Score* score, int staffIndex, int baseVoice,
+                                            const std::vector<MidiRecordedChord>& chords, bool openCommand)
+{
+    MidiRecordedWriteResult result;
+
+    if (!score || chords.empty() || staffIndex < 0 || size_t(staffIndex) >= score->nstaves()) {
+        return result;
+    }
+
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Record MIDI"));
+    }
+
+    InputState scratch;
+    const Fraction scoreEnd = score->endTick();
+    const track_idx_t staffTrack = staff2track(staff_idx_t(staffIndex));
+
+    //! 同一个 tick 上**先写 0 声部**：段是各声部共用的，0 声部在 tick 处把段切出来之后，
+    //! 1/2/3 声部才有位置可写（`buildRecordedChords` 按"时值短的先落 0 声部"分声部）。
+    std::vector<const MidiRecordedChord*> ordered;
+    ordered.reserve(chords.size());
+    for (const MidiRecordedChord& chord : chords) {
+        ordered.push_back(&chord);
+    }
+
+    std::stable_sort(ordered.begin(), ordered.end(), [](const MidiRecordedChord* a, const MidiRecordedChord* b) {
+        if (a->tick != b->tick) {
+            return a->tick < b->tick;
+        }
+        return a->voice < b->voice;
+    });
+
+    for (const MidiRecordedChord* entry : ordered) {
+        if (entry->notes.empty()) {
+            ++result.chordsSkipped;
+            continue;
+        }
+
+        const Fraction tick = Fraction::fromTicks(std::max(0, entry->tick));
+        if (tick >= scoreEnd) {
+            //! 谱面之外不写：`setNoteRest` 其实会自己加小节，但那会让"跟着伴奏录一段"变成
+            //! "莫名其妙多出几十小节"。跳过的数量会报给用户（见 MidiRecordedWriteResult）。
+            ++result.chordsSkipped;
+            continue;
+        }
+
+        const int voice = std::clamp(baseVoice + entry->voice, 0, int(VOICES) - 1);
+        const track_idx_t track = staffTrack + track_idx_t(voice);
+        const Fraction duration = Fraction::fromTicks(std::max(1, entry->durationTicks));
+
+        Segment* segment = recordSegmentAt(score, tick, track, scratch);
+        if (!segment || segment->tick() != tick) {
+            ++result.chordsSkipped;
+            continue;
+        }
+
+        //! 第一个音建出和弦（跨小节自动变连音线），其余音加到这个和弦上。
+        score->setNoteRest(segment, track, NoteVal(entry->notes.front().pitch), duration,
+                           DirectionV::AUTO, false, {}, false, &scratch);
+
+        //! ⚠️ 段**重新找**，不要用传进去那一个：`setNoteRest()` 里的 `makeGap()` 会移除它替换掉的
+        //! ChordRest，而空掉的段会被一并删掉 —— 新和弦因此落在**另一个**段对象上，
+        //! 手里那个已经悬空（`element(track)` 是 null）。见 recordSegmentAt() 头部的说明。
+        Measure* measure = score->tick2measure(tick);
+        Segment* created = measure ? measure->findSegment(SegmentType::ChordRest, tick) : nullptr;
+        EngravingItem* item = created ? created->element(track) : nullptr;
+        Chord* chord = (item && item->isChord()) ? toChord(item) : nullptr;
+        if (!chord || chord->tick() != tick) {
+            ++result.chordsSkipped;
+            continue;
+        }
+
+        Transaction& tx = score->transactionManager()->currentOrDummyTransaction();
+        for (size_t i = 1; i < entry->notes.size(); ++i) {
+            NoteVal value(entry->notes[i].pitch);
+            NoteInput::addPitchToChord(tx, score, value, chord, &scratch, false);
+        }
+
+        //! 力度写成 `Pid::USER_VELOCITY`（力度车道与 Properties 面板写的**同一个**属性）。
+        //! ⚠️ 不能直接 `note->setUserVelocity()`：那一步不进事务，撤销再重做之后力度会回到 0
+        //! （重做用的是入栈那一刻的克隆）。`writeNoteVelocity()` 走的是 `undoChangeProperty`。
+        //! 连音线的每一段都要写 —— 它们是不同的音符。
+        for (Chord* part : chordChainAt(created, track)) {
+            for (Note* note : part->notes()) {
+                for (const MidiRecordedChord::Note& source : entry->notes) {
+                    if (source.pitch == note->pitch()) {
+                        writeNoteVelocity(note, source.velocity);
+                        break;
+                    }
+                }
+            }
+        }
+
+        ++result.chordsWritten;
+        result.notesWritten += int(entry->notes.size());
+        result.lastTick = entry->tick;
+    }
+
+    if (openCommand) {
+        score->endCmd();
+    }
+
     return result;
 }
 

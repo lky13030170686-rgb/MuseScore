@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+#include "midirecorder.h"
+
 namespace mu::engraving {
 class Score;
 class Note;
@@ -136,6 +138,36 @@ struct MidiAuditionNote {
 //! 除了音高，其余（track / staffIdx / voice / 位置）都从**原音符**抄过来，播放层才认得出这条轨道。
 //! `pitch` 会夹到 0..127。返回的 `chord` 由调用方删除；音符为空表示"没法发声"（不抛错）。
 MidiAuditionNote midiNoteToAudition(engraving::Score* score, engraving::Note* note, int pitch);
+
+//! ── 实时录制的写回 ──────────────────────────────────────────────────────────────
+//!
+//! `MidiRecordedChord`（量化 + 分声部之后的演奏）写进乐谱，**整笔一个命令**
+//! （`openCommand == false` 时由调用方开事务 —— 与上面几个写入函数同一个约定，
+//! 理由见 `applyNotePitch` 上面那段）。
+//!
+//! 用的是**记谱页输入音符时的同一套机制**（`Score::setNoteRest`）：跨小节的音自动拆成连音线、
+//! 小节写满自动加小节、整个过程可撤销 —— 不另造一套"往谱里插音符"的路。
+//!
+//! `baseVoice` 是这场录制**从哪个声部起**（MIDI 页传 0），和弦自己的 `voice` 在此之上累加、
+//! 超出 `VOICES` 就并回最后一个声部（见 `buildRecordedChords`）。
+//!
+//! ⚠️ **替换的边界**：写一个音会把它**盖住的那段时值**换成新音符，其余部分不动。
+//! 具体说，落在既有音符中间的那个音会先把既有音符从该处切开（前半按原样保留，
+//! 但**只保留音高与力度** —— 连音线、记号、附点这些不在"复刻"之列），后半原样留着。
+struct MidiRecordedWriteResult {
+    int chordsWritten = 0;
+    int notesWritten = 0;
+
+    //! 放不进去的（超出谱面末尾、位置切不开…）。**必须报出来**：丢音是静默的，
+    //! 用户只会觉得"录少了"，而不知道是哪一段放不下。
+    int chordsSkipped = 0;
+
+    //! 最后一个写进去的音的起点（-1 = 一个都没写）。给"录到哪了"的提示用。
+    int lastTick = -1;
+};
+
+MidiRecordedWriteResult applyRecordedChords(engraving::Score* score, int staffIndex, int voice,
+                                            const std::vector<MidiRecordedChord>& chords, bool openCommand = true);
 
 //! One point of the Dynamics automation curve of a staff: a tick, and a level in 0..1.
 struct MidiAutomationPoint {
