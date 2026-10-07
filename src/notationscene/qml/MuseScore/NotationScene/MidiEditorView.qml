@@ -532,6 +532,20 @@ Item {
         return Math.max(3, rowHeight - 1)
     }
 
+    //! 试听：按**可见行**下标响一声（`visibleIndex` = `noteIndexAt()` 的返回值）。
+    //!
+    //! 收成一个函数是**有意为之**：按下音符块与拖动改音高是两条路径，而"可见行下标 → 模型要的
+    //! `notes()` 下标"这个映射**只在这里写一次** —— 两个调用点各写一遍迟早会分叉，而分叉的表现是
+    //! "点这个响那个"（不报错、不崩，最难查的一类）。模型侧的 `playNote()` 也自带越界保护。
+    function auditionNoteAt(visibleIndex) {
+        var list = visibleRows
+        if (visibleIndex < 0 || visibleIndex >= list.length) {
+            return
+        }
+
+        model.playNote(list[visibleIndex].row)
+    }
+
     function repaintAll() {
         keyboardCanvas.requestPaint()
         gridCanvas.requestPaint()
@@ -2010,11 +2024,11 @@ Item {
                         //! （`NotationViewInputController::handleLeftClick()` 里那句
                         //! `playbackController()->playElements({ hitElement })`），这里走模型的
                         //! `playNote()`，而它调的就是同一个播放接口，所以"编辑时播放音符"这个
-                        //! 设置两页一起生效。
+                        //! 设置两页一起生效。行号映射收在 `auditionNoteAt()` 里（只写一次）。
                         //! 记在 `dragPlayedPitch` 上：拖动中只在音高**真的变了**时才再响一声，
                         //! 免得鼠标每动一像素都发一次音（记谱页拖动也是这个判据）。
                         root.dragPlayedPitch = root.dragStartPitch
-                        root.model.playNote(grabbed.row)
+                        root.auditionNoteAt(index)
 
                         //! NOTE: which part of the block was grabbed decides what the drag edits.
                         //!       The edge test uses the PLAYED bar, not the notated block: that bar is
@@ -2057,9 +2071,9 @@ Item {
                             //! 拖到另一个音高时试听**记谱上的**那个音高：与记谱页拖动音符一样，
                             //! 它只在新音高与上一次响过的不同时才出声。真正的写入仍在松手那一次
                             //! （拖动中提交是这个项目踩过的坑，见 `维护手册.md` §4.8）。
-                            if (pitch !== root.dragPlayedPitch && root.dragNoteIndex < root.visibleRows.length) {
+                            if (pitch !== root.dragPlayedPitch) {
                                 root.dragPlayedPitch = pitch
-                                root.model.playNote(root.visibleRows[root.dragNoteIndex].row)
+                                root.auditionNoteAt(root.dragNoteIndex)
                             }
                             gridCanvas.requestPaint()
                         }
