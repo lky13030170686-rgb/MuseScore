@@ -45,6 +45,7 @@
 #include "notation/inotation.h"
 #include "notation/inotationelements.h" // IWYU pragma: keep
 #include "notation/inotationinteraction.h"
+#include "notation/inotationmidiinput.h"
 #include "notation/inotationnoteinput.h"
 #include "notation/inotationplayback.h"
 #include "notation/inotationsolomutestate.h"
@@ -1177,12 +1178,12 @@ void MidiEditorModel::toggleRecording()
         return;
     }
 
-    //! 第二道闸：录制键在没有设备时画成不可用，但快捷键/脚本仍可能打进来 ——
-    //! 那种情况下"开始录"只会录到一个空 take，不如当场说清楚。
+    //! 第二道闸：**没有 MIDI 输入设备时也允许录** —— 电脑键盘（或屏幕琴键）就是输入源，
+    //! 用户 2026-10-07 报的「按 c.d.e.f.g 没反应」正是不该把"没有硬件"当成"不能录"。
+    //! 所以这里只留一条日志说明"这一场没有硬件输入"，不拒绝。
     if (!canRecord()) {
-        LOGW() << "[midi-record] refused: no MIDI input device connected"
+        LOGW() << "[midi-record] no MIDI input device connected - only the computer keyboard will be captured"
                << "(device=" << midiInputDeviceName() << ")";
-        return;
     }
 
     startRecording(m_recordStaff);
@@ -1205,8 +1206,44 @@ void MidiEditorModel::setRecordStaff(int staffIndex)
     emit recordChanged();
 }
 
-void MidiEditorModel::startRecording(int staffIndex)
+//! 电脑键盘/屏幕琴键弹出来的音用的力度（与钢琴键盘面板一致）。
+static constexpr int VIRTUAL_KEY_VELOCITY = 80;
+
+void MidiEditorModel::playVirtualKey(int pitch, bool pressed)
 {
+    pitch = std::clamp(pitch, 0, 127);
+
+    //! ① 发声：**就是钢琴键盘面板那一个调用**（`PianoKeyboardController::sendNoteOn`）——
+    //! 记谱页的 MIDI 输入会把它当成一次真实的 MIDI 输入去试听（音符输入模式下还会顺手写谱，
+    //! 那是上游既有语义，这一页不拦）。
+    if (INotationPtr notation = context()->currentNotation()) {
+        muse::midi::Event event;
+        event.setMessageType(muse::midi::Event::MessageType::ChannelVoice10);
+        event.setOpcode(pressed ? muse::midi::Event::Opcode::NoteOn : muse::midi::Event::Opcode::NoteOff);
+        event.setNote(uint8_t(pitch));
+        if (pressed) {
+            event.setVelocity7(uint8_t(VIRTUAL_KEY_VELOCITY));
+        }
+
+        notation->midiInput()->onMidiEventReceived(event);
+    }
+
+    //! ② 采集：与端口事件**同一条记录路径**（时间戳同样取"此刻"这个墙钟）。
+    if (!m_isRecording) {
+        return;
+    }
+
+    const double tick = recordTickAt(nowMs());
+    if (pressed) {
+        m_recorder.noteOn(pitch, VIRTUAL_KEY_VELOCITY, tick);
+    } else {
+        m_recorder.noteOff(pitch, tick);
+    }
+
+    updateRecordedNotes(true);
+}
+
+void MidiEditorModel::startRecording(int staffIndex){
     Score* score = currentScore();
     if (!score) {
         return;

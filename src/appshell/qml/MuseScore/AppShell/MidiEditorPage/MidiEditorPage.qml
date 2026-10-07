@@ -112,14 +112,19 @@ DockPage {
                         //! ⚠️ 文字在这里就翻译好（C++ 那边按"不可翻译"处理，不会再翻一次）。
                         "title": qsTrc("appshell", "Record"),
                         "description": midiModel.isRecording
-                                         ? qsTrc("appshell", "Stop and write what was played into the score (one undo step)")
+                                         ? qsTrc("appshell", "Stop and write what was played into the score (one undo step). "
+                                                             + "No MIDI keyboard? Play with the computer keyboard: C D E F G A B, Z/X = octave")
                                          : (midiModel.canRecord
                                             ? qsTrc("appshell", "Play along from the playhead: everything you play is captured, "
-                                                               + "then quantized and written into the selected staff")
-                                            : qsTrc("appshell", "No MIDI input device: pick one in Preferences → Audio & MIDI")),
+                                                               + "then quantized and written into the selected staff. "
+                                                               + "No MIDI keyboard? Play with the computer keyboard: C D E F G A B, Z/X = octave")
+                                            : qsTrc("appshell", "No MIDI input device: pick one in Preferences → Audio & MIDI. "
+                                                               + "The computer keyboard still plays: C D E F G A B, Z/X = octave")),
                         "icon": IconCode.RECORD_FILL,
                         "checked": midiModel.isRecording,
-                        "enabled": midiModel.isRecording || midiModel.canRecord
+                        //! ⚠️ 没有 MIDI 设备时**不再**整键禁用：电脑键盘也能弹（用户 2026-10-07 报的
+                        //! 「按 c.d.e.f.g 没反应」就是这一条）—— 没有硬件不该等于不能录。
+                        "enabled": true
                     }
                 }
 

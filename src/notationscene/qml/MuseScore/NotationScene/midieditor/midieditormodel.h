@@ -286,6 +286,18 @@ public:
     //! 录到哪个谱表（视图在切换选中谱表时同步进来）。越界时会夹到合法范围。
     Q_INVOKABLE void setRecordStaff(int staffIndex);
 
+    //! **电脑键盘弹一个音**（用户 2026-10-07 报的「录制时按 c.d.e.f.g 没反应」）。
+    //!
+    //! 两条路一起走，语义与 MIDI 端口进来的一条事件**相同**：
+    //!  ① **发声**：交给记谱页的 MIDI 输入（`INotationMidiInput::onMidiEventReceived`）——
+    //!     钢琴键盘面板用的就是这一个调用，所以"编辑时播放音符"这类设置、以及"记谱页在音符
+    //!     输入模式下会顺手写谱"的行为都跟它一致，这一页不另造一套；
+    //!  ② **采集**：正在录制时按**此刻**记进 `MidiRecorder`（与端口事件同一条记录路径，
+    //!     所以量化、写回、撤销全都是同一套）。
+    //!
+    //! `pitch` 会夹到 0..127；速度固定 80（与钢琴键盘面板一致）。
+    Q_INVOKABLE void playVirtualKey(int pitch, bool pressed);
+
     //! 停止并**放弃**这一次采集（一个音都不写）。
     Q_INVOKABLE void cancelRecording();
 

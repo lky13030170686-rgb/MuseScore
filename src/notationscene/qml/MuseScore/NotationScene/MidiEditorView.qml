@@ -171,7 +171,11 @@ Item {
         applyViewState()
     }
 
-    Component.onCompleted: applyViewStateIfNeeded()
+    Component.onCompleted: {
+        applyViewStateIfNeeded()
+        //! 🆕 这一页一打开就把键盘焦点拿住：电脑键盘弹音（`c.d.e.f.g`）与 Ctrl+Z 都靠它。
+        forceActiveFocus()
+    }
 
     //! 销毁时把闸关上：属性在拆解过程中可能被复位，绝不能让那些默认值写回模型
     //! （探针实测过：存进去的 `scrollX=600` 就是这样被 0 覆盖掉的）。
@@ -270,7 +274,19 @@ Item {
         //! 正解在**快捷键上下文**那一层：走带类动作（play/pause/rewind/loop）改用
         //! `CTX_PROJECT_PAGE_OPENED`，MIDI 页也算"工程页打开着" ⇒ 全局那条 `Space` 在**这一页生效**，
         //! 而且**不需要**新增注册者（新增会让 Qt 判 ambiguous 而同归于尽，见下面的 Ctrl+Z 注释）。
+        //!
+        //! 🆕 **电脑键盘弹音**（用户 2026-10-07 报的「录制时按 c.d.e.f.g 没反应」）：
+        //! `C D E F G A B` = 音名（与记谱页"按 C 输入 C 音"同一套约定），`Z`/`X` = 换八度。
+        //! 按下的音**既发声也进录制**（见 `MidiEditorModel::playVirtualKey()`）—— 没有 MIDI 键盘
+        //! 的人也能用这条路录。
+        //! ⚠️ 这些字母**全局已经注册过**（`note-c`…`note-b`，见 `shortcuts.xml`）：Qt 的快捷键匹配
+        //! 会先把按键消费掉，`Keys.onPressed` 根本收不到（与空格那次同源）。所以必须在
+        //! `onShortcutOverride` 里**认领**它们（见下），那是 Qt 给"这个按键我要当普通按键用"的正路，
+        //! 而且不新增注册者 ⇒ 不会撞 ambiguous。
         if ((event.modifiers & Qt.ControlModifier) === 0) {
+            if (handleVirtualKeyPressed(event)) {
+                return
+            }
             return
         }
 
@@ -285,6 +301,38 @@ Item {
         } else if (event.key === Qt.Key_Y) {
             console.warn("[midi-automation] keys redo")
             root.model.redo()
+            event.accepted = true
+        }
+    }
+
+    //! 松开要配对：不接这个的话，"按一下"录进来的音永远不封口（会一直挂到停止）。
+    Keys.onReleased: function(event) {
+        if (event.isAutoRepeat) {
+            event.accepted = true
+            return
+        }
+
+        var pitch = root.virtualKeyPitch(event.key)
+        if (pitch >= 0 && root.model !== null) {
+            root.model.playVirtualKey(pitch, false)
+        }
+
+        if (pitch >= 0 || event.key === Qt.Key_Z || event.key === Qt.Key_X) {
+            event.accepted = true
+        }
+    }
+
+    //! ⚠️ **必须认领**：`C D E F G A B` 在 `shortcuts.xml` 里是记谱页的"输入音符"快捷键
+    //! （`note-c`…`note-b`，`Qt.ApplicationShortcut`）—— 不认领的话 Qt 的快捷键匹配先把按键吃掉，
+    //! `Keys.onPressed` 与 `onReleased` 都收不到（用户报的"按音没反应"就是这个）。
+    //! 认领 = `event.accepted = true`，Qt 便不再交给快捷键表，按键按普通按键送到本项。
+    //! 只有**带修饰键**的组合留给快捷键（Ctrl+Z 撤销等照旧）。
+    Keys.onShortcutOverride: function(event) {
+        if ((event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) !== 0) {
+            return
+        }
+
+        if (root.virtualKeyPitch(event.key) >= 0 || event.key === Qt.Key_Z || event.key === Qt.Key_X) {
             event.accepted = true
         }
     }
@@ -542,6 +590,72 @@ Item {
         var names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
         var pc = ((pitch % 12) + 12) % 12
         return names[pc] + (Math.floor(pitch / 12) - 1)
+    }
+
+    // ── 电脑键盘弹音（没有 MIDI 键盘也能录）──────────────────────────────────────
+    //!
+    //! 字母键 = **音名**：`C`→C、`D`→D、`E`→E、`F`→F、`G`→G、`A`→A、`B`→B ——
+    //! 与记谱页"按 C 输入 C 音"**同一套约定**（用户 2026-10-07 报的就是「按 c.d.e.f.g」）。
+    //! `Z` / `X` = **降 / 升八度**（默认 C4 那一带）。
+    //!
+    //! 不抄 DAW 那套 `ZSXDCVGBHNJM`（下排 = 一个八度）：用户按的是**音名**，
+    //! 而 MuseScore 自己的音符输入也是"字母即音名" —— 两处一致比抄 DAW 更不容易让人按错。
+    property int keyboardOctave: 4
+
+    //! 这个按键对应哪个音高？-1 = 不是弹音键。
+    //! ⚠️ 用 `Qt.Key_*`（**逻辑键**）而不是字符：与快捷键表同一套判据，换个键盘布局也对得上。
+    function virtualKeyPitch(key) {
+        var semitone = -1
+        if (key === Qt.Key_C) {
+            semitone = 0
+        } else if (key === Qt.Key_D) {
+            semitone = 2
+        } else if (key === Qt.Key_E) {
+            semitone = 4
+        } else if (key === Qt.Key_F) {
+            semitone = 5
+        } else if (key === Qt.Key_G) {
+            semitone = 7
+        } else if (key === Qt.Key_A) {
+            semitone = 9
+        } else if (key === Qt.Key_B) {
+            semitone = 11
+        } else {
+            return -1
+        }
+
+        var pitch = (keyboardOctave + 1) * 12 + semitone    // C4 = 60
+        if (pitch < 0 || pitch > 127) {
+            return -1
+        }
+        return pitch
+    }
+
+    //! 按下：弹音或换八度。返回 true = 这个按键我们认领了（调用方不用再管）。
+    function handleVirtualKeyPressed(event) {
+        var playable = virtualKeyPitch(event.key) >= 0 || event.key === Qt.Key_Z || event.key === Qt.Key_X
+        if (!playable) {
+            return false
+        }
+
+        //! ⚠️ 自动重复**不是**"又按了一下"：当成新音头会在谱面上录出一串颤音。
+        if (!event.isAutoRepeat) {
+            var pitch = virtualKeyPitch(event.key)
+            if (pitch >= 0) {
+                if (model !== null) {
+                    model.playVirtualKey(pitch, true)
+                }
+            } else if (event.key === Qt.Key_Z) {
+                keyboardOctave = clamp(keyboardOctave - 1, 0, 8)
+                console.warn("[midi-keys] octave down ->", keyboardOctave)
+            } else {
+                keyboardOctave = clamp(keyboardOctave + 1, 0, 8)
+                console.warn("[midi-keys] octave up ->", keyboardOctave)
+            }
+        }
+
+        event.accepted = true
+        return true
     }
 
     function staffColor(staffIndex) {
@@ -1170,6 +1284,11 @@ Item {
             if (model !== null) {
                 model.setRecordStaff(currentStaff)
             }
+
+            //! 🆕 **把键盘焦点收回来**：用户是按走带上那个录制键进来的，焦点此刻在**那个按钮**上 ——
+            //! 不收的话接下来按 `c.d.e.f.g` 全被按钮吃掉（方向键还会在按钮之间跳），
+            //! 表现就是用户报的"录制时按音没反应"。
+            forceActiveFocus()
         }
         repaintAll()
     }
@@ -2230,6 +2349,10 @@ Item {
                 hoverEnabled: true
 
                 onPressed: function(mouse) {
+                    //! 🆕 点一下画布就把键盘焦点收回来 —— 否则"先点了播放键、再想用电脑键盘弹"
+                    //! 的按键会全落在那个按钮上（电脑键盘弹音与 Ctrl+Z 都要这一句）。
+                    root.forceActiveFocus()
+
                     //! An index into visibleRows - only the selected staff is drawn and clickable.
                     var index = root.noteIndexAt(mouse.x, mouse.y)
 
