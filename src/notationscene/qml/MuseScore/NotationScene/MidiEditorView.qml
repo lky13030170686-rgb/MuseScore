@@ -437,7 +437,6 @@ Item {
     readonly property bool recording: model !== null && model.isRecording
     readonly property var recordedRows: (model !== null) ? model.recordedNotes : []
     readonly property var quantizeGrids: (model !== null) ? model.quantizeGrids : []
-    readonly property bool metronomeOn: model !== null && model.metronomeEnabled
     readonly property string takeSummary: (model !== null) ? model.lastTakeSummary : ""
 
     readonly property string quantizeLabel: {
@@ -1147,6 +1146,12 @@ Item {
             model.setSoloStaff(currentStaff)
         }
 
+        //! 🆕 **录到哪个谱表**也在这里交给模型：走带里那个录制键在**页面**上
+        //! （`MidiEditorPage.qml`），它够不着视图的 `currentStaff` —— 所以由视图在选中变化时同步过去。
+        if (model !== null) {
+            model.setRecordStaff(currentStaff)
+        }
+
         repaintAll()
         syncViewState()
     }
@@ -1162,6 +1167,9 @@ Item {
             //! 起录时把"录到哪个谱表"定死（视图才知道这个选中），并让模型知道 ——
             //! 模型看不到视图的 `currentStaff`，所以由这里传进去。
             recordStaff = currentStaff
+            if (model !== null) {
+                model.setRecordStaff(currentStaff)
+            }
         }
         repaintAll()
     }
@@ -1243,45 +1251,18 @@ Item {
             //! 本环境里合成鼠标到不了 Qt Quick 画布，但工具条上的控件进得了无障碍树 ——
             //! `tools/ui-probe.ps1 -Action click -Name Record -ControlType Button` 点得中它，
             //! "按一下能不能真的开始录"因此是**机器可验**的（见 `维护手册.md` §7.6）。
-            FlatButton {
-                id: recordButton
-
-                height: 22
-                enabled: root.recording || (root.model !== null && root.model.canRecord)
-
-                text: root.recording
-                      ? qsTrc("notationscene", "Stop") + " (" + root.model.recordedNoteCount + ")"
-                      : qsTrc("notationscene", "Record")
-                transparent: !root.recording
-                accentButton: root.recording
-
-                toolTipTitle: root.recording
-                              ? qsTrc("notationscene", "Stop recording")
-                              : qsTrc("notationscene", "Record")
-                toolTipDescription: {
-                    if (root.recording) {
-                        return qsTrc("notationscene", "Stop and write what was played into the score (one undo step)")
-                    }
-                    if (root.model !== null && !root.model.canRecord) {
-                        return qsTrc("notationscene", "No MIDI input device: pick one in Preferences → Audio & MIDI")
-                    }
-                    return qsTrc("notationscene", "Play along from the playhead: everything you play is captured, "
-                                                  + "then quantized and written into the selected staff")
-                }
-
-                accessible.name: text + "  " + (root.recording ? qsTrc("global", "On") : qsTrc("global", "Off"))
-
-                onClicked: {
-                    if (root.model === null) {
-                        return
-                    }
-
-                    //! ⚠️ 录到哪个谱表必须在**按下这一刻**告诉模型：它看不到视图的 `currentStaff`
-                    //! （模型里没有"选中谱表"这个概念，选中是视图的会话状态）。
-                    root.recordStaff = root.currentStaff
-                    root.model.toggleRecording(root.currentStaff)
-                }
-            }
+            //! ── 实时录制（**按钮本身不在这里**）────────────────────────────────────────
+            //!
+            //! ⚠️ 录制键做在**走带按钮行**上、节拍器图标左边（`MidiEditorPage.qml` 往
+            //! `PlaybackToolBar.extraItem` 里塞的那一个）—— 因为它与播放/循环/节拍器本来就是
+            //! 一件事：按下它 = 从这里开始播 + 开始记。这一页只留**量化网格**与**状态读数**。
+            //!
+            //! 为什么量化不跟着搬过去：它是"这一页怎么记谱"的设置，不是走带的一部分；
+            //! 而走带那条属性是一个通用插槽（见 `PlaybackToolBarModel::extraItem`），
+            //! 往里塞两个控件就不是"一个按钮"了。
+            //
+            //! 节拍器开关也**不再重复**：走带行里那个就是同一个开关（`toggleMetronome()` 写的是
+            //! 同一份记谱配置），两个按钮说同一件事只会让人怀疑哪个才算数。
 
             //! 量化网格。用 Popup 而不是 ComboBox：与旁边的谱表选择器同一套做法，
             //! 不受控件样式影响，而且这一行的 36px 高度也放不下一个下拉框。
@@ -1384,39 +1365,19 @@ Item {
                 }
             }
 
-            //! 节拍器：与记谱页播放工具条上那个是**同一个**设置（`toggleMetronome()` 写的就是它），
-            //! 所以两页会同时亮。录制时靠它对齐拍子 —— 这一页原本没有它的入口。
-            FlatButton {
-                id: metronomeButton
-
-                height: 22
-                visible: root.hasScore
-
-                text: qsTrc("notationscene", "Metro")
-                transparent: !root.metronomeOn
-                accentButton: root.metronomeOn
-
-                toolTipTitle: qsTrc("notationscene", "Metronome")
-                toolTipDescription: qsTrc("notationscene", "Count the beats while recording (same switch as the notation page's playback toolbar)")
-
-                accessible.name: text + "  " + (root.metronomeOn ? qsTrc("global", "On") : qsTrc("global", "Off"))
-
-                onClicked: {
-                    if (root.model !== null) {
-                        root.model.toggleMetronome()
-                    }
-                }
-            }
-
-            //! 上一次录制的结果（"录了 4 个音，写入 4 个，跳过 0 个"）。空串 = 这次会话还没录过。
+            //! 录制的状态读数：
+            //!  * 录制中 → "● 已录 N 个音"（红点 + 计数，一眼看出还在记）；
+            //!  * 停下后 → 上一次的结果（"录了 4 个音，写入 4 个，跳过 0 个"）；空串 = 这次会话还没录过。
             //! 放在工具条上而不是弹对话框：录制是"看一眼就知道成不成"的事，弹窗只会多一次点击。
             Text {
                 id: takeSummaryLabel
 
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.hasScore && root.takeSummary.length > 0
-                text: root.takeSummary
-                color: root.dimTextColor
+                visible: root.hasScore && text.length > 0
+                text: root.recording
+                      ? "● " + qsTrc("notationscene", "Recording") + " " + root.model.recordedNoteCount
+                      : root.takeSummary
+                color: root.recording ? root.recordColor : root.dimTextColor
                 font: ui.theme.bodyFont
                 elide: Text.ElideRight
                 width: Math.min(implicitWidth, 220)

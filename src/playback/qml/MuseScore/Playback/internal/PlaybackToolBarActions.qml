@@ -71,8 +71,16 @@ Item {
             required property MenuItem item
             required property int index
 
+            //! 🆕 宿主插进来的那个按钮（`PlaybackToolBar.extraItem`）—— 只有它自己报 enabled：
+            //! "录制"在没有 MIDI 输入设备时必须画成不可用（按了没反应是最难查的一类失败）。
+            //! ⚠️ 上游那几个按钮**不动**：它们的可用性一直由整行（`isPlayAllowed`）管着，
+            //! 给所有 item 一概绑上 `item.enabled` 会顺手改掉记谱页那条走带的样子。
+            readonly property bool isExtraItem: Boolean(item) && item.id === root.playbackModel.extraItemId
+
             width: 30
             height: width
+
+            enabled: !isExtraItem || item.enabled
 
             icon: Boolean(item) ? item.icon : IconCode.NONE
 

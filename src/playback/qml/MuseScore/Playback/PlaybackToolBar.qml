@@ -33,6 +33,13 @@ Item {
 
     property alias floating: thePlaybackModel.isToolbarFloating
 
+    //! 🆕 宿主页面可以往走带按钮行里插**一个**按钮（MIDI 页用它把"录制"放到节拍器左边）。
+    //! 形状：{ title, description, icon, checked, enabled }；点它发 `extraItemTriggered()`。
+    //! 不设它就是纯上游那条走带（记谱页就是这样）。
+    property alias extraItem: thePlaybackModel.extraItem
+
+    signal extraItemTriggered()
+
     property NavigationPanel navigationPanel: NavigationPanel {
         id: navPanel
         name: "PlaybackToolBar"
@@ -45,6 +52,8 @@ Item {
 
     PlaybackToolBarModel {
         id: thePlaybackModel
+
+        onExtraItemTriggered: root.extraItemTriggered()
     }
 
     width: content.width + (root.floating ? 12 : 0)

@@ -25,6 +25,7 @@
 
 #include "global/containers.h"
 #include "types/translatablestring.h"
+#include "types/mnemonicstring.h"
 
 #include "ui/view/musicalsymbolcodes.h"
 #include "playback/playbacktypes.h"
@@ -41,6 +42,9 @@ using namespace muse::uicomponents;
 using namespace muse::audio;
 
 static const QString PLAY_TOGGLE_ID("play-toggle");
+
+//! 🆕 宿主插进来的那个按钮的 id（见头文件里 `extraItem` 的说明）。
+static const QString EXTRA_ITEM_ID("host-extra-item");
 
 static const ToolConfig& defaultPlaybackToolConfig()
 {
@@ -130,6 +134,11 @@ void PlaybackToolBarModel::updateActions()
             result << makePlayItem();
         } else {
             const rcommand::Command command(item.intent);
+            //! 🆕 宿主插进来的按钮排在**节拍器之前**（用户指定的位置：走带里、节拍器图标的左边）。
+            //! 放在这个循环里而不是追加到末尾，是因为"位置"就是这个插槽存在的理由。
+            if (!m_extraItem.isEmpty() && command == METRONOME_TOGGLE_COMMAND) {
+                result << makeExtraItem();
+            }
             if (isAdditionalCommand(command) && !m_isToolbarFloating) {
                 //! NOTE In this case, we want to see the actions' description instead of the title
                 settingsItems << makeMenuItem(command);
@@ -156,6 +165,53 @@ MenuItem* PlaybackToolBarModel::makeInputPitchMenu()
     MenuItem* menu = makeMenu(muse::TranslatableString("playback", "MIDI input pitch"), items);
     menu->setIcon(ui::IconCode::Code::MUSIC_NOTES);
     return menu;
+}
+
+//! 🆕 宿主给的 map → 按钮行里的一个按钮（见头文件里 `extraItem` 的说明）。
+//! 文字按**不可翻译**处理：map 里传进来的已经是翻译好的字符串（QML 那边用 qsTrc 取），
+//! 到这里再包一层 TranslatableString 只会得到"再翻一次"的壳。
+MenuItem* PlaybackToolBarModel::makeExtraItem()
+{
+    MenuItem* item = new MenuItem(this);
+
+    item->setId(EXTRA_ITEM_ID);
+    item->setTitle(MnemonicString(TranslatableString::untranslatable(String::fromQString(m_extraItem.value("title").toString()))));
+    item->setDescription(TranslatableString::untranslatable(String::fromQString(m_extraItem.value("description").toString())));
+    item->setIcon(ui::IconCode::Code(m_extraItem.value("icon").toInt()));
+    item->setCheckable(true);
+    item->setChecked(m_extraItem.value("checked").toBool());
+    item->setEnabled(m_extraItem.value("enabled", true).toBool());
+
+    return item;
+}
+
+QString PlaybackToolBarModel::extraItemId() const
+{
+    return m_extraItem.isEmpty() ? QString() : EXTRA_ITEM_ID;
+}
+
+void PlaybackToolBarModel::setExtraItem(const QVariantMap& item)
+{
+    if (m_extraItem == item) {
+        return;
+    }
+
+    m_extraItem = item;
+    emit extraItemChanged();
+
+    //! 位置由这份 map 决定（节拍器之前），所以插槽一变就得重建按钮行。
+    updateActions();
+}
+
+void PlaybackToolBarModel::handleMenuItem(const QString& itemId)
+{
+    if (m_extraItem.isEmpty() || itemId != EXTRA_ITEM_ID) {
+        AbstractMenuModel::handleMenuItem(itemId);
+        return;
+    }
+
+    //! 插槽按钮**不是**本模块的命令：由宿主自己去做事（MIDI 页那边是"开始/停止录制"）。
+    emit extraItemTriggered();
 }
 
 bool PlaybackToolBarModel::isAdditionalCommand(const muse::rcommand::Command& command) const

@@ -197,9 +197,6 @@ void MidiEditorModel::init()
         midiInPort()->deviceChanged().onNotify(this, [this]() { emit recordChanged(); });
     }
 
-    //! 节拍器开关归记谱配置管，记谱页的工具条也会改它 —— 所以这一页的按钮要跟着它变。
-    configuration()->isMetronomeEnabledChanged().onNotify(this, [this]() { emit metronomeChanged(); });
-
     connectToCurrentScore();
     reload();
 
@@ -438,6 +435,12 @@ void MidiEditorModel::reload()
 
     emit scoreChanged();
     updatePlaybackState();
+
+    //! ⚠️ 录制那组属性（能不能录 / 上一次结果 / 设备名）也要跟着工程走：
+    //! `canRecord()` 里的 `m_hasScore` 就是在这里翻成 true 的，而**只有这一条通知**能让
+    //! 走带里那个录制键重新求值。少了它，录制键在"先开程序、后开工程"的常见顺序下会一直是灰的
+    //! （2026-10-07 实拍发现的：图标画成了不可用，按下去也没反应）。
+    emit recordChanged();
 }
 
 void MidiEditorModel::updatePlaybackState()
@@ -1014,17 +1017,6 @@ void MidiEditorModel::setQuantizeStrength(int percent)
     updateRecordedNotes(true);
 }
 
-bool MidiEditorModel::metronomeEnabled() const
-{
-    return configuration()->isMetronomeEnabled();
-}
-
-void MidiEditorModel::toggleMetronome()
-{
-    playbackController()->toggleMetronome();
-    emit metronomeChanged();
-}
-
 bool MidiEditorModel::canRecord() const
 {
     if (!m_hasScore || !midiInPort()) {
@@ -1178,14 +1170,39 @@ void MidiEditorModel::updateRecordedNotes(bool force)
     }
 }
 
-void MidiEditorModel::toggleRecording(int staffIndex)
+void MidiEditorModel::toggleRecording()
 {
     if (m_isRecording) {
         finishRecording(true);
         return;
     }
 
-    startRecording(staffIndex);
+    //! 第二道闸：录制键在没有设备时画成不可用，但快捷键/脚本仍可能打进来 ——
+    //! 那种情况下"开始录"只会录到一个空 take，不如当场说清楚。
+    if (!canRecord()) {
+        LOGW() << "[midi-record] refused: no MIDI input device connected"
+               << "(device=" << midiInputDeviceName() << ")";
+        return;
+    }
+
+    startRecording(m_recordStaff);
+}
+
+void MidiEditorModel::setRecordStaff(int staffIndex)
+{
+    Score* score = currentScore();
+    if (!score) {
+        return;
+    }
+
+    //! 夹到合法范围（视图切谱表时会传过来；换了工程之后旧的选中可能已经不在了）。
+    const int clamped = std::clamp(staffIndex, 0, int(score->nstaves()) - 1);
+    if (clamped == m_recordStaff) {
+        return;
+    }
+
+    m_recordStaff = clamped;
+    emit recordChanged();
 }
 
 void MidiEditorModel::startRecording(int staffIndex)

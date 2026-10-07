@@ -95,10 +95,37 @@ DockPage {
             navigationSection: root.topToolbarKeyNavSec
 
             PlaybackToolBar {
+                id: playback
+
                 navigationPanelSection: playbackToolBar.navigationSection
                 navigationPanelOrder: 2
 
                 floating: playbackToolBar.floating
+
+                //! 🆕 录制按钮做在**走带按钮行**里（节拍器图标左边）—— 与播放/循环/节拍器同一排，
+                //! 因为它们本来就是一件事：按下它 = 从这里开始播 + 开始记。
+                //!
+                //! 这一页**不另建一套状态**：这里给的是"按钮长什么样"（图标/文字/亮不亮/能不能按），
+                //! 真正的录制、量化与写回都在 `midiModel` 里（见 `维护手册.md` §4.8.4）。
+                extraItem: {
+                    return {
+                        //! ⚠️ 文字在这里就翻译好（C++ 那边按"不可翻译"处理，不会再翻一次）。
+                        "title": qsTrc("appshell", "Record"),
+                        "description": midiModel.isRecording
+                                         ? qsTrc("appshell", "Stop and write what was played into the score (one undo step)")
+                                         : (midiModel.canRecord
+                                            ? qsTrc("appshell", "Play along from the playhead: everything you play is captured, "
+                                                               + "then quantized and written into the selected staff")
+                                            : qsTrc("appshell", "No MIDI input device: pick one in Preferences → Audio & MIDI")),
+                        "icon": IconCode.RECORD_FILL,
+                        "checked": midiModel.isRecording,
+                        "enabled": midiModel.isRecording || midiModel.canRecord
+                    }
+                }
+
+                onExtraItemTriggered: {
+                    midiModel.toggleRecording()
+                }
             }
         },
 

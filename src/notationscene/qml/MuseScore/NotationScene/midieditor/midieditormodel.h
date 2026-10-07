@@ -40,7 +40,6 @@
 #include "midi/imidiinport.h"
 
 #include "notation/inotation.h"
-#include "notation/inotationconfiguration.h"
 
 #include "playback/iplaybackcontroller.h"
 
@@ -105,9 +104,6 @@ class MidiEditorModel : public QObject, public muse::Contextable, public muse::a
     Q_PROPERTY(int quantizeGridIndex READ quantizeGridIndex WRITE setQuantizeGridIndex NOTIFY recordSettingsChanged)
     Q_PROPERTY(int quantizeStrength READ quantizeStrength WRITE setQuantizeStrength NOTIFY recordSettingsChanged)
 
-    //! 节拍器（与记谱页播放工具条上那个是**同一个**设置，不是这一页的第二份）。
-    Q_PROPERTY(bool metronomeEnabled READ metronomeEnabled NOTIFY metronomeChanged)
-
     //! 上一次录制写进了什么（"录了 12 个音，写入 12 个，跳过 0 个"）。空 = 这一会话还没录过。
     Q_PROPERTY(QString lastTakeSummary READ lastTakeSummary NOTIFY recordChanged)
 
@@ -141,9 +137,6 @@ class MidiEditorModel : public QObject, public muse::Contextable, public muse::a
     //! 录制要听的 MIDI 输入端口。⚠️ **全球注入**（与 `MidiInputOutputController` 拿的是同一个）：
     //! 端口是进程级的，不是某一页的。
     muse::GlobalInject<muse::midi::IMidiInPort> midiInPort;
-
-    //! 节拍器开关归记谱配置管（`PlaybackController::toggleMetronome()` 写的就是它）。
-    muse::GlobalInject<INotationConfiguration> configuration;
 
 public:
     explicit MidiEditorModel(QObject* parent = nullptr);
@@ -274,22 +267,24 @@ public:
     int quantizeStrength() const { return m_quantizeStrength; }
     void setQuantizeStrength(int percent);
 
-    bool metronomeEnabled() const;
-    Q_INVOKABLE void toggleMetronome();
-
     QString lastTakeSummary() const { return m_lastTakeSummary; }
 
     bool canRecord() const;
     QString midiInputDeviceName() const;
 
-    //! **开始 / 停止**（同一个入口，工具条上那一个按钮就是它）。
+    //! **开始 / 停止**（同一个入口 —— 走带按钮行上那个录制键、以及页面内的调用都是它）。
     //!
-    //! 开始：从**当前播放头**起播，同时开始采集（`staffIndex` = 录到哪个谱表，就是卷帘窗里
-    //! 正选中的那个 —— 模型看不到视图的选中，所以由调用方传进来）。
+    //! 开始：从**当前播放头**起播，同时开始采集；录到**当前选中的谱表**上（`setRecordStaff()`，
+    //! 视图负责把它的选中同步进来 —— 模型看不到视图的选中）。
     //! 停止：把还在按着的音封口 → 量化 → **一次事务**写进乐谱 → 停止播放。
     //!
-    //! ⚠️ 播放自己停下来（放到曲子末尾）也算停止：见 `init()` 里对播放状态的订阅。
-    Q_INVOKABLE void toggleRecording(int staffIndex);
+    //! ⚠️ 播放自己停下来（放到曲子末尾、或用户按了空格）也算停止：见 `init()` 里对播放状态的订阅。
+    //! ⚠️ 没有 MIDI 输入设备时**拒绝开始**（只写一条日志）：录制键在那种情况下本来就画成不可用，
+    //! 这里是第二道闸（快捷键/脚本也可能打进来）。
+    Q_INVOKABLE void toggleRecording();
+
+    //! 录到哪个谱表（视图在切换选中谱表时同步进来）。越界时会夹到合法范围。
+    Q_INVOKABLE void setRecordStaff(int staffIndex);
 
     //! 停止并**放弃**这一次采集（一个音都不写）。
     Q_INVOKABLE void cancelRecording();
@@ -354,7 +349,6 @@ signals:
     void recordChanged();
     void recordedNotesChanged();
     void recordSettingsChanged();
-    void metronomeChanged();
 
 private:
     void reload();
