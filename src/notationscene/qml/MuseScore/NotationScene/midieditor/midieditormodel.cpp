@@ -458,6 +458,13 @@ void MidiEditorModel::playNoteAtPitch(int row, int pitch)
     delete audition.chord;
 }
 
+void MidiEditorModel::togglePlay()
+{
+    //! NOTE: 与记谱页按空格最终走到的是**同一个**调用（`PLAY_TOGGLE_COMMAND` 的实现就是它），
+    //!       所以"播放 / 暂停 / 从头播"的语义两页一致。为什么这一页要自己接空格：见头文件。
+    playbackController()->togglePlay();
+}
+
 QVariantMap MidiEditorModel::loopRangeFromDrag(int draggedTick, int releasedTick, int snapTicks) const
 {
     const MidiLoopRange range = midiLoopRangeFromDrag(draggedTick, releasedTick, m_totalTicks, snapTicks);

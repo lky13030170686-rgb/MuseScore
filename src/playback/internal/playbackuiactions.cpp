@@ -38,9 +38,15 @@ static const ActionCode PLAY_FROM_SELECTION_CODE("play-from-selection");
 static const ActionCode CLEAR_ONLINE_SOUNDS_CACHE_CODE("clear-online-sounds-cache");
 
 const UiActionList PlaybackUiActions::s_mainActions = {
+    //! ⚠️ 走带类（play / pause / rewind / loop）用的是 `CTX_PROJECT_PAGE_OPENED`，不是
+    //! `CTX_NOTATION_FOCUSED` —— 因为 MIDI 编辑页（`musescore://midi`）显示/编辑的是**同一个工程**，
+    //! 走带在这两页都该能用。原来的上下文只认"记谱页有焦点"，MIDI 页解析出的 UI 上下文是
+    //! `UiCtxUnknown` ⇒ 那条 `Space` 快捷键在 MIDI 页被过滤掉，空格落到全局的
+    //! `nav-trigger-control` 上（用户 2026-10-07 报「空格没反应」的根因）。
+    //! 新上下文**只放宽这一层**，不把整页记谱类快捷键带过去（见 context/shortcutcontext.h）。
     UiAction("play",
              mu::context::UiCtxProjectOpened,
-             mu::context::CTX_NOTATION_FOCUSED,
+             mu::context::CTX_PROJECT_PAGE_OPENED,
              TranslatableString("action", "Play"),
              TranslatableString("action", "Play"),
              IconCode::Code::PLAY
@@ -54,7 +60,7 @@ const UiActionList PlaybackUiActions::s_mainActions = {
              ),
     UiAction("pause",
              mu::context::UiCtxProjectOpened,
-             mu::context::CTX_NOTATION_FOCUSED,
+             mu::context::CTX_PROJECT_PAGE_OPENED,
              TranslatableString("action", "Pause"),
              TranslatableString("action", "Pause playback"),
              IconCode::Code::PAUSE
@@ -75,14 +81,14 @@ const UiActionList PlaybackUiActions::s_mainActions = {
              ),
     UiAction("rewind",
              mu::context::UiCtxProjectOpened,
-             mu::context::CTX_NOTATION_FOCUSED,
+             mu::context::CTX_PROJECT_PAGE_OPENED,
              TranslatableString("action", "Rewind"),
              TranslatableString("action", "Rewind"),
              IconCode::Code::REWIND
              ),
     UiAction("loop",
              mu::context::UiCtxProjectOpened,
-             mu::context::CTX_NOTATION_FOCUSED,
+             mu::context::CTX_PROJECT_PAGE_OPENED,
              TranslatableString("action", "Loop playback"),
              TranslatableString("action", "Toggle ‘Loop playback’"),
              IconCode::Code::LOOP,

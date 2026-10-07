@@ -45,6 +45,9 @@ using namespace muse::ui;
 
 static const muse::Uri HOME_PAGE_URI("musescore://home");
 static const muse::Uri NOTATION_PAGE_URI("musescore://notation");
+//! 自建页面：MIDI 编辑页（钢琴卷帘窗）。它与记谱页**同源**（同一个工程的两个视图），
+//! 所以"工程级"快捷键（播放/暂停）在这一页也要能用 —— 见 CTX_PROJECT_PAGE_OPENED。
+static const muse::Uri MIDI_PAGE_URI("musescore://midi");
 static const muse::Uri PUBLISH_PAGE_URI("musescore://publish");
 static const muse::Uri DEVTOOLS_PAGE_URI("musescore://devtools");
 
@@ -66,6 +69,10 @@ void UiContextResolver::init()
     interactive()->currentUri().ch.onReceive(this, [this](const Uri&) {
         //! NOTE Let the page/dialog open and show itself first
         m_currentUriChangedTimer.start();
+        //! ⚠️ 也要**立刻**重算一次：`CTX_PROJECT_PAGE_OPENED` 是直接读 `currentUri()` 判的，
+        //! 而页面切换（记谱页 ⇄ MIDI 页）不一定会触发下面那两个通知 ⇒ 不重算的话
+        //! "切到 MIDI 页后按空格"会用到切换**之前**的上下文。
+        updateCurrentUiContext();
     });
 
     globalContext()->currentNotationChanged().onNotify(this, [this]() {
@@ -214,6 +221,14 @@ bool UiContextResolver::isShortcutContextAllowed(const std::string& scContext) c
 
     if (CTX_DISABLED == scContext) {
         return false;
+    }
+
+    if (CTX_PROJECT_PAGE_OPENED == scContext) {
+        //! 记谱页（有焦点或只是打开着）**或** MIDI 编辑页 —— 两页是同一个工程的两个视图。
+        //! ⚠️ 判据用 `interactive()->currentUri()`（页面栈顶）而不是 `currentUiContext()`：
+        //! MIDI 页的 UI 上下文是 `UiCtxUnknown`，从那里分不出"MIDI 页"和"某个对话框"。
+        return matchWithCurrent(context::UiCtxProjectOpened) || matchWithCurrent(context::UiCtxProjectFocused)
+               || (interactive() && interactive()->currentUri().val == MIDI_PAGE_URI);
     }
 
     if (CTX_NOTATION_OPENED == scContext) {

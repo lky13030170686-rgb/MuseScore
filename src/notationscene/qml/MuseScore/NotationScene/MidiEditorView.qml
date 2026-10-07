@@ -264,6 +264,12 @@ Item {
     //! （`tryShortcut` 在没有任何 identical 注册者时返回 false）⇒ 这道兜底接管 ✓
     focus: true
     Keys.onPressed: function(event) {
+        //! ⛔ **空格不在这里处理**（2026-10-07 试过、实测无效）：`nav-trigger-control` 已经全局注册了
+        //! `Space`，Qt 在**快捷键匹配阶段**就把按键消费掉了 ⇒ 这一页的 `Keys.onPressed` **根本收不到**
+        //! （日志证据：按空格后只有 `try call action: nav-trigger-control`，没有本页的探针）。
+        //! 正解在**快捷键上下文**那一层：走带类动作（play/pause/rewind/loop）改用
+        //! `CTX_PROJECT_PAGE_OPENED`，MIDI 页也算"工程页打开着" ⇒ 全局那条 `Space` 在**这一页生效**，
+        //! 而且**不需要**新增注册者（新增会让 Qt 判 ambiguous 而同归于尽，见下面的 Ctrl+Z 注释）。
         if ((event.modifiers & Qt.ControlModifier) === 0) {
             return
         }

@@ -162,6 +162,26 @@ public:
     //! 越界、音符已失效、或这一页没有工程时都是**无操作**：试听不该因为一次失手而改变任何状态。
     Q_INVOKABLE void playNote(int row);
 
+    //! 播放 / 暂停（**空格键**走的最终调用**不是**它 —— 见下）。
+    //!
+    //! 空格的正解在**快捷键上下文**那一层：`play` 动作原来带 `CTX_NOTATION_FOCUSED`（= 记谱页有焦点），
+    //! 而 MIDI 页解析出的 UI 上下文是 `UiCtxUnknown`（`UiContextResolver::resolveCurrentUiContext()`
+    //! 只认 notation/publish/devtools 三个 URI）⇒ 那条全局 `Space` 快捷键在**这一页被过滤掉**，
+    //! 空格于是落到同样绑着 `Space` 的全局 `nav-trigger-control`（"激活当前聚焦控件"）上 ✗。
+    //! 实测证据（2026-10-07，`ActionsDispatcher::doDispatch` 日志）：
+    //! 记谱页按空格 → `try call action: play` → `command://playback/play-toggle` ✓；
+    //! MIDI 页按空格 → `try call action: nav-trigger-control` ✗。
+    //!
+    //! 所以走带类动作改用 `CTX_PROJECT_PAGE_OPENED`（记谱页**或** MIDI 页都算"工程页打开着"），
+    //! 全局那条 `Space` 于是自动在这一页生效 —— **不必**新增注册者（新增会让 Qt 判 ambiguous）。
+    //!
+    //! ⚠️ 试过在这页的 `Keys.onPressed` 里接空格：**无效**，因为 Qt 在快捷键匹配阶段就消费了按键，
+    //! QML 的按键处理器根本收不到（日志里没有探针、只有 `nav-trigger-control`）。
+    //!
+    //! 这个方法保留下来是给**页面内**的入口用（例如以后加一个"播放"按钮），
+    //! 调的是记谱页最终走的**同一个** `IPlaybackController::togglePlay()`（`PLAY_TOGGLE_COMMAND` 的实现）。
+    Q_INVOKABLE void togglePlay();
+
     //! 试听**某个音高**上的那个音符 —— 拖动改音高时用。
     //!
     //! 与 `playNote()` 的区别只有一个：音高。拖动中卷帘窗**不写谱**（松手才提交一次），所以原音符
