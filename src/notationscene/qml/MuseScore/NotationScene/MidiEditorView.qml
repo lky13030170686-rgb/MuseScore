@@ -540,17 +540,20 @@ Item {
 
     property int editTool: 0
 
-    //! 工具按钮的清单（标签 + 提示 + 光标）。工具条与 `cursorShape` 都读它，不写第二份。
+    //! 工具按钮的清单（标签 + 图标 + 提示 + 光标）。工具条、`cursorShape` 与提示都读它，不写第二份。
+    //! ⚠️ 图标是**渲染出来挑过的**（`build/v/icon-sheet.png` 是全套 401 个的对照表），
+    //! 不是照名字猜的 —— 图标字体里没有"鼠标指针"和"橡皮"，所以移动用四向箭头、
+    //! 擦除用垃圾桶（`维护手册.md` §4.8 记了这一条）。
     readonly property var editTools: [
-        { "id": 0, "label": "Move", "cursor": Qt.ArrowCursor,
+        { "id": 0, "label": "Move", "icon": IconCode.POSITION_ARROWS, "cursor": Qt.ArrowCursor,
           "tip": qsTrc("notationscene", "Move: drag a note to change its time and pitch · right edge = played length · Shift+drag = played start · drag empty space = box select") },
-        { "id": 1, "label": "Draw", "cursor": Qt.CrossCursor,
+        { "id": 1, "label": "Draw", "icon": IconCode.EDIT, "cursor": Qt.CrossCursor,
           "tip": qsTrc("notationscene", "Draw: drag on empty space to write a note (the drag sets its length) · on an existing note the drag changes its notated length") },
-        { "id": 2, "label": "Split", "cursor": Qt.SplitHCursor,
+        { "id": 2, "label": "Split", "icon": IconCode.SPLIT_TOOL, "cursor": Qt.SplitHCursor,
           "tip": qsTrc("notationscene", "Split: click a note to cut it in two at that point - the halves are tied, so the sound does not change") },
-        { "id": 3, "label": "Trim", "cursor": Qt.SizeHorCursor,
+        { "id": 3, "label": "Trim", "icon": IconCode.TRIM_HANDLE_RIGHT, "cursor": Qt.SizeHorCursor,
           "tip": qsTrc("notationscene", "Trim: drag a note to change its notated length (the outer frame). Shortening fills with rests, lengthening splits at barlines and ties") },
-        { "id": 4, "label": "Erase", "cursor": Qt.PointingHandCursor,
+        { "id": 4, "label": "Erase", "icon": IconCode.DELETE_TANK, "cursor": Qt.PointingHandCursor,
           "tip": qsTrc("notationscene", "Erase: click or sweep over notes to delete them (one command for the whole sweep, so one undo brings them back)") }
     ]
 
@@ -1710,53 +1713,80 @@ Item {
             //! 🆕 ── 编辑工具（Cubase 式）──────────────────────────────────────────────
             //!
             //! 放在这一行的**最左边**：工具是"我现在要干什么"的开关，别的按钮都是它的补充。
-            //! 用**真 `FlatButton`**（无障碍树里点得到）：本环境画布上的合成鼠标无效，
+            //! 五个按钮套一个**圆角底**（Cubase 的工具也是一组一个块），选中的那个填 accent 色 ——
+            //! 于是"现在是哪个工具"一眼可见，不用读文字。
+            //!
+            //! **图标全部来自 MuseScore 自带的图标字体**（`IconCode` + `ui.theme.toolbarIconsFont`）：
+            //! 不新增任何资源、跟着主题换色、任意 DPI 都不糊。挑的是**语义正好**的那几个
+            //! （对照表 `build/v/icon-sheet.png` 是渲染出来看过的，不是照名字猜的）：
+            //!  * `POSITION_ARROWS` = 四向移动 ✥ → Move
+            //!  * `EDIT` = 铅笔 ✏ → Draw
+            //!  * `SPLIT_TOOL` = 剪刀剪线 ✂ → Split
+            //!  * `TRIM_HANDLE_RIGHT` = 右边缘裁剪 → Trim
+            //!  * `DELETE_TANK` = 垃圾桶 🗑 → Erase
+            //!
+            //! ⚠️ 用**真 `FlatButton`**（无障碍树里点得到）：本环境画布上的合成鼠标无效，
             //! 工具按钮因此是这一组功能里**唯一机器可验**的入口
             //! （`tools/ui-probe.ps1 -Action click -Name Split -ControlType Button`，见 §7.6）。
-            Repeater {
-                model: root.editTools
+            //! 也正因为只剩图标，`accessible.name` 必须留着（它是机器与读屏唯一的文字来源）。
+            Rectangle {
+                id: toolCluster
 
-                delegate: FlatButton {
-                    id: toolButton
+                height: 28
+                width: toolRow.width + 8
+                radius: 5
+                color: ui.theme.backgroundPrimaryColor
+                border.width: 1
+                border.color: root.gridColor
+                anchors.verticalCenter: parent.verticalCenter
 
-                    required property var modelData
+                Row {
+                    id: toolRow
 
-                    height: 22
-                    //! 短标签用 Horizontal 那一档（margins 12 / minWidth 24）：
-                    //! TextOnly 默认 minWidth 132，五个这样的按钮就能把这一行撑爆。
-                    buttonType: FlatButton.Horizontal
+                    anchors.centerIn: parent
+                    spacing: 2
 
-                    text: modelData.label
-                    transparent: root.editTool !== modelData.id
-                    accentButton: root.editTool === modelData.id
+                    Repeater {
+                        model: root.editTools
 
-                    toolTipTitle: modelData.label
-                    toolTipDescription: modelData.tip
+                        delegate: FlatButton {
+                            id: toolButton
 
-                    //! 无障碍名带状态：机器既能按名字点中，也能读出"现在是哪个工具"。
-                    accessible.name: modelData.label + "  "
-                                     + (root.editTool === modelData.id ? qsTrc("global", "On") : qsTrc("global", "Off"))
+                            required property var modelData
 
-                    onClicked: {
-                        root.editTool = modelData.id
-                        //! 换工具就把进行中的手势清干净：留着会让画笔的预览框挂到下一个工具上。
-                        root.drawActive = false
-                        root.eraseActive = false
-                        root.marqueeActive = false
-                        gridCanvas.requestPaint()
+                            //! `IconOnly` 的 `FlatButton` 隐式尺寸是**正方形**（`defaultButtonSize`），
+                            //! 这里压到 24px：工具条那一行只有 36px，五个方形按钮要排得下。
+                            width: 24
+                            height: 24
+                            buttonType: FlatButton.IconOnly
 
-                        //! 观测点（验证用）：工具切换是"按了没反应"类问题的第一现场。
-                        console.warn("[midi-tool] tool =", modelData.label)
+                            icon: modelData.icon
+                            iconFont: ui.theme.toolbarIconsFont
+
+                            transparent: root.editTool !== modelData.id
+                            accentButton: root.editTool === modelData.id
+
+                            toolTipTitle: modelData.label
+                            toolTipDescription: modelData.tip
+
+                            //! 无障碍名带状态：机器既能按名字点中，也能读出"现在是哪个工具"。
+                            accessible.name: modelData.label + "  "
+                                             + (root.editTool === modelData.id ? qsTrc("global", "On") : qsTrc("global", "Off"))
+
+                            onClicked: {
+                                root.editTool = modelData.id
+                                //! 换工具就把进行中的手势清干净：留着会让画笔的预览框挂到下一个工具上。
+                                root.drawActive = false
+                                root.eraseActive = false
+                                root.marqueeActive = false
+                                gridCanvas.requestPaint()
+
+                                //! 观测点（验证用）：工具切换是"按了没反应"类问题的第一现场。
+                                console.warn("[midi-tool] tool =", modelData.label)
+                            }
+                        }
                     }
                 }
-            }
-
-            //! 工具与其它按钮之间的一道细竖线：一眼看出"这五个是一组"。
-            Rectangle {
-                width: 1
-                height: 18
-                anchors.verticalCenter: parent.verticalCenter
-                color: root.gridColor
             }
 
             //! ── 实时录制 ─────────────────────────────────────────────────────────────
