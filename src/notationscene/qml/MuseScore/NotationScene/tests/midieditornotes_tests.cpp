@@ -2055,6 +2055,53 @@ TEST_F(MidiEditorNotesTests, CuttingALongNoteAnywhereLeavesNoHoleToo)
     }
 }
 
+//! 再切一刀，切的是**连音线的后半段**（它带着 `tieBack`）：链条不许断 —— 三段首尾相接、
+//! 每两段之间都有一条连音线，听起来**还是一个音**（不是"后半段重新起音"）。
+//!
+//! 这条钉的是"剪刀可以反复用"：用户切完一刀接着切后半段，是最自然的下一步动作。
+//! 走的是 `changeCRlen()` 的截短路径 —— 它**保留 ChordRest 对象**，所以进来的那条连音线
+//! 依然指着活着的音（不会变成悬空指针），而出去的连音线由它自己摘掉、再由剪刀接到新的右半段。
+TEST_F(MidiEditorNotesTests, CuttingATiedHalfAgainKeepsTheChainConnected)
+{
+    Note* first = noteAtTick(m_score, 0, 60);
+    ASSERT_TRUE(first);
+
+    std::vector<Note*> rightHalf;
+    ASSERT_TRUE(splitMidiNote(m_score, first, TEST_QUARTER / 2, true, &rightHalf));
+    ASSERT_EQ(rightHalf.size(), 1u);
+
+    //! 第二刀切后半段（240..480）的正中间：左 120 + 右 120，两半都写得出来。
+    ASSERT_TRUE(splitMidiNote(m_score, rightHalf.front(), TEST_QUARTER / 2 + TEST_QUARTER / 4, true));
+
+    //! 三段：0..240（第一刀的左半）/ 240..360（第二刀的左半 = 原来后半段的前 120）/
+    //! 360..480（第二刀的右半）—— 首尾相接铺满原来的 480，一段不多一段不少。
+    const std::vector<int> bounds { 0, TEST_QUARTER / 2, TEST_QUARTER / 2 + TEST_QUARTER / 4, TEST_QUARTER };
+    for (size_t i = 0; i + 1 < bounds.size(); ++i) {
+        Note* piece = noteAtTick(m_score, bounds[i], 60);
+        ASSERT_TRUE(piece) << "第 " << i << " 段不见了";
+        EXPECT_EQ(piece->tick().ticks() + piece->chord()->actualTicks().ticks(), bounds[i + 1])
+            << "第 " << i << " 段没有接到下一段";
+    }
+
+    //! 每一段都连着下一段（同一条 Tie 对象），最后一段没有 tieFor。
+    for (size_t i = 0; i + 1 < bounds.size(); ++i) {
+        Note* piece = noteAtTick(m_score, bounds[i], 60);
+        ASSERT_TRUE(piece);
+
+        if (i + 2 == bounds.size()) {
+            EXPECT_FALSE(piece->tieFor()) << "最后一段不该再往后连";
+            break;
+        }
+
+        ASSERT_TRUE(piece->tieFor()) << "第 " << i << " 段与下一段之间断了（听起来会多一次起音）";
+        Note* next = noteAtTick(m_score, bounds[i + 1], 60);
+        ASSERT_TRUE(next);
+        EXPECT_EQ(piece->tieFor(), next->tieBack());
+    }
+
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
 //! 切点落在**不可写**的位置时（三连音网格、奇数 tick），剪刀要**吸附到最近的可写位置**，
 //! 而不是切在那儿再补一个休止符。判据：切出来的两半各自都落在"能写成音符"的时值上。
 TEST_F(MidiEditorNotesTests, AnUnwritableCutSnapsToTheNearestWritableOne)
