@@ -128,6 +128,28 @@ class MidiEditorModel : public QObject, public muse::Contextable, public muse::a
     Q_PROPERTY(QVariantMap viewState READ viewState NOTIFY viewStateChanged)
     Q_PROPERTY(QString viewStateKey READ viewStateKey NOTIFY viewStateChanged)
 
+    //! ── 选择与批量编辑 ───────────────────────────────────────────────────────────────
+    //!
+    //! 选中态按**音符身份**（`Note*`）存，**不按行号**：行号是 `notes()` 的下标，而这一页现在会
+    //! 插入/删除音符 —— 那会让后面的行号整体挪位，按下标存的选中会"跳到别的音上"（不报错、不崩，
+    //! 只是改错音，正是这一页最容易静默出错的一类）。
+    //!
+    //! 每次 `reload()` 用"与新的音符表**求交集**"来清理失效项：只比较地址、**绝不 dereference**，
+    //! 所以被删掉的音不会变成悬空访问。
+    //!
+    //! 视图拿到的是**行号**（`selectedRows`），绘制时自己建一张查表；模型内部的编辑一律用 `Note*`。
+    Q_PROPERTY(QVariantList selectedRows READ selectedRows NOTIFY selectionChanged)
+    Q_PROPERTY(int selectedCount READ selectedCount NOTIFY selectionChanged)
+
+    //! 剪贴板里有没有东西（工具条上的 Paste 按钮据此灰显）。
+    Q_PROPERTY(bool hasClipboard READ hasClipboard NOTIFY clipboardChanged)
+
+    //! 这一页正在编辑哪个谱表（视图在切换选中谱表时同步进来）。
+    //!
+    //! ⚠️ 模型**看不到视图的选中**，而录制、插入音符、粘贴都需要知道"往哪个谱表写" ——
+    //! 这三处必须问同一个来源，否则会出现"录到 A 谱表、插入到 B 谱表"这种自相矛盾的状态。
+    Q_PROPERTY(int editStaff READ editStaff WRITE setEditStaff NOTIFY editStaffChanged)
+
     muse::ContextInject<context::IGlobalContext> context = { this };
 
     //! The playback position and the solo state are the playback module's, not ours: this page only
@@ -164,6 +186,15 @@ public:
 
     QVariantMap viewState() const { return m_viewState; }
     QString viewStateKey() const { return m_viewStateKey; }
+
+    //! 选中的行（`notes()` 的下标），按行号升序。视图用它建查表来画选中态。
+    QVariantList selectedRows() const;
+    int selectedCount() const { return int(m_selectedNotes.size()); }
+
+    bool hasClipboard() const { return !m_clipboard.empty(); }
+
+    int editStaff() const { return m_editStaff; }
+    void setEditStaff(int staffIndex);
 
     //! 视图离开页面时把自己的状态交回来（QML 侧在 `Component.onDestruction` 里调）。
     //! 之后重建的视图会用 `viewState` 把自己摆回原样。
@@ -283,8 +314,9 @@ public:
     //! 这里是第二道闸（快捷键/脚本也可能打进来）。
     Q_INVOKABLE void toggleRecording();
 
-    //! 录到哪个谱表（视图在切换选中谱表时同步进来）。越界时会夹到合法范围。
-    Q_INVOKABLE void setRecordStaff(int staffIndex);
+    //! ⚠️ 录到哪个谱表现在由 `editStaff` 属性管（见上面"这一页正在编辑哪个谱表"）：
+    //! 录制、插入音符、粘贴必须问**同一个来源**，否则会出现"录到 A 谱表、插入到 B 谱表"这种
+    //! 自相矛盾的状态 —— 所以这里**不再**有第二个 setter。
 
     //! **电脑键盘弹一个音**（用户 2026-10-07 报的「录制时按 c.d.e.f.g 没反应」）。
     //!
@@ -313,6 +345,57 @@ public:
     //!       mouse move), which is what the audio lane drag does as well.
     Q_INVOKABLE void setNotePitch(int row, int pitch);
     Q_INVOKABLE void setNoteVelocity(int row, int velocity);
+
+    //! ── 选择 ─────────────────────────────────────────────────────────────────────────
+    //!
+    //! 四个入口覆盖四种手势：点一下（`setSelectedRows` 单元素、`additive=false`）、Ctrl 点
+    //! （`toggleSelectedRow`）、框选（`setSelectedRows` 一批、`additive` 看 Ctrl）、Esc（`clearSelection`）。
+    //! 都在**行号**上工作（视图只认识行号），内部转成 `Note*`。
+    Q_INVOKABLE void setSelectedRows(const QVariantList& rows, bool additive);
+    Q_INVOKABLE void toggleSelectedRow(int row);
+    Q_INVOKABLE void clearSelection();
+    Q_INVOKABLE bool isRowSelected(int row) const;
+
+    //! 批量改音高（一次拖动提交一次）。与 `setNoteVelocities` 同一个约定：整批一个命令、
+    //! 只改值没变的项被跳过、整批无变化就一个命令都不开。
+    Q_INVOKABLE void setNotePitches(const QVariantList& rows, const QVariantList& pitches);
+
+    //! 批量改**演奏力度**（`NoteEvent::velocityMultiplier`，百分比）—— 力度车道的第二个通道。
+    //! ⚠️ 它**不是** `setNoteVelocities` 那个 `Pid::USER_VELOCITY`：那个是"这个音自己的力度，
+    //! 覆盖表情记号"，这个是"这个音本来该多响，再乘一下"。两条通路在合成器里可以并存
+    //! （见 `维护手册.md` §4.8 那条"velocityMultiplier 与 velocityOverride 打架"）。
+    Q_INVOKABLE void setNotePlayVelocities(const QVariantList& rows, const QVariantList& percents);
+
+    //! ── 结构性编辑（增 / 删 / 移 / 改记谱时长 / 复制粘贴）──────────────────────────────
+    //!
+    //! 这一组会**换掉音符对象**（走 `Score::setNoteRest()` 那套），所以每一次都记着把选中态搬到
+    //! 新对象上 —— 否则用户拖完一松手，选中就空了，下一次操作落空。
+    //!
+    //! 三条边界（都是**故意**的，与录制的写回同源）：
+    //!  * **谱面之外一律不写**（不会为了一个手势凭空长出小节）；
+    //!  * 结构性编辑**只保留音高 / 力度 / 演奏层**，连音线、记号、附点不在复刻之列；
+    //!  * 记谱时值是 **ChordRest 级**的：改一个和弦音 = 改整个和弦。
+
+    //! 删掉当前选中的音（Delete / Backspace）。删完选中自然空掉。
+    Q_INVOKABLE void deleteSelectedNotes();
+
+    //! 把选中的音整体左右移动 `deltaTicks`（记谱层）。整批一个命令、一次撤销。
+    Q_INVOKABLE void moveSelectedNotes(int deltaTicks);
+
+    //! 把选中的音的**记谱时值**整体加减 `deltaTicks`（下限一拍网格，见 QML 里的夹取）。
+    Q_INVOKABLE void resizeSelectedNotes(int deltaTicks);
+
+    //! 在 (staffIndex, tick) 处插入一个音。已经有一个和弦时是**加和弦音**；
+    //! 那个音高已经在和弦里 / 落在谱面之外时什么都不做。
+    //! `durationTicks` 是记谱时值（工具条上的插入时值 = 吸附网格）。
+    Q_INVOKABLE void insertNoteAt(int staffIndex, int tick, int pitch, int durationTicks);
+
+    //! 复制选中的音（音高 / 时值 / 力度 / 演奏层）。空选中 = 清空剪贴板。
+    Q_INVOKABLE void copySelection();
+
+    //! 把剪贴板粘到 `tick`（视图传的是**播放头**，所以"粘到哪"永远看得见）。
+    //! 粘完把这些新音选中，方便接着整体搬。
+    Q_INVOKABLE void pasteAtTick(int staffIndex, int tick);
 
     //! The same edit for many notes at once, which is what a brush stroke needs. Setting them one by
     //! one made the model rebuild its whole note list - twice - per note, so sweeping over a phrase
@@ -361,6 +444,9 @@ signals:
     void recordChanged();
     void recordedNotesChanged();
     void recordSettingsChanged();
+    void selectionChanged();
+    void clipboardChanged();
+    void editStaffChanged();
 
 private:
     void reload();
@@ -369,10 +455,32 @@ private:
     //! The real work of setNoteVelocities(), run one event-loop turn later (see the .cpp).
     void applyVelocityBatch(const QVariantList& rows, const QVariantList& velocities);
 
+    //! 一个音符上"可以整批写"的三个通道。三者**互不相同**，只是收集/提交/补缓存的骨架一样：
+    //!  * `Velocity`     → `Pid::USER_VELOCITY`（力度车道的第一通道；0 = 跟随表情记号）
+    //!  * `Pitch`        → `EditNote::undoChangePitch()`（拖动改音高）
+    //!  * `PlayVelocity` → `NoteEvent::velocityMultiplier`（力度车道的第二通道，百分比）
+    enum class NoteChannel {
+        Velocity,
+        Pitch,
+        PlayVelocity,
+    };
+
+    //! 收集 → **整批一个命令** → 原地补缓存（不重建全谱）。`setNoteValues()` 与三个通道共用它。
+    //! 返回真正改动的音符数；0 表示一个命令都没开、也没发通知。
+    int applyNoteChannelBatch(const QVariantList& rows, const QVariantList& values, NoteChannel channel);
+
     //! Runs `mutate` with rebuilds suppressed, then rebuilds once. Writing through the engraving
     //! model notifies the score, and the notification handler rebuilds the note list - so a single
     //! edit otherwise rebuilds twice, and a batch of N rebuilds 2N times.
     void mutateOnce(const std::function<void()>& mutate);
+
+    //! 把选中的音**换成另一批对象**（结构性编辑会重建音符），并通知界面。
+    //! 传空 = 清空选中。
+    void setSelection(const std::vector<engraving::Note*>& notes);
+
+    //! 选中的音在新音符表里还活着的那些。**只比较地址、不 dereference** —— 被删掉的音不会变成
+    //! 悬空访问（见头文件里"选中态按音符身份存"那段）。
+    void pruneSelection();
 
     void connectToCurrentScore();
     void disconnectFromCurrentScore();
@@ -455,7 +563,13 @@ private:
     std::atomic<bool> m_isRecording { false };
 
     //! 录到哪个谱表（视图把当前选中的谱表传进来，模型看不到视图的选中）。
-    int m_recordStaff = 0;
+    int m_editStaff = 0;
+
+    //! 选中的音（`Note*`，**非拥有**）。按身份存而不是按行号，理由见头文件那一节。
+    std::vector<engraving::Note*> m_selectedNotes;
+
+    //! 复制出来的内容（值是脱离 `Note*` 的，见 `MidiClipboardNote`）。
+    std::vector<MidiClipboardNote> m_clipboard;
 
     //! 播放位置 + 采到它时的墙钟。**原子**：位置是从播放线程/音频线程上发出来的，
     //! 主线程只读（写-写竞争会让时间戳与位置对不上，录制就会整体偏一个音频块）。

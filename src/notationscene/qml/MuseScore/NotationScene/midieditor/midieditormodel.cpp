@@ -379,6 +379,7 @@ void MidiEditorModel::reload()
     Score* score = currentScore();
     if (!score) {
         m_entries.clear();
+        setSelection({});
         emit scoreChanged();
         return;
     }
@@ -396,6 +397,10 @@ void MidiEditorModel::reload()
     m_totalTicks = lastMeasure ? lastMeasure->endTick().ticks() : 0;
 
     m_entries = collectMidiNotes(score);
+
+    //! 选中态按**音符身份**存，而结构编辑（增/删/移/粘贴）会换掉音符对象 —— 所以每次重建都拿新的
+    //! 音符表与选中求一次交集。**只比较地址**，所以被删掉的音在这里只会"掉出去"，不会被解引用。
+    pruneSelection();
 
     int lowest = 127;
     int highest = 0;
@@ -737,14 +742,22 @@ void MidiEditorModel::setNoteVelocities(const QVariantList& rows, const QVariant
     }, Qt::QueuedConnection);
 }
 
-void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVariantList& velocities)
+//! 三个通道共用的骨架：**收集 → 整批一个命令 → 原地补缓存**。
+//!
+//! 为什么要"原地补缓存"而不是 `reload()`：`reload()` 会遍历全谱、给每个音建一个 11 字段的
+//! `QVariantMap`、再 `emit scoreChanged()` 让 QML 列表与画布全部重算 —— 而这里**只有那一个字段**
+//! 变了（见 `维护手册.md` §4.8 那条"`reload()` 的真实代价"）。力度画笔扫过几十个音时，
+//! 这个差别就是"跟手"与"卡一下"的差别。
+//!
+//! 返回真正改动的音符数；0 = 一个命令都没开、也没发通知（"整批无变化不开命令"那条纪律）。
+int MidiEditorModel::applyNoteChannelBatch(const QVariantList& rows, const QVariantList& values, NoteChannel channel)
 {
     Score* score = currentScore();
-    if (!score) {
-        return;
+    if (!score || rows.isEmpty() || rows.size() != values.size()) {
+        return 0;
     }
 
-    //! Collect first, then write: applyNoteVelocities() wraps the whole stroke in ONE command, so the
+    //! Collect first, then write: every writer below wraps the whole batch in ONE command, so the
     //! score is notified once instead of once per note. The notification is what costs - its
     //! subscribers repaint the notation view and rebuild the playback events, both O(score) - and
     //! that is why drawing more notes used to take proportionally longer.
@@ -763,9 +776,13 @@ void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVarian
         }
 
         //! Kept side by side: skipping an out-of-range row would otherwise shift the two lists apart.
-        changes.emplace_back(noteAt(row), velocities[i].toInt());
+        changes.emplace_back(noteAt(row), values[i].toInt());
         appliedRows.push_back(row);
-        appliedValues.push_back(velocities[i].toInt());
+        appliedValues.push_back(values[i].toInt());
+    }
+
+    if (changes.empty()) {
+        return 0;
     }
 
     const bool wasSuppressed = m_rebuildSuppressed;
@@ -773,35 +790,347 @@ void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVarian
     int changed = 0;
     //! 整笔一个命令，且事务开在 **notation 的 undo stack** 上（同 setNotePitch 的理由）。
     if (INotationPtr notation = context()->currentNotation()) {
-        notation->undoStack()->transaction(TranslatableString("midieditor", "Draw velocities"),
-                                           [this, score, &changes, &changed](engraving::Transaction&) {
-            changed = applyNoteVelocities(score, changes, /*openCommand*/ false);
+        notation->undoStack()->transaction(TranslatableString("midieditor", "Edit notes"),
+                                           [score, &changes, &changed, channel](engraving::Transaction&) {
+            switch (channel) {
+            case NoteChannel::Velocity:
+                changed = applyNoteVelocities(score, changes, /*openCommand*/ false);
+                break;
+            case NoteChannel::Pitch:
+                changed = applyNotePitches(score, changes, /*openCommand*/ false);
+                break;
+            case NoteChannel::PlayVelocity:
+                changed = applyNotePlayVelocities(score, changes, /*openCommand*/ false);
+                break;
+            }
         });
     }
     m_rebuildSuppressed = wasSuppressed;
 
     if (changed == 0) {
-        return;
+        return 0;
     }
 
-    //! NOTE: only the velocities changed, so patch the cached lists instead of collecting the whole
-    //!       score again. A full reload walks every note of every staff and builds a QVariantMap per
-    //!       note - none of which can have changed here, and all of which costs time the user can
-    //!       feel. The maps still have to be re-emitted so the view sees the new values.
     for (size_t i = 0; i < appliedRows.size(); ++i) {
         const int row = appliedRows[i];
-        const int velocity = std::clamp(appliedValues[i], 0, 127);
+        const int value = appliedValues[i];
 
-        m_entries[size_t(row)].velocity = midiDisplayVelocity(velocity);
-        m_entries[size_t(row)].hasVelocityOverride = (velocity > 0);
-
+        MidiNoteItem& entry = m_entries[size_t(row)];
         QVariantMap note = m_notes[row].toMap();
-        note["velocity"] = midiDisplayVelocity(velocity);
-        note["hasVelocityOverride"] = (velocity > 0);
+
+        switch (channel) {
+        case NoteChannel::Velocity: {
+            const int velocity = std::clamp(value, 0, 127);
+            entry.velocity = midiDisplayVelocity(velocity);
+            entry.hasVelocityOverride = (velocity > 0);
+            note["velocity"] = entry.velocity;
+            note["hasVelocityOverride"] = entry.hasVelocityOverride;
+            break;
+        }
+        case NoteChannel::Pitch: {
+            entry.pitch = std::clamp(value, 0, 127);
+            note["pitch"] = entry.pitch;
+            break;
+        }
+        case NoteChannel::PlayVelocity: {
+            //! ⚠️ 夹取必须与写入端（`applyNotePlayVelocities` 里的 MAX_PLAY_VELOCITY_PERCENT）**一致**：
+            //! 缓存比真实值大一点点，画的柱子就会和听感差一截，而且不报错、不崩。
+            entry.playVelocityPercent = std::clamp(value, 0, 400);
+            //! 中性（100% 且演奏时值 = 记谱时值）就不再是"改过"，画法要跟着回到实心块。
+            entry.hasPlayOverride = entry.playVelocityPercent != 100
+                                    || entry.playTick != entry.tick
+                                    || entry.playDurationTicks != entry.durationTicks;
+            note["playVelocityPercent"] = entry.playVelocityPercent;
+            note["hasPlayOverride"] = entry.hasPlayOverride;
+            break;
+        }
+        }
+
         m_notes[row] = note;
     }
 
     emit scoreChanged();
+    return changed;
+}
+
+void MidiEditorModel::applyVelocityBatch(const QVariantList& rows, const QVariantList& velocities)
+{
+    applyNoteChannelBatch(rows, velocities, NoteChannel::Velocity);
+}
+
+void MidiEditorModel::setNotePitches(const QVariantList& rows, const QVariantList& pitches)
+{
+    applyNoteChannelBatch(rows, pitches, NoteChannel::Pitch);
+}
+
+void MidiEditorModel::setNotePlayVelocities(const QVariantList& rows, const QVariantList& percents)
+{
+    applyNoteChannelBatch(rows, percents, NoteChannel::PlayVelocity);
+}
+
+// ── 选择 ────────────────────────────────────────────────────────────────────────────────────────
+
+//! 把选中的音换成另一批对象。传空 = 清空。**只在真的变了的时候发通知**（画布每次重绘都要用它）。
+void MidiEditorModel::setSelection(const std::vector<Note*>& notes)
+{
+    if (notes.size() == m_selectedNotes.size()
+        && std::equal(notes.begin(), notes.end(), m_selectedNotes.begin())) {
+        return;
+    }
+
+    m_selectedNotes = notes;
+    emit selectionChanged();
+}
+
+//! 只保留在新音符表里还活着的那些。**只比较地址、不 dereference** —— 见头文件里那一节。
+void MidiEditorModel::pruneSelection()
+{
+    if (m_selectedNotes.empty()) {
+        return;
+    }
+
+    std::vector<Note*> kept;
+    kept.reserve(m_selectedNotes.size());
+    for (Note* note : m_selectedNotes) {
+        for (const MidiNoteItem& entry : m_entries) {
+            if (entry.note == note) {
+                kept.push_back(note);
+                break;
+            }
+        }
+    }
+
+    setSelection(kept);
+}
+
+QVariantList MidiEditorModel::selectedRows() const
+{
+    QVariantList result;
+    if (m_selectedNotes.empty()) {
+        return result;
+    }
+
+    for (size_t i = 0; i < m_entries.size(); ++i) {
+        for (Note* note : m_selectedNotes) {
+            if (m_entries[i].note == note) {
+                result << int(i);
+                break;
+            }
+        }
+    }
+
+    return result;
+}
+
+bool MidiEditorModel::isRowSelected(int row) const
+{
+    if (row < 0 || row >= int(m_entries.size())) {
+        return false;
+    }
+
+    Note* note = m_entries[size_t(row)].note;
+    return std::find(m_selectedNotes.begin(), m_selectedNotes.end(), note) != m_selectedNotes.end();
+}
+
+void MidiEditorModel::setSelectedRows(const QVariantList& rows, bool additive)
+{
+    std::vector<Note*> notes;
+    if (additive) {
+        notes = m_selectedNotes;
+    }
+
+    for (const QVariant& value : rows) {
+        const int row = value.toInt();
+        if (row < 0 || row >= int(m_entries.size())) {
+            continue;
+        }
+
+        Note* note = m_entries[size_t(row)].note;
+        if (note && std::find(notes.begin(), notes.end(), note) == notes.end()) {
+            notes.push_back(note);
+        }
+    }
+
+    setSelection(notes);
+}
+
+void MidiEditorModel::toggleSelectedRow(int row)
+{
+    if (row < 0 || row >= int(m_entries.size())) {
+        return;
+    }
+
+    Note* note = m_entries[size_t(row)].note;
+    std::vector<Note*> notes = m_selectedNotes;
+
+    const std::vector<Note*>::iterator it = std::find(notes.begin(), notes.end(), note);
+    if (it == notes.end()) {
+        notes.push_back(note);
+    } else {
+        notes.erase(it);
+    }
+
+    setSelection(notes);
+}
+
+void MidiEditorModel::clearSelection()
+{
+    setSelection({});
+}
+
+// ── 结构性编辑（增 / 删 / 移 / 改记谱时长 / 复制粘贴）────────────────────────────────────────────
+
+void MidiEditorModel::deleteSelectedNotes()
+{
+    if (m_selectedNotes.empty()) {
+        return;
+    }
+
+    //! 抄一份：删完这些 `Note*` 全部作废（`mutateOnce()` 里的 `reload()` 会把选中清空）。
+    const std::vector<Note*> doomed = m_selectedNotes;
+
+    mutateOnce([this, doomed]() {
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Delete notes"),
+                                               [this, &doomed](engraving::Transaction&) {
+                deleteMidiNotes(currentScore(), doomed, /*openCommand*/ false);
+            });
+        }
+    });
+}
+
+void MidiEditorModel::moveSelectedNotes(int deltaTicks)
+{
+    if (m_selectedNotes.empty() || deltaTicks == 0) {
+        return;
+    }
+
+    std::vector<MidiNoteMove> moves;
+    moves.reserve(m_selectedNotes.size());
+    for (Note* note : m_selectedNotes) {
+        if (!note) {
+            continue;
+        }
+
+        MidiNoteMove move;
+        move.note = note;
+        move.tick = std::max(0, note->tick().ticks() + deltaTicks);
+        move.durationTicks = 0;    //! 移动不改时值（改时值是另一条手势）
+        moves.push_back(move);
+    }
+
+    if (moves.empty()) {
+        return;
+    }
+
+    std::vector<Note*> moved;
+
+    mutateOnce([this, &moves, &moved]() {
+        //! ⚠️ 事务开在 **notation 的 undo stack** 上：只有它会在提交后通知"栈变了"，
+        //! 撤销/重做命令的状态（以及主菜单与 Ctrl+Z）才会跟上。
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Move notes"),
+                                               [this, &moves, &moved](engraving::Transaction&) {
+                moveMidiNotes(currentScore(), moves, /*openCommand*/ false, &moved);
+            });
+        }
+    });
+
+    //! 结构编辑换掉了音符对象：把选中搬到新对象上，否则松手之后选中就是空的，下一次操作落空。
+    setSelection(moved);
+}
+
+void MidiEditorModel::resizeSelectedNotes(int deltaTicks)
+{
+    if (m_selectedNotes.empty() || deltaTicks == 0) {
+        return;
+    }
+
+    std::vector<std::pair<Note*, int> > changes;
+    changes.reserve(m_selectedNotes.size());
+    for (Note* note : m_selectedNotes) {
+        if (!note || !note->chord()) {
+            continue;
+        }
+
+        //! ⚠️ 记谱时值是 **ChordRest 级**的：和弦里的音不可能各自有时值。下限只保证"还有时值"
+        //! （1 tick），真正的最低音值由界面上的夹取决定（不会小于当前网格）。
+        const int target = std::max(1, note->chord()->ticks().ticks() + deltaTicks);
+        changes.emplace_back(note, target);
+    }
+
+    if (changes.empty()) {
+        return;
+    }
+
+    //! ⚠️ 这里**不用**"抄对象"那一套：`changeCRlen()` 保留 ChordRest 对象本身（变长时是在它后面
+    //! `addChord()` 接连音线），所以已有的 `Note*` 依然有效，选中不用搬。
+    mutateOnce([this, &changes]() {
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Change note length"),
+                                               [this, &changes](engraving::Transaction&) {
+                changeMidiNoteDurations(currentScore(), changes, /*openCommand*/ false);
+            });
+        }
+    });
+}
+
+void MidiEditorModel::insertNoteAt(int staffIndex, int tick, int pitch, int durationTicks)
+{
+    std::vector<Note*> inserted;
+
+    mutateOnce([this, staffIndex, tick, pitch, durationTicks, &inserted]() {
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Insert note"),
+                                               [this, staffIndex, tick, pitch, durationTicks, &inserted](engraving::Transaction&) {
+                insertMidiNote(currentScore(), staffIndex, /*voice*/ 0, tick, durationTicks, pitch,
+                               /*openCommand*/ false, &inserted);
+            });
+        }
+    });
+
+    //! 插完就选中它：用户接着就能拖、能复制、能删（"插入即选中"是画布类编辑器的通用手感）。
+    setSelection(inserted);
+}
+
+void MidiEditorModel::copySelection()
+{
+    const std::vector<MidiClipboardNote> copied = copyMidiNotes(m_selectedNotes);
+    if (copied.size() == m_clipboard.size()
+        && std::equal(copied.begin(), copied.end(), m_clipboard.begin(),
+                      [](const MidiClipboardNote& a, const MidiClipboardNote& b) {
+            return a.tickOffset == b.tickOffset && a.pitch == b.pitch && a.durationTicks == b.durationTicks
+                   && a.velocity == b.velocity && a.playOffsetTicks == b.playOffsetTicks
+                   && a.playDurationTicks == b.playDurationTicks && a.playVelocityPercent == b.playVelocityPercent;
+        })) {
+        return;
+    }
+
+    m_clipboard = copied;
+    emit clipboardChanged();
+}
+
+void MidiEditorModel::pasteAtTick(int staffIndex, int tick)
+{
+    if (m_clipboard.empty()) {
+        return;
+    }
+
+    const std::vector<MidiClipboardNote> clipboard = m_clipboard;
+    std::vector<Note*> pasted;
+
+    mutateOnce([this, staffIndex, tick, &clipboard, &pasted]() {
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Paste notes"),
+                                               [this, staffIndex, tick, &clipboard, &pasted](engraving::Transaction&) {
+                pasteMidiNotes(currentScore(), staffIndex, /*voice*/ 0, tick, clipboard,
+                               /*openCommand*/ false, &pasted);
+            });
+        }
+    });
+
+    //! 粘完选中它们：用户可以立刻整体搬走 —— 而"粘了却不知道粘到哪"是最常见的困惑。
+    setSelection(pasted);
 }
 
 //! NOTE: the automation curve itself - which points it has, which of them are the user's to remove, and
@@ -1186,10 +1515,10 @@ void MidiEditorModel::toggleRecording()
                << "(device=" << midiInputDeviceName() << ")";
     }
 
-    startRecording(m_recordStaff);
+    startRecording(m_editStaff);
 }
 
-void MidiEditorModel::setRecordStaff(int staffIndex)
+void MidiEditorModel::setEditStaff(int staffIndex)
 {
     Score* score = currentScore();
     if (!score) {
@@ -1198,11 +1527,20 @@ void MidiEditorModel::setRecordStaff(int staffIndex)
 
     //! 夹到合法范围（视图切谱表时会传过来；换了工程之后旧的选中可能已经不在了）。
     const int clamped = std::clamp(staffIndex, 0, int(score->nstaves()) - 1);
-    if (clamped == m_recordStaff) {
+    if (clamped == m_editStaff) {
         return;
     }
 
-    m_recordStaff = clamped;
+    const int previous = m_editStaff;
+    m_editStaff = clamped;
+
+    //! 换谱表 = 换了一套音符：上一个谱表的选中在这里已经没有意义了（视图那边也已经不画它）。
+    //! 不这么做的话，用户切回原谱表时会发现上一次的选中还留着，看起来像"选中清不掉"。
+    if (previous != clamped && !m_selectedNotes.empty()) {
+        setSelection({});
+    }
+
+    emit editStaffChanged();
     emit recordChanged();
 }
 
@@ -1264,7 +1602,7 @@ void MidiEditorModel::startRecording(int staffIndex){
         }
     }
 
-    m_recordStaff = staff;
+    m_editStaff = staff;
     m_recorder.start();
     m_recordedNotes.clear();
     m_lastOverlayMs = 0;
@@ -1344,7 +1682,7 @@ void MidiEditorModel::finishRecording(bool commit)
         if (INotationPtr notation = context()->currentNotation()) {
             notation->undoStack()->transaction(TranslatableString("midieditor", "Record MIDI"),
                                                [this, &chords, &written](engraving::Transaction&) {
-                written = applyRecordedChords(currentScore(), m_recordStaff, 0, chords, /*openCommand*/ false);
+                written = applyRecordedChords(currentScore(), m_editStaff, 0, chords, /*openCommand*/ false);
             });
         }
     });

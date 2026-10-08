@@ -97,7 +97,9 @@ Item {
             "scrollX": scrollX,
             "scrollY": scrollY,
             "velocityLane": velocityLaneVisible,
-            "automationMode": automationMode
+            "automationMode": automationMode,
+            "gridIndex": gridIndex,
+            "playedChannel": velocityPlayedChannel
         })
     }
 
@@ -119,6 +121,13 @@ Item {
         }
         if (state.automationMode !== undefined) {
             automationMode = state.automationMode
+        }
+        //! 🆕 网格与力度车道通道：与别的开关一样按乐谱分开记（离开这一页再回来不该被重置）。
+        if (state.gridIndex !== undefined) {
+            gridIndex = clamp(state.gridIndex, 0, gridOptions.length - 1)
+        }
+        if (state.playedChannel !== undefined) {
+            velocityPlayedChannel = state.playedChannel
         }
         if (state.pixelsPerTick !== undefined) {
             pixelsPerTick = clamp(state.pixelsPerTick, 0.01, 4.0)
@@ -192,6 +201,19 @@ Item {
         function onViewStateChanged() {
             root.appliedStateKey = null
             root.applyViewStateIfNeeded()
+        }
+
+        //! 🆕 选中变了（点、Ctrl 点、框选、删掉、结构编辑换了对象都会走这里）。
+        //! 视图**不自己维护**选中，只把模型报回来的行号收成查表 —— 一份真相。
+        function onSelectionChanged() {
+            root.pullSelection()
+        }
+
+        function onEditStaffChanged() {
+            //! 模型那边换了谱表（例如工程换了、或视图还没同步过）：视图跟上，两处不能各说各话。
+            if (root.model !== null && root.currentStaff !== root.model.editStaff) {
+                root.currentStaff = root.model.editStaff
+            }
         }
     }
 
@@ -283,6 +305,52 @@ Item {
         //! 会先把按键消费掉，`Keys.onPressed` 根本收不到（与空格那次同源）。所以必须在
         //! `onShortcutOverride` 里**认领**它们（见下），那是 Qt 给"这个按键我要当普通按键用"的正路，
         //! 而且不新增注册者 ⇒ 不会撞 ambiguous。
+        //! 🆕 **选中与结构编辑的按键**。它们与下面的字母键一样，全都已经在 `shortcuts.xml` 里
+        //! 全局注册过（`Del`/`Backspace` = `action://delete`、`Esc` = `action://cancel`、
+        //! `Ctrl+C/V/A` = copy/paste/select-all）⇒ **必须在 `onShortcutOverride` 里先认领**，
+        //! 否则 Qt 的快捷键匹配会把按键吃掉，这里根本收不到（第 71 / 73 条的同一个根因）。
+        if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) {
+            console.warn("[midi-select] delete", root.selectedCount, "note(s)")
+            root.model.deleteSelectedNotes()
+            event.accepted = true
+            return
+        }
+
+        if (event.key === Qt.Key_Escape) {
+            root.model.clearSelection()
+            event.accepted = true
+            return
+        }
+
+        if ((event.modifiers & Qt.ControlModifier) !== 0) {
+            if (event.key === Qt.Key_C) {
+                root.model.copySelection()
+                console.warn("[midi-select] copy", root.selectedCount, "note(s)")
+                event.accepted = true
+                return
+            }
+            if (event.key === Qt.Key_V) {
+                //! 粘到**播放头**：粘到哪永远看得见（而不是"粘到看不见的某个地方"）。
+                //! 吸附到网格，这样粘出来的位置与画布上画的一致。
+                var pasteTick = root.snapTick(Math.round(root.playbackTick))
+                console.warn("[midi-select] paste at tick", pasteTick)
+                root.model.pasteAtTick(root.currentStaff, pasteTick)
+                event.accepted = true
+                return
+            }
+            if (event.key === Qt.Key_A) {
+                var allRows = []
+                var all = root.visibleRows
+                for (var a = 0; a < all.length; ++a) {
+                    allRows.push(all[a].row)
+                }
+                root.model.setSelectedRows(allRows, false)
+                console.warn("[midi-select] select all ->", allRows.length)
+                event.accepted = true
+                return
+            }
+        }
+
         if ((event.modifiers & Qt.ControlModifier) === 0) {
             if (handleVirtualKeyPressed(event)) {
                 return
@@ -328,6 +396,26 @@ Item {
     //! 认领 = `event.accepted = true`，Qt 便不再交给快捷键表，按键按普通按键送到本项。
     //! 只有**带修饰键**的组合留给快捷键（Ctrl+Z 撤销等照旧）。
     Keys.onShortcutOverride: function(event) {
+        //! 🆕 选中 / 结构编辑类的按键**也要在这里认领**，理由与下面那组字母键**完全相同**：
+        //! 它们全都已经在 `shortcuts.xml` 里注册过（`Del` / `Backspace` = `action://delete`、
+        //! `Esc` = `action://cancel`、`Ctrl+C/V` = copy/paste、`Ctrl+A` = select-all），
+        //! Qt 的快捷键匹配会先把按键消费掉 —— 不认领的话这一页**收不到**，表现是"按删除没反应"。
+        //! ⚠️ 认领（`event.accepted = true`）是**唯一**正确的做法：再挂一个 `Shortcut` 只会让
+        //! Qt 把两个注册者一起判 ambiguous 而同归于尽（第 60 条的真事）。
+        if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace || event.key === Qt.Key_Escape) {
+            event.accepted = true
+            return
+        }
+
+        //! ⚠️ 只认领**纯粹的** Ctrl 组合：带 Alt/Meta 的留给系统与全局快捷键（例如 Ctrl+Alt+A
+        //! 是"选择和弦里的音"）。Ctrl+Z / Ctrl+Shift+Z 也**不认领** —— 撤销由全局那一条负责。
+        if ((event.modifiers & Qt.ControlModifier) !== 0
+                && (event.modifiers & (Qt.AltModifier | Qt.MetaModifier)) === 0
+                && (event.key === Qt.Key_C || event.key === Qt.Key_V || event.key === Qt.Key_A)) {
+            event.accepted = true
+            return
+        }
+
         if ((event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) !== 0) {
             return
         }
@@ -429,9 +517,21 @@ Item {
     //! What the current drag edits. Dorico draws the played extent over the notated one; grabbing the
     //! right edge of a block edits the played length, Shift+dragging edits the played start, and a
     //! plain drag still edits the pitch.
+    //!
+    //! 🆕 **记谱层那两条（Alt）**：卷帘窗里一个音有**两套时值**，而用户要能分别改（用户 2026-10-07
+    //! 明确说：保留现在这两种状态 —— 外框 = 记谱时值、实心条 = 演奏时值）：
+    //!   * **外框**（空心轮廓）= `ChordRest` 的时值，改它走上游的 `Score::changeCRlen()`：
+    //!     变短自动补休止符、变长自动按小节切开并生成连音线、谱面不够长自动加小节。
+    //!     它是**记谱**的，所以乐谱页看到的就是它。
+    //!   * **实心条**（颜色）= `NoteEvent::len`（千分比），只影响播放与 MIDI 导出，**谱面不动**。
+    //! 两条手势分开：**无修饰键**拖右边缘 = 演奏时值；**Alt** + 拖右边缘 = 记谱时值。
+    //! 加 Alt 而不是让无修饰键同时管两件事，是因为记谱时值会**改谱面结构**（连音线、休止符、
+    //! 小节），误触的代价远大于演奏层。
     readonly property int dragModePitch: 0
     readonly property int dragModePlayStart: 1
     readonly property int dragModePlayLength: 2
+    readonly property int dragModeNotatedMove: 3
+    readonly property int dragModeNotatedLength: 4
     property int dragMode: 0
 
     property real dragStartX: 0
@@ -440,8 +540,56 @@ Item {
     property int dragPreviewPlayStart: 0
     property int dragPreviewPlayDuration: 0
 
-    //! Drag snapping for the played layer, in ticks (1/32 of a whole note at 480 ticks per quarter).
-    readonly property int playSnapTicks: 60
+    //! 🆕 记谱层拖动的预览值（外框画的就是它们；松手才提交一次）。
+    property int dragStartNotatedTick: 0
+    property int dragStartNotatedDuration: 0
+    property int dragPreviewNotatedTick: 0
+    property int dragPreviewNotatedDuration: 0
+
+    //! 🆕 多选拖动：这两条是**整批**的增量，画所有选中的音时都加上去（所以整块一起动）。
+    property int dragDeltaPitch: 0
+    property int dragDeltaTicks: 0
+
+    //! 按下了但还没移动（用来区分"点一下 = 选中/定位"与"真的拖了"。拖动提交的判据仍然是
+    //! "值真的变了"，这个只是让"点一下已选中的音 = 收成单选"成立）。
+    property bool dragMoved: false
+
+    //! 🆕 框选（在空白处按下并拖动）：矩形 + 是否叠加（Ctrl）。
+    property bool marqueeActive: false
+    property real marqueeX0: 0
+    property real marqueeY0: 0
+    property real marqueeX1: 0
+    property real marqueeY1: 0
+    property bool marqueeAdditive: false
+
+    //! 🆕 选中态：由模型给的行号（`notes()` 的下标）算出一张查表，绘制时 O(1) 判断。
+    //! **不能反过来在绘制循环里逐个问模型**（那是每个音一次跨语言调用，画布每次重绘都付一遍）。
+    property var selectionRows: []
+    property var selectionIndex: ({})
+
+    //! ── 网格（吸附粒度 + 插入时值）──────────────────────────────────────────────────
+    //!
+    //! 一条下拉同时管三件事，因为它们在用户心里本来就是一件事（"现在按多大的格子编辑"）：
+    //!  * 演奏层拖动（起点/时长）吸附到它；
+    //!  * 记谱层拖动（Alt）吸附到它；
+    //!  * **插入音符的时值**就是它（双击空白画出来的音有多长）。
+    //! 默认 **1/32（60 tick）** —— 与改动前的 `playSnapTicks` 一模一样，所以"没碰过这个下拉"的
+    //! 用户不会感觉到任何行为变化；要画四分音符的人在下拉里选 1/4 即可。
+    //! ⚠️ 三连音档位是 `480/3 = 160`、`480/6 = 80`，**不是**"二连音的一半"：写错的话吸附会把
+    //! 三连音吸到最近的二连音格子上（`维护手册.md` §4.8.4 那条量化陷阱，同一份道理）。
+    property int gridIndex: 3
+    readonly property var gridOptions: [
+        { "label": "1/4", "ticks": 480 },
+        { "label": "1/8", "ticks": 240 },
+        { "label": "1/16", "ticks": 120 },
+        { "label": "1/32", "ticks": 60 },
+        { "label": "1/8T", "ticks": 160 },
+        { "label": "1/16T", "ticks": 80 }
+    ]
+    readonly property int snapTicks: {
+        var index = Math.max(0, Math.min(gridIndex, gridOptions.length - 1))
+        return gridOptions[index].ticks
+    }
 
     property int hoveredNoteIndex: -1
 
@@ -455,6 +603,25 @@ Item {
     //! Which staff the current velocity drag edits. The lane is split into one horizontal band per
     //! staff, so a drag must never touch another staff's notes that happen to sit on the same tick.
     property int velocityDragStaff: -1
+
+    //! 🆕 力度车道的**第二个通道**（工具条上的 `Played` 开关）。
+    //!
+    //!  * `false` = 每个音**自己的力度**（`Pid::USER_VELOCITY`）：它是"覆盖"语义 —— 有值就不再跟随
+    //!    表情记号（pp/ff、渐强线），所以柱子画成"细 + 半透明 / 粗 + 实心 + 小帽"两种。
+    //!  * `true` = **演奏力度**（`NoteEvent::velocityMultiplier`，百分比）：它是"乘一下"语义 ——
+    //!    这个音本来该多响，再乘这个系数。**不覆盖**表情记号，所以它和上面那条可以同时存在
+    //!    （`维护手册.md` §4.8 有专门一条讲这两条通路怎么共存）。
+    //!
+    //! 两个通道各画各的柱子、各刷各的值、右击各清各的（力度 → 0 = 回到跟随表情记号；
+    //! 演奏力度 → 100% = 回到"没调过"）。**同一时刻只编辑一个通道**：混在一起刷会让人分不清
+    //! 自己到底改了哪条 —— 而这两条在合成器里是两套语义。
+    property bool velocityPlayedChannel: false
+
+    //! 演奏力度通道的基准线（100% = 没调过）在这条车道里的比例位置。
+    //! 画柱子时以它为零点：往上 = 更响、往下 = 更轻，一眼看得出"这是相对量，不是绝对力度"。
+    readonly property real playedVelocityBaseline: 0.5
+    readonly property int playedVelocityMin: 10
+    readonly property int playedVelocityMax: 200
 
     //! tick -> velocity, filled in as the pointer sweeps across the lane. This is what makes the
     //! gesture feel like DRAWING rather than "pick one value, release, see it jump": every note the
@@ -574,6 +741,61 @@ Item {
         if (index >= 0 && index < staffCount) {
             currentStaff = index
         }
+    }
+
+    // ── 选中 ────────────────────────────────────────────────────────────────────────
+    //!
+    //! 选中态存在**模型**里（按音符身份，见 `MidiEditorModel` 的说明），视图只保留一张行号查表。
+    //! 视图侧要做的三件事：press/release 时告诉模型点到哪一行、框选时把矩形里的行号成批递过去、
+    //! 绘制时 O(1) 判断"这个音选中没有"。
+
+    //! 行号数组 → 查表。**一次重建、整帧复用** —— 若改成在绘制循环里逐个问模型，
+    //! 每次重绘就是"音符数 × 一次跨语言调用"。
+    function selectionLookup(rows) {
+        var map = ({})
+        for (var i = 0; i < rows.length; ++i) {
+            map[rows[i]] = true
+        }
+        return map
+    }
+
+    function isSelectedRow(row) {
+        return selectionIndex[row] === true
+    }
+
+    //! 视图此刻选中了几个（工具条上的按钮用它灰显）。
+    readonly property int selectedCount: (model !== null) ? model.selectedCount : 0
+
+    //! 把模型报回来的行号接进视图状态。
+    function pullSelection() {
+        selectionRows = (model !== null && model.hasScore) ? model.selectedRows : []
+        selectionIndex = selectionLookup(selectionRows)
+        gridCanvas.requestPaint()
+    }
+
+    //! 框选：矩形与"音高 × 时间"都相交的音才算选中（与画出来的方块一致）。
+    function rowsInMarquee(x0, y0, x1, y1) {
+        var left = Math.min(x0, x1)
+        var right = Math.max(x0, x1)
+        var top = Math.min(y0, y1)
+        var bottom = Math.max(y0, y1)
+
+        var out = []
+        var list = visibleRows
+        for (var i = 0; i < list.length; ++i) {
+            var note = list[i].note
+
+            var nx = xForTick(note.tick)
+            var ny = yForPitch(note.pitch)
+            if (nx > right || nx + noteWidth(note) < left) {
+                continue
+            }
+            if (ny > bottom || ny + noteHeight() < top) {
+                continue
+            }
+            out.push(list[i].row)
+        }
+        return out
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
@@ -857,11 +1079,34 @@ Item {
         return clamp(Math.round((1.0 - y / lane) * 127), 1, 127)
     }
 
+    //! 演奏力度通道的值：车道中线 = **100%**（没调过），往上更响、往下更轻。
+    //! 以中线为基准是刻意的 —— 这个量是**相对**的，画成"从底部量"会让人误以为它和力度是一回事。
+    function playedVelocityForY(y) {
+        var lane = Math.max(1, velocityCanvas.height)
+        var baseline = lane * playedVelocityBaseline
+        var span = Math.max(1, baseline - 2)                   //!< 中线到顶 = 100 个百分点
+        var percent = 100 + Math.round((baseline - y) / span * 100)
+        return clamp(percent, playedVelocityMin, playedVelocityMax)
+    }
+
+    //! 一个音的演奏力度在车道上画多高（从哪到哪）—— 柱子以中线为起点，向上或向下长。
+    function playedVelocityBar(percent, laneHeight) {
+        var baseline = laneHeight * playedVelocityBaseline
+        var span = Math.max(1, baseline - 2)
+        var h = Math.abs(percent - 100) / 100 * span
+        return { "y": percent >= 100 ? baseline - h : baseline, "height": Math.max(1, h) }
+    }
+
+    //! 一个音在这条车道上"当前显示的值"：按通道取（力度 1..127 / 演奏力度 10..200）。
+    function laneValueForNote(note) {
+        return velocityPlayedChannel ? note.playVelocityPercent : note.velocity
+    }
+
     //! One stroke of the brush: every note under the pointer keeps the height the pointer has right
     //! now. Called on press and on every move, so the lane tracks the pointer instead of waiting for
     //! the release.
     function paintVelocityAt(x, y) {
-        var velocity = velocityForY(y)
+        var value = velocityPlayedChannel ? playedVelocityForY(y) : velocityForY(y)
         var trail = velocityTrail
         var list = visibleRows
         var touched = false
@@ -871,7 +1116,7 @@ Item {
             //! Either the pointer is over the note, or close enough to its onset that a fast sweep
             //! must not skip it - a brush that leaves gaps feels broken.
             if (hitHorizontally(note, x) || Math.abs(xForTick(note.tick) - x) <= 8) {
-                trail[note.tick] = velocity
+                trail[note.tick] = value
                 touched = true
             }
         }
@@ -904,7 +1149,7 @@ Item {
     //! The tick a drawn point lands on. The automation is a time curve, so it snaps like the played
     //! layer does - on the same grid, so a point drawn here lines up with the notes.
     function snapTick(tick) {
-        var snap = playSnapTicks
+        var snap = snapTicks
         return Math.max(0, Math.round(tick / snap) * snap)
     }
 
@@ -1214,6 +1459,14 @@ Item {
         syncViewState()
     }
     onVelocityLaneVisibleChanged: syncViewState()
+    onGridIndexChanged: {
+        repaintAll()
+        syncViewState()
+    }
+    onVelocityPlayedChannelChanged: {
+        repaintAll()
+        syncViewState()
+    }
     onNotesChanged: {
         //! The model has reported back, so the stored values now match what was painted; the trail
         //! has done its job and the bars switch over to the real data without a visible step.
@@ -1221,6 +1474,9 @@ Item {
             velocityPending = false
             velocityTrail = ({})
         }
+        //! 数据重建 = 行号可能整体挪过位（插入/删除音符），所以选中那张查表必须跟着重建 ——
+        //! 模型给的 `selectedRows` 是**当场算的**，视图照抄即可。
+        pullSelection()
         //! 曲线这边同理：模型回话说明编辑已经落到数据里，预览该让位 —— 留着会画出一个"幽灵点"。
         automationDragTick = -1
         automationBendTick = -1
@@ -1260,10 +1516,10 @@ Item {
             model.setSoloStaff(currentStaff)
         }
 
-        //! 🆕 **录到哪个谱表**也在这里交给模型：走带里那个录制键在**页面**上
-        //! （`MidiEditorPage.qml`），它够不着视图的 `currentStaff` —— 所以由视图在选中变化时同步过去。
+        //! 🆕 **编辑哪个谱表**也在这里交给模型：录制 / 插入音符 / 粘贴都要问"往哪个谱表写"，
+        //! 而模型看不到视图的 `currentStaff` —— 三处必须同一个来源（见 `editStaff` 的说明）。
         if (model !== null) {
-            model.setRecordStaff(currentStaff)
+            model.setEditStaff(currentStaff)
         }
 
         repaintAll()
@@ -1282,7 +1538,7 @@ Item {
             //! 模型看不到视图的 `currentStaff`，所以由这里传进去。
             recordStaff = currentStaff
             if (model !== null) {
-                model.setRecordStaff(currentStaff)
+                model.setEditStaff(currentStaff)
             }
 
             //! 🆕 **把键盘焦点收回来**：用户是按走带上那个录制键进来的，焦点此刻在**那个按钮**上 ——
@@ -1349,7 +1605,7 @@ Item {
             visible: root.hasScore
             elide: Text.ElideRight
 
-            text: qsTrc("notationscene", "Drag a note's right edge = played length · Shift+drag = played start · velocity lane: pick a staff in the toolbar, drag = own velocity, right-click = follow dynamics · ruler: click = play from here, drag = loop, right-click = clear loop")
+            text: qsTrc("notationscene", "Click = select · Ctrl+click or drag a box = multi-select · drag a note = pitch, its right edge = played length, Shift+drag = played start · Alt+drag = move in time, Alt+right edge = notated length · double-click empty space = insert · Del/Ctrl+C/Ctrl+V · velocity lane: drag = own velocity, right-click = follow dynamics · ruler: click = play from here, drag = loop, right-click = clear loop")
 
             color: root.dimTextColor
             font: ui.theme.bodyFont
@@ -1476,6 +1732,116 @@ Item {
                                     onClicked: {
                                         root.model.quantizeGridIndex = quantizeOption.index
                                         quantizePopup.close()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            //! 🆕 **网格**：吸附粒度 + 插入时值（一条下拉，因为它们在用户心里是一件事）。
+            //! 与左边的量化分别放在两个下拉里是**有意**的：量化是"录完之后怎么摆"，
+            //! 网格是"现在拖动/插入按多大格子" —— 混成一个的话，改录制量化会顺手改掉拖动手感。
+            //! 用 Popup 而不是 ComboBox：与旁边的谱表/量化选择器同一套做法，不受控件样式影响，
+            //! 而且这一行的 36px 高度也放不下一个下拉框。
+            Rectangle {
+                id: gridSelector
+
+                height: 22
+                width: Math.max(52, gridLabelText.implicitWidth + 20)
+                radius: 3
+                color: gridPopup.opened ? ui.theme.buttonColor : "transparent"
+                border.width: 1
+                border.color: root.gridColor
+
+                Text {
+                    id: gridLabelText
+
+                    anchors.centerIn: parent
+                    text: qsTrc("notationscene", "Grid") + " " + root.gridOptions[Math.max(0, Math.min(root.gridIndex,
+                                                                                                      root.gridOptions.length - 1))].label
+                    color: root.textColor
+                    font: ui.theme.bodyFont
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: gridPopup.open()
+                }
+
+                ToolTip {
+                    text: qsTrc("notationscene", "Snap of every drag, and the length of a note inserted by double-clicking")
+                    visible: gridPopup.opened === false && gridSelectorHover.containsMouse
+                    delay: 600
+                }
+
+                MouseArea {
+                    id: gridSelectorHover
+
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                }
+
+                Popup {
+                    id: gridPopup
+
+                    parent: gridSelector
+                    x: 0
+                    y: gridSelector.height + 2
+                    width: Math.max(gridSelector.width, 110)
+                    padding: 4
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                    background: Rectangle {
+                        color: root.panelColor
+                        border.width: 1
+                        border.color: root.gridColor
+                        radius: 3
+                    }
+
+                    contentItem: Column {
+                        spacing: 2
+
+                        Repeater {
+                            model: root.gridOptions
+
+                            delegate: Rectangle {
+                                id: gridOption
+
+                                required property var modelData
+                                required property int index
+
+                                width: gridPopup.width - 8
+                                height: 24
+                                radius: 2
+                                color: (index === root.gridIndex || gridOptionMouse.containsMouse)
+                                       ? ui.theme.buttonColor : "transparent"
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: gridOption.modelData.label
+                                    color: root.textColor
+                                    font: ui.theme.bodyFont
+                                }
+
+                                MouseArea {
+                                    id: gridOptionMouse
+
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    onClicked: {
+                                        root.gridIndex = gridOption.index
+                                        gridPopup.close()
+                                        syncViewState()
+
+                                        //! 观测点（验证用）：网格同时决定拖动手感与插入时值，
+                                        //! "改了没生效"时这一行就是答案。
+                                        console.warn("[midi-grid] snap =", root.snapTicks, "tick")
                                     }
                                 }
                             }
@@ -1817,7 +2183,66 @@ Item {
                 }
             }
 
+            //! 🆕 选中集合上的三个动作。用**真 `FlatButton`**而不是旁边的自绘矩形：
+            //! 只有真 Button 才进得了无障碍树，`tools/ui-probe.ps1 -Action click` 才点得中它 ——
+            //! 本环境里**画布上的合成鼠标是无效的**（`维护手册.md` §7.6），所以"删除选中的音"
+            //! 这条链路要机器可验，入口就必须在这里。
+            //! ⚠️ 快捷键（Del / Ctrl+C / Ctrl+V）是**另一条**路：那几个键全局都注册过，
+            //! 要在本页 `Keys.onShortcutOverride` 里认领才收得到（见那里的长注释）。
+            FlatButton {
+                id: deleteButton
+
+                height: 22
+                //! ⚠️ 只有文字的 `FlatButton` 默认是 `TextOnly`：`minWidth = 132`、`margins = 16`
+                //! ⇒ 三个这样的按钮要 400px，会把工具条那一行撑得放不下（这一行只有 36px 高，
+                //! 左边的提示文字靠"省略号"给它腾地方，见 `hintLabel` 的 anchors）。
+                //! `Horizontal` 那一档是 `minWidth = 24` / `margins = 12` —— 三个短标签该有的宽度。
+                buttonType: FlatButton.Horizontal
+                text: qsTrc("notationscene", "Del")
+                transparent: true
+                enabled: root.selectedCount > 0
+
+                toolTipTitle: qsTrc("notationscene", "Delete the selected notes")
+                toolTipDescription: qsTrc("notationscene", "The last note of a chord becomes a rest of the same length, so the measure stays complete (same as Delete on the notation page)")
+
+                accessible.name: text + "  " + qsTrc("global", "Delete")
+
+                onClicked: root.model.deleteSelectedNotes()
+            }
+
+            FlatButton {
+                id: copyButton
+
+                height: 22
+                buttonType: FlatButton.Horizontal
+                text: qsTrc("notationscene", "Copy")
+                transparent: true
+                enabled: root.selectedCount > 0
+
+                toolTipTitle: qsTrc("notationscene", "Copy the selected notes")
+                toolTipDescription: qsTrc("notationscene", "Pitch, length, velocity and the played layer - everything that makes the note sound the way it does")
+
+                onClicked: root.model.copySelection()
+            }
+
+            FlatButton {
+                id: pasteButton
+
+                height: 22
+                buttonType: FlatButton.Horizontal
+                text: qsTrc("notationscene", "Paste")
+                transparent: true
+                enabled: model !== null && model.hasClipboard
+
+                toolTipTitle: qsTrc("notationscene", "Paste at the playhead")
+                toolTipDescription: qsTrc("notationscene", "Pastes on the staff being edited, starting at the playback position, and selects what it pasted")
+
+                onClicked: root.model.pasteAtTick(root.currentStaff, root.snapTick(Math.round(root.playbackTick)))
+            }
+
             Rectangle {
+                id: velocityToggle
+
                 width: Math.max(28, velocityToggleLabel.implicitWidth + 16)
                 height: 22
                 radius: 3
@@ -1835,8 +2260,54 @@ Item {
                 }
 
                 MouseArea {
+                    id: velocityToggleArea
+
                     anchors.fill: parent
+                    hoverEnabled: true
                     onClicked: root.velocityLaneVisible = !root.velocityLaneVisible
+                }
+
+                ToolTip {
+                    text: qsTrc("notationscene", "Show or hide the lane under the roll")
+                    visible: velocityToggleArea.containsMouse
+                    delay: 600
+                }
+            }
+
+            //! 🆕 力度车道的**通道开关**：关 = 每个音自己的力度（`Pid::USER_VELOCITY`，覆盖表情记号），
+            //! 开 = **演奏力度**（`NoteEvent::velocityMultiplier`，百分比，乘在本来该有的力度上）。
+            //! 两个通道是两套语义（`维护手册.md` §4.8 有专条），所以界面上也要能一眼看出在编辑哪个。
+            //!
+            //! ⚠️ 用**真 `FlatButton`**（而不是旁边 `Velocity` 那种自绘矩形）：自绘开关**不在无障碍树里**，
+            //! 而本环境**画布上的合成鼠标无效** ⇒ "切到演奏力度通道"这条链路要机器可验，入口就必须是
+            //! 真控件（`tools/ui-probe.ps1 -Action click -Name "Played %" -ControlType Button`，见 §7.6）。
+            FlatButton {
+                id: playedChannelButton
+
+                visible: root.velocityLaneVisible
+                height: 22
+                buttonType: FlatButton.Horizontal
+
+                text: qsTrc("notationscene", "Played %")
+                transparent: !root.velocityPlayedChannel
+                accentButton: root.velocityPlayedChannel
+
+                toolTipTitle: qsTrc("notationscene", "Played velocity lane")
+                toolTipDescription: qsTrc("notationscene", "Velocity lane channel: off = each note's own velocity (overrides the dynamics), "
+                                          + "on = played velocity in percent (multiplies what the note would get). "
+                                          + "100% (the middle line) means untouched; right-click resets it")
+
+                accessible.name: text + "  " + (root.velocityPlayedChannel ? qsTrc("global", "On") : qsTrc("global", "Off"))
+
+                onClicked: {
+                    root.velocityPlayedChannel = !root.velocityPlayedChannel
+                    //! 换通道 = 换一套值：留着上一条通道的笔迹会画出"看不见来源"的柱子。
+                    root.velocityTrail = ({})
+                    root.velocityPending = false
+                    velocityCanvas.requestPaint()
+
+                    console.warn("[midi-velocity] channel =",
+                                 root.velocityPlayedChannel ? "played %" : "own velocity")
                 }
             }
         }
@@ -2241,28 +2712,61 @@ Item {
 
                     for (var n = 0; n < visible.length; ++n) {
                         var note = visible[n].note
-                        if (note.tick > maxTick || note.tick + note.durationTicks < minTick) {
+
+                        //! 多选拖动：整批一起走，所以**每个选中的音**都要加上这次手势的增量。
+                        //! 增量只在拖动中非 0，平时这里是恒等变换（画面与数据一致）。
+                        var dragging = (root.dragNoteIndex >= 0 && root.dragMoved)
+                        var selected = root.isSelectedRow(visible[n].row)
+                        var batch = dragging && selected
+
+                        var noteTick = note.tick
+                        var noteDuration = note.durationTicks
+                        var notePitch = note.pitch
+                        var notePlayTick = note.playTick
+                        var notePlayDuration = note.playDurationTicks
+
+                        if (n === root.dragNoteIndex && root.dragMoved) {
+                            //! 被抓住的那一个：用它的**专属**预览值（记谱位置/时值各一条手势）。
+                            if (root.dragMode === root.dragModeNotatedMove) {
+                                noteTick = root.dragPreviewNotatedTick
+                            } else if (root.dragMode === root.dragModeNotatedLength) {
+                                noteDuration = root.dragPreviewNotatedDuration
+                            }
+                        } else if (batch) {
+                            //! 同一批里的其它音：跟着**增量**走。
+                            noteTick = note.tick + root.dragDeltaTicks
+                            notePitch = root.clamp(note.pitch + root.dragDeltaPitch, 0, 127)
+                        }
+
+                        if (n === root.dragNoteIndex && root.dragPreviewPitch >= 0
+                                && root.dragMode === root.dragModePitch) {
+                            notePitch = root.dragPreviewPitch
+                        }
+
+                        if (noteTick > maxTick || noteTick + noteDuration < minTick) {
                             continue
                         }
 
-                        var previewing = (n === root.dragNoteIndex && root.dragPreviewPitch >= 0)
-                        var drawPitch = previewing ? root.dragPreviewPitch : note.pitch
-                        var nx = root.xForTick(note.tick)
-                        var ny = root.yForPitch(drawPitch)
+                        var previewing = (n === root.dragNoteIndex && root.dragMoved)
+                        var nx = root.xForTick(noteTick)
+                        var ny = root.yForPitch(notePitch)
                         if (ny > h || ny + nh < 0) {
                             continue
                         }
 
-                        var nw = root.noteWidth(note)
+                        var nw = Math.max(3, noteDuration * root.pixelsPerTick - 1)
 
                         //! NOTE: Dorico's distinction, in one block: the notated extent is drawn as an
                         //!       outline and the played extent as a solid bar on top of it. A note the
                         //!       user never touched has both at the same place, so it stays a plain
                         //!       solid block exactly as before.
-                        var draggingPlay = (n === root.dragNoteIndex && root.dragMode !== root.dragModePitch)
+                        //! 🆕 记谱层拖动（Alt）改的就是**外框**：`nw` 与 `nx` 已经是预览值了。
+                        var draggingPlay = (n === root.dragNoteIndex && root.dragMoved
+                                            && (root.dragMode === root.dragModePlayStart
+                                                || root.dragMode === root.dragModePlayLength))
                         var showingPlay = note.hasPlayOverride || draggingPlay
-                        var playStart = draggingPlay ? root.dragPreviewPlayStart : note.playTick
-                        var playDuration = draggingPlay ? root.dragPreviewPlayDuration : note.playDurationTicks
+                        var playStart = draggingPlay ? root.dragPreviewPlayStart : notePlayTick
+                        var playDuration = draggingPlay ? root.dragPreviewPlayDuration : notePlayDuration
 
                         ctx.fillStyle = root.staffColor(note.staffIndex)
 
@@ -2284,11 +2788,42 @@ Item {
                             ctx.globalAlpha = 1.0
                         }
 
+                        //! 🆕 选中态：画一圈**垫底 + 描边**（不换填充色，否则会和"谱表分色"打架，
+                        //! 用户就分不出这是哪个乐器了）。垫底色先画，所以描边在深浅底上都看得见。
+                        if (selected) {
+                            ctx.strokeStyle = root.backgroundColor
+                            ctx.lineWidth = 3
+                            ctx.strokeRect(nx + 0.5, ny + 0.5, Math.max(1, nw - 1), Math.max(1, nh - 1))
+                            ctx.strokeStyle = root.cursorColor
+                            ctx.lineWidth = 2
+                            ctx.strokeRect(nx + 0.5, ny + 0.5, Math.max(1, nw - 1), Math.max(1, nh - 1))
+                        }
+
                         if (n === root.hoveredNoteIndex || previewing) {
                             ctx.strokeStyle = root.cursorColor
                             ctx.lineWidth = 1
                             ctx.strokeRect(nx + 0.5, ny + 0.5, Math.max(1, nw - 1), Math.max(1, nh - 1))
                         }
+                    }
+
+                    //! 🆕 框选矩形：画在音符**上面**（否则框到音上就看不见边界了），
+                    //! 用半透明填充 + 亮边：既看得见框住了哪些音，也看得见框本身。
+                    if (root.marqueeActive) {
+                        var mx = Math.min(root.marqueeX0, root.marqueeX1)
+                        var my = Math.min(root.marqueeY0, root.marqueeY1)
+                        var mw = Math.abs(root.marqueeX1 - root.marqueeX0)
+                        var mh = Math.abs(root.marqueeY1 - root.marqueeY0)
+
+                        ctx.fillStyle = ui.theme.accentColor
+                        ctx.globalAlpha = 0.18
+                        ctx.fillRect(mx, my, mw, mh)
+                        ctx.globalAlpha = 1.0
+
+                        ctx.strokeStyle = root.cursorColor
+                        ctx.lineWidth = 1
+                        ctx.setLineDash([4, 3])
+                        ctx.strokeRect(mx + 0.5, my + 0.5, mw, mh)
+                        ctx.setLineDash([])
                     }
 
                     //! 录制实时预览：**还没写进乐谱**的音。
@@ -2376,8 +2911,25 @@ Item {
                     }
 
                     root.dragNoteIndex = index
+                    root.dragMoved = false
+                    root.dragDeltaPitch = 0
+                    root.dragDeltaTicks = 0
                     if (index >= 0) {
                         var grabbed = root.visibleRows[index].note
+                        var grabbedRow = root.visibleRows[index].row
+
+                        //! 🆕 **选中**（按下时先定下来，之后整条手势都作用于这个集合）：
+                        //!  * Ctrl + 点 = 把这个音加进/移出选中（记谱页与文件管理器同一套约定）；
+                        //!  * 点一个**没被选中**的音 = 改成只选它；
+                        //!  * 点一个**已被选中**的音 = 选中**不动** —— 因为它可能是多选里的一员，
+                        //!    接下来很可能是"整块一起拖"。若最终只是点了一下（没拖动），
+                        //!    松手时会收成"只选这一个"（见 onReleased）。
+                        if (mouse.modifiers & Qt.ControlModifier) {
+                            root.model.toggleSelectedRow(grabbedRow)
+                        } else if (!root.isSelectedRow(grabbedRow)) {
+                            root.model.setSelectedRows([grabbedRow], false)
+                        }
+
                         root.dragStartPitch = grabbed.pitch
                         root.dragPreviewPitch = root.dragStartPitch
                         root.dragStartY = mouse.y
@@ -2386,6 +2938,10 @@ Item {
                         root.dragStartPlayDuration = grabbed.playDurationTicks
                         root.dragPreviewPlayStart = grabbed.playTick
                         root.dragPreviewPlayDuration = grabbed.playDurationTicks
+                        root.dragStartNotatedTick = grabbed.tick
+                        root.dragStartNotatedDuration = grabbed.durationTicks
+                        root.dragPreviewNotatedTick = grabbed.tick
+                        root.dragPreviewNotatedDuration = grabbed.durationTicks
 
                         //! 试听：**按下就出声** —— 记谱页点音符是同一个动作
                         //! （`NotationViewInputController::handleLeftClick()` 里那句
@@ -2401,10 +2957,19 @@ Item {
                         //!       The edge test uses the PLAYED bar, not the notated block: that bar is
                         //!       what the user sees on top and aims at, and the two only coincide when
                         //!       the note has no override at all.
+                        //! ⚠️ **Alt 把两条手势整个换到记谱层**（外框那条）：Alt + 右边缘 = 改记谱时值、
+                        //! Alt + 其它 = 左右移动记谱位置。故意用修饰键而不是"水平拖 = 移动"：
+                        //! 记谱层会改谱面结构（连音线/休止符/小节），误触代价比演奏层大得多。
                         var grabbedX = root.xForTick(grabbed.playTick)
                         var grabbedW = root.playedWidth(grabbed)
                         var edge = Math.max(4, Math.min(8, grabbedW * 0.25))
-                        if (mouse.x >= grabbedX + grabbedW - edge) {
+                        if (mouse.modifiers & Qt.AltModifier) {
+                            if (mouse.x >= grabbedX + grabbedW - edge) {
+                                root.dragMode = root.dragModeNotatedLength
+                            } else {
+                                root.dragMode = root.dragModeNotatedMove
+                            }
+                        } else if (mouse.x >= grabbedX + grabbedW - edge) {
                             root.dragMode = root.dragModePlayLength
                         } else if (mouse.modifiers & Qt.ShiftModifier) {
                             root.dragMode = root.dragModePlayStart
@@ -2413,6 +2978,21 @@ Item {
                         }
 
                         gridCanvas.requestPaint()
+                    } else {
+                        //! 🆕 空白处按下 = **框选**（拖动时）或**定位**（只是点一下，见 onReleased）。
+                        //! 两者共用同一条起手式，判据是"移动超过 3px 没有" —— 与标尺上
+                        //! "点 = 定位 / 拖 = 循环"完全同一种做法，用户不用记两套。
+                        root.marqueeActive = false
+                        root.marqueeX0 = mouse.x
+                        root.marqueeY0 = mouse.y
+                        root.marqueeX1 = mouse.x
+                        root.marqueeY1 = mouse.y
+                        root.marqueeAdditive = (mouse.modifiers & Qt.ControlModifier) !== 0
+
+                        //! Ctrl + 点空白 = **取消全部选中**（与"Ctrl 点音符 = 加减一个"配对）。
+                        if ((mouse.modifiers & Qt.ControlModifier) !== 0) {
+                            root.model.clearSelection()
+                        }
                     }
                 }
 
@@ -2427,12 +3007,28 @@ Item {
                     }
 
                     if (root.dragNoteIndex < 0) {
+                        //! 🆕 空白处拖动 = **框选**。判据 3px（与"点空白 = 定位"共用起手式）——
+                        //! 比这更小的位移仍然算"点了一下"，不会甩出一个几乎看不见的框。
+                        if (!root.marqueeActive
+                                && (Math.abs(mouse.x - root.marqueeX0) > 3
+                                    || Math.abs(mouse.y - root.marqueeY0) > 3)) {
+                            root.marqueeActive = true
+                        }
+
+                        if (root.marqueeActive) {
+                            root.marqueeX1 = mouse.x
+                            root.marqueeY1 = mouse.y
+                            gridCanvas.requestPaint()
+                        }
                         return
                     }
+
+                    root.dragMoved = true
 
                     if (root.dragMode === root.dragModePitch) {
                         var deltaRows = Math.round((mouse.y - root.dragStartY) / root.rowHeight)
                         var pitch = root.clamp(root.dragStartPitch - deltaRows, 0, 127)
+                        root.dragDeltaPitch = pitch - root.dragStartPitch
                         if (pitch !== root.dragPreviewPitch) {
                             root.dragPreviewPitch = pitch
                             //! 试听**拖到的那个音高**（不是谱面上原有的那个）：与记谱页拖动音符
@@ -2448,10 +3044,32 @@ Item {
                         return
                     }
 
-                    //! NOTE: the played layer snaps to `playSnapTicks`, so a drag lands on musical
+                    //! NOTE: the played layer snaps to the grid, so a drag lands on musical
                     //!       positions instead of on pixel noise.
-                    var snap = root.playSnapTicks
+                    var snap = root.snapTicks
                     var deltaTicks = Math.round((mouse.x - root.dragStartX) / root.pixelsPerTick / snap) * snap
+
+                    //! 🆕 记谱层两条：**左右移动**与**改时值**。它们改的是外框，所以预览值是
+                    //! 绝对 tick / 绝对时值（而不是演奏层那种"起点 + 时长"）。
+                    if (root.dragMode === root.dragModeNotatedMove) {
+                        var movedTick = Math.max(0, root.dragStartNotatedTick + deltaTicks)
+                        root.dragDeltaTicks = movedTick - root.dragStartNotatedTick
+                        if (movedTick !== root.dragPreviewNotatedTick) {
+                            root.dragPreviewNotatedTick = movedTick
+                            gridCanvas.requestPaint()
+                        }
+                        return
+                    }
+
+                    if (root.dragMode === root.dragModeNotatedLength) {
+                        //! 下限 = 一格：比一格格子还短的记谱时值没有意义，而且吸附本来也落不上去。
+                        var notatedDuration = Math.max(snap, root.dragStartNotatedDuration + deltaTicks)
+                        if (notatedDuration !== root.dragPreviewNotatedDuration) {
+                            root.dragPreviewNotatedDuration = notatedDuration
+                            gridCanvas.requestPaint()
+                        }
+                        return
+                    }
 
                     if (root.dragMode === root.dragModePlayStart) {
                         var start = Math.max(0, root.dragStartPlayStart + deltaTicks)
@@ -2473,12 +3091,44 @@ Item {
                     if (root.dragNoteIndex >= 0 && root.dragNoteIndex < root.visibleRows.length) {
                         var entry = root.visibleRows[root.dragNoteIndex]
                         var released = entry.note
+                        var multi = root.selectedCount > 1 && root.isSelectedRow(entry.row)
 
                         //! The model takes indexes into `notes`, not into the filtered view.
                         if (root.dragMode === root.dragModePitch) {
                             if (root.dragPreviewPitch >= 0 && root.dragPreviewPitch !== root.dragStartPitch) {
-                                //! NOTE: the single submission of the whole drag.
-                                root.model.setNotePitch(entry.row, root.dragPreviewPitch)
+                                if (multi && root.dragDeltaPitch !== 0) {
+                                    //! 🆕 多选：整批一起挪同样的半音数，**一个命令**。
+                                    //! 逐个 setNotePitch 会让 N 个音 = N 次全谱通知（§4.8 那条）。
+
+                                    //! 行号在这里**当场收集**：模型补完缓存后会重发行号，
+                                    //! 但收集要用的是"这一帧的行号"，所以先收齐再一次性递进去。
+                                    var pitchRows = []
+                                    var pitchValues = []
+                                    var list = root.visibleRows
+                                    for (var i = 0; i < list.length; ++i) {
+                                        if (root.isSelectedRow(list[i].row)) {
+                                            pitchRows.push(list[i].row)
+                                            pitchValues.push(root.clamp(list[i].note.pitch + root.dragDeltaPitch, 0, 127))
+                                        }
+                                    }
+                                    root.model.setNotePitches(pitchRows, pitchValues)
+                                } else {
+                                    //! NOTE: the single submission of the whole drag.
+                                    root.model.setNotePitch(entry.row, root.dragPreviewPitch)
+                                }
+                            }
+                        } else if (root.dragMode === root.dragModeNotatedMove) {
+                            if (root.dragDeltaTicks !== 0) {
+                                //! 🆕 记谱层移动：模型对整个**选中集合**施加同一个增量，
+                                //! 一次事务、一次撤销（结构编辑，见 moveMidiNotes 的边界说明）。
+                                root.model.moveSelectedNotes(root.dragDeltaTicks)
+                            }
+                        } else if (root.dragMode === root.dragModeNotatedLength) {
+                            var notatedDelta = root.dragPreviewNotatedDuration - root.dragStartNotatedDuration
+                            if (notatedDelta !== 0) {
+                                //! 🆕 记谱层时值：模型按增量改整个选中集合（歌剧院之外的部分由
+                                //! `changeCRlen()` 自己补休止符 / 连音线）。
+                                root.model.resizeSelectedNotes(notatedDelta)
                             }
                         } else if (root.dragPreviewPlayStart !== released.playTick
                                    || root.dragPreviewPlayDuration !== released.playDurationTicks) {
@@ -2487,12 +3137,29 @@ Item {
                                                            root.dragPreviewPlayDuration,
                                                            released.playVelocityPercent)
                         }
+
+                        //! 点一下**已选中**的音（没拖动）= 收成"只选它"。
+                        //! 这条与按下时"选中的不动"配对：多选整块拖动与单选点击因此能共存。
+                        if (!root.dragMoved && root.selectedCount > 1 && !(mouse.modifiers & Qt.ControlModifier)) {
+                            root.model.setSelectedRows([entry.row], false)
+                        }
+                    }
+
+                    //! 🆕 框选提交：**松手那一次**把矩形里的行号成批交给模型（拖动中只画框）。
+                    if (root.marqueeActive) {
+                        var rows = root.rowsInMarquee(root.marqueeX0, root.marqueeY0, root.marqueeX1, root.marqueeY1)
+                        root.model.setSelectedRows(rows, root.marqueeAdditive)
+                        root.marqueeActive = false
+                        console.warn("[midi-select] marquee ->", rows.length, "note(s), additive=", root.marqueeAdditive)
                     }
 
                     root.dragNoteIndex = -1
                     root.dragPreviewPitch = -1
                     root.dragPlayedPitch = -1
                     root.dragMode = root.dragModePitch
+                    root.dragMoved = false
+                    root.dragDeltaPitch = 0
+                    root.dragDeltaTicks = 0
 
                     //! 点空白 = 把播放位置挪到这儿（记谱页同款）。判据两条：没抓到音符，
                     //! 而且几乎没移动过 —— 拖动空白不是定位手势。
@@ -2502,6 +3169,26 @@ Item {
                     root.rollPressSeekTick = -1
 
                     gridCanvas.requestPaint()
+                }
+
+                //! 🆕 **双击空白 = 插入一个音符**（时值 = 工具条上的网格）。
+                //! 双击**音符**不插入（那是试听/编辑的手势，插入会让人误以为点坏了）。
+                onDoubleClicked: function(mouse) {
+                    if (!root.hasScore || root.model === null || mouse.button !== Qt.LeftButton) {
+                        return
+                    }
+
+                    if (root.noteIndexAt(mouse.x, mouse.y) >= 0) {
+                        return
+                    }
+
+                    var tick = Math.round(root.clamp(root.tickForX(mouse.x), 0, root.totalTicks))
+                    var pitch = root.clamp(root.pitchForY(mouse.y), 0, 127)
+                    tick = root.clamp(root.snapTick(tick), 0, Math.max(0, root.totalTicks - 1))
+
+                    console.warn("[midi-notes] insert at tick", tick, "pitch", pitch,
+                                 "duration", root.snapTicks, "staff", root.currentStaff)
+                    root.model.insertNoteAt(root.currentStaff, tick, pitch, root.snapTicks)
                 }
 
                 onExited: {
@@ -2608,6 +3295,19 @@ Item {
                         ctx.globalAlpha = 1.0
                     }
 
+                    //! 🆕 **演奏力度通道**的车道基准线（100% = 没调过）：画一条细线当地平线 ——
+                    //! 这一通道是**相对量**，没有基准线的话"110%"和"90%"看起来只是两根不同的柱子，
+                    //! 看不出谁比"原样"更响。
+                    if (root.velocityPlayedChannel) {
+                        var baselineY = Math.round(h * root.playedVelocityBaseline) + 0.5
+                        ctx.strokeStyle = root.gridColor
+                        ctx.lineWidth = 1
+                        ctx.beginPath()
+                        ctx.moveTo(0, baselineY)
+                        ctx.lineTo(w, baselineY)
+                        ctx.stroke()
+                    }
+
                     for (var i = 0; i < visible.length; ++i) {
                         var note = visible[i].note
                         if (note.tick > maxTick || note.tick < minTick) {
@@ -2626,6 +3326,30 @@ Item {
                         //! drawn in the staff colour rather than the brush colour: the gesture reads
                         //! as finished immediately, and the height does not jump back in the meantime.
                         var pending = root.velocityPending && hasTrail
+
+                        //! 🆕 选中的音在车道上也要看得出来：柱子加一圈亮边 —— 用户刷之前得知道
+                        //! 自己选中的是哪些音（选中的音在画布上是同一套描边，两处要一致）。
+                        var selectedLaneNote = root.isSelectedRow(visible[i].row)
+
+                        if (root.velocityPlayedChannel) {
+                            //! 演奏力度：以中线为起点、向上（更响）或向下（更轻）长。
+                            var shownPercent = (brushed || pending) ? trail[note.tick] : note.playVelocityPercent
+                            var bar = root.playedVelocityBar(shownPercent, h)
+                            var ownPlayed = note.hasPlayOverride
+
+                            ctx.fillStyle = brushed ? root.cursorColor : root.staffColor(note.staffIndex)
+                            ctx.globalAlpha = root.automationMode ? 0.18 : ((brushed || pending) ? 1.0 : (ownPlayed ? 0.9 : 0.55))
+                            ctx.fillRect(x - 0.5, bar.y, 4, bar.height)
+                            ctx.globalAlpha = 1.0
+
+                            if (selectedLaneNote) {
+                                ctx.strokeStyle = root.cursorColor
+                                ctx.lineWidth = 1
+                                ctx.strokeRect(x - 1.5, bar.y - 1.5, 6, bar.height + 3)
+                            }
+                            continue
+                        }
+
                         var shownVelocity = (brushed || pending) ? trail[note.tick] : note.velocity
 
                         var barH = Math.max(1, (shownVelocity / 127) * (h - 4))
@@ -2650,6 +3374,12 @@ Item {
                             ctx.globalAlpha = root.automationMode ? 0.25 : 1.0
                             ctx.fillRect(x - 0.5, h - barH - 2, 4, 2)
                             ctx.globalAlpha = 1.0
+                        }
+
+                        if (selectedLaneNote) {
+                            ctx.strokeStyle = root.cursorColor
+                            ctx.lineWidth = 1
+                            ctx.strokeRect(x - 1.5, h - barH - 1.5, 6, barH + 3)
                         }
                     }
 
@@ -2787,6 +3517,27 @@ Item {
 
                     var tick = root.velocityAt(mouse.x)
                     if (tick < 0) {
+                        return
+                    }
+
+                    //! 🆕 两个通道各清各的：
+                    //!  * **演奏力度**通道 → 回到 **100%**（= 没调过）。它不是覆盖语义，
+                    //!    所以"清掉"就是让乘子回到 1.0；写 0 会把这个音彻底静音，那是另一回事。
+                    //!  * 力度通道 → 回到 **0** = "没有自己的力度"，从而**重新跟随表情记号**。
+                    if (root.velocityPlayedChannel) {
+                        var playedList = root.visibleRows
+                        var playedRows = []
+                        var playedValues = []
+                        for (var p = playedList.length - 1; p >= 0; --p) {
+                            if (playedList[p].note.tick === tick && playedList[p].note.playVelocityPercent !== 100) {
+                                playedRows.push(playedList[p].row)
+                                playedValues.push(100)
+                            }
+                        }
+                        if (playedRows.length > 0) {
+                            //! 同 tick 的音（和弦）**一起清**：与刷力度时"和弦整体改"是同一条语义。
+                            root.model.setNotePlayVelocities(playedRows, playedValues)
+                        }
                         return
                     }
 
@@ -3024,7 +3775,13 @@ Item {
                     if (rows.length > 0) {
                         //! The trail stays until the model answers - see velocityPending.
                         root.velocityPending = true
-                        root.model.setNoteVelocities(rows, values)
+                        //! 🆕 按**当前通道**提交：两个通道是两套语义（覆盖 vs 乘子），
+                        //! 写错通道不会报错，只会让"刷了没反应"或"改错了东西"。
+                        if (root.velocityPlayedChannel) {
+                            root.model.setNotePlayVelocities(rows, values)
+                        } else {
+                            root.model.setNoteVelocities(rows, values)
+                        }
                     } else {
                         root.clearVelocityTrail()
                     }

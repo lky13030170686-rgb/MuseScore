@@ -59,6 +59,10 @@ static constexpr int DEFAULT_VELOCITY = 64;
 //! is exactly the unit the legacy MIDI renderer uses: on = tick + (ticks * ontime) / 1000.
 static constexpr int NOTE_EVENT_UNIT = 1000;
 
+//! 力度车道（"演奏力度"通道）能写到的最大百分比。上限只是**防呆**：`velocityMultiplier` 是乘在
+//! 动态级别上的，写太大就削顶；界面上真正的范围比这个小（见 QML 里的夹取）。
+static constexpr int MAX_PLAY_VELOCITY_PERCENT = 400;
+
 int midiDisplayVelocity(int userVelocity)
 {
     return userVelocity == 0 ? DEFAULT_VELOCITY : userVelocity;
@@ -164,6 +168,14 @@ std::vector<MidiMeasureItem> collectMidiMeasures(const Score* score)
     return result;
 }
 
+//! The write itself, with NO command of its own - so a drag of a whole selection can wrap many of them
+//! in one. Reuses the very command the notation editor uses, so linked notes stay in sync (see the
+//! note on `applyNotePitch`).
+static void writeNotePitch(Score* score, Note* note, int pitch)
+{
+    EditNote::undoChangePitch(score, note, pitch, note->tpc1default(pitch), note->tpc2default(pitch));
+}
+
 bool applyNotePitch(Score* score, Note* note, int pitch, bool openCommand)
 {
     if (!score || !note) {
@@ -178,12 +190,46 @@ bool applyNotePitch(Score* score, Note* note, int pitch, bool openCommand)
     if (openCommand) {
         score->startCmd(TranslatableString("midieditor", "Change pitch"));
     }
-    EditNote::undoChangePitch(score, note, pitch, note->tpc1default(pitch), note->tpc2default(pitch));
+    writeNotePitch(score, note, pitch);
     if (openCommand) {
         score->endCmd();
     }
 
     return true;
+}
+
+int applyNotePitches(Score* score, const std::vector<std::pair<Note*, int> >& changes, bool openCommand)
+{
+    if (!score) {
+        return 0;
+    }
+
+    //! Same rule as the velocity batch: only what really changes is worth touching, and a batch that
+    //! changes nothing must not notify the score at all.
+    std::vector<std::pair<Note*, int> > pending;
+    pending.reserve(changes.size());
+    for (const std::pair<Note*, int>& change : changes) {
+        if (change.first && std::clamp(change.second, 0, 127) != change.first->pitch()) {
+            pending.push_back(change);
+        }
+    }
+
+    if (pending.empty()) {
+        return 0;
+    }
+
+    //! ONE command for the whole batch - see applyNoteVelocities for the reason.
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Change pitches"));
+    }
+    for (const std::pair<Note*, int>& change : pending) {
+        writeNotePitch(score, change.first, std::clamp(change.second, 0, 127));
+    }
+    if (openCommand) {
+        score->endCmd();
+    }
+
+    return int(pending.size());
 }
 
 //! The write itself, with NO command of its own - so a batch can wrap many of them in one.
@@ -304,6 +350,72 @@ bool applyNotePlayOverride(Score* score, Note* note, int startTick, int duration
     }
 
     return true;
+}
+
+//! ⚠️ `NoteEvent` 的力度乘子**只改这一个字段**：`ontime` / `len` 原样保留 —— 写一次"演奏力度"
+//! 绝不该顺手把演奏时值搬走（那是另一条手势、另一个通道）。
+static bool writeNotePlayVelocity(Score* score, Note* note, int velocityPercent)
+{
+    const double multiplier = std::max(0.0, velocityPercent / 100.0);
+
+    //! NOTE: copy - `ChangeNoteEventList` takes the new list by value, so the command owns it and undo
+    //!       never depends on a pointer a later reallocation could invalidate (same reason as in
+    //!       `applyNotePlayOverride`).
+    NoteEventList events = note->playEvents();
+    if (events.empty()) {
+        //! 读谱器会给每个音填一个中性事件，所以这里基本不会走到；真没有就补一个中性的，
+        //! 免得"只改力度"变成"改了一个时值全 0 的事件"（那会把音压成 0 长度）。
+        events.push_back(NoteEvent());
+    }
+
+    if (std::abs(events.front().velocityMultiplier() - multiplier) < 1e-9) {
+        return false;
+    }
+
+    events.front().setVelocityMultiplier(multiplier);
+    score->undo(new ChangeNoteEventList(note, events));
+    return true;
+}
+
+int applyNotePlayVelocities(Score* score, const std::vector<std::pair<Note*, int> >& changes, bool openCommand)
+{
+    if (!score) {
+        return 0;
+    }
+
+    std::vector<std::pair<Note*, int> > pending;
+    pending.reserve(changes.size());
+    for (const std::pair<Note*, int>& change : changes) {
+        if (!change.first) {
+            continue;
+        }
+
+        const int percent = std::clamp(change.second, 0, MAX_PLAY_VELOCITY_PERCENT);
+        const double multiplier = percent / 100.0;
+        const NoteEventList& events = change.first->playEvents();
+        const double current = events.empty() ? NoteEvent::DEFAULT_VELOCITY_MULTIPLIER : events.front().velocityMultiplier();
+
+        if (std::abs(current - multiplier) > 1e-9) {
+            pending.emplace_back(change.first, percent);
+        }
+    }
+
+    if (pending.empty()) {
+        return 0;
+    }
+
+    //! ONE command for the whole stroke - see applyNoteVelocities for the reason.
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Draw played velocities"));
+    }
+    for (const std::pair<Note*, int>& change : pending) {
+        writeNotePlayVelocity(score, change.first, change.second);
+    }
+    if (openCommand) {
+        score->endCmd();
+    }
+
+    return int(pending.size());
 }
 
 //! 造一个"只用来发声"的临时音符，音高可以**不是**谱面上那个。
@@ -608,6 +720,581 @@ MidiRecordedWriteResult applyRecordedChords(Score* score, int staffIndex, int ba
     }
 
     return result;
+}
+
+// ── 结构性编辑：增 / 删 / 移 / 改记谱时长 / 复制粘贴（见头文件那一节）────────────────────────────
+//!
+//! 这一组与前四个写入函数的**根本差别**：前四个只改属性，音符对象不动；这一组改的是**谱面结构**，
+//! 音符对象会被整个换掉。所以贯穿全组的两条纪律：
+//!  ① 每一步都**从乐谱里按 tick 重新找段/和弦**（`setNoteRest()` 内 `makeGap()` 会移除它替换掉的
+//!     ChordRest，空掉的段会被一并删掉 —— `维护手册.md` §4.8.4 第 1 条）；
+//!  ② 凡是"先删再写"，**先把要保留的数据抄成值**（`MidiNoteData`），写完之后旧 `Note*` 一律作废。
+
+//! 一个"要写进和弦的音"：音高 + 它自己的力度（0 = 没有自己的力度）。
+struct MidiChordTone {
+    int pitch = 0;
+    int velocity = 0;
+};
+
+static bool chordHasPitch(const Chord* chord, int pitch)
+{
+    if (!chord) {
+        return false;
+    }
+
+    for (const Note* note : chord->notes()) {
+        if (note->pitch() == pitch) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+//! 把一个音符读成"与对象解绑的数据"。`false` = 这个音没法参与结构编辑（没和弦 / 时值为 0）。
+static bool readNoteData(const Note* note, MidiNoteData& out)
+{
+    if (!note || !note->chord()) {
+        return false;
+    }
+
+    const int nominalTicks = note->chord()->actualTicks().ticks();
+    if (nominalTicks <= 0) {
+        return false;
+    }
+
+    out.tick = note->tick().ticks();
+    out.durationTicks = nominalTicks;
+    out.pitch = note->pitch();
+    out.velocity = note->userVelocity();
+
+    readPlayOverride(note, nominalTicks, out.hasPlayOverride,
+                     out.playTick, out.playDurationTicks, out.playVelocityPercent);
+    return true;
+}
+
+//! 力度写进**整条连音线**（连音线的每一段是不同的音符对象）。`tones` 里没有的音高不动。
+static void writeChordToneVelocities(Segment* segment, track_idx_t track, const std::vector<MidiChordTone>& tones)
+{
+    for (Chord* part : chordChainAt(segment, track)) {
+        for (Note* note : part->notes()) {
+            for (const MidiChordTone& tone : tones) {
+                if (tone.pitch == note->pitch()) {
+                    if (std::clamp(tone.velocity, 0, 127) != note->userVelocity()) {
+                        writeNoteVelocity(note, tone.velocity);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
+//! 在 (staff, voice, tick) 处写一个和弦，返回**真正落进乐谱的音**（没写成就是空）。
+//!
+//! 三条语义：
+//!  * 那个 tick 上**已经有和弦** → 音**加到这个和弦上**（记谱页"再点一个音"就是加和弦音），
+//!    时值参数被忽略 —— 一个和弦只有一个时值；已经在和弦里的音高直接跳过（不写重复音）。
+//!  * 那个 tick 上**只有休止符或空隙** → `setNoteRest()`：它会切开前面的音符、把余下的铺成休止符。
+//!  * **谱面之外一律不写**（`setNoteRest()` 其实会自己加小节，但那会让"点错一下"变成"多出几十小节"）。
+static std::vector<Note*> writeChordAt(Score* score, int staffIndex, int voice, int tick, int durationTicks,
+                                       const std::vector<MidiChordTone>& tones, InputState& scratch)
+{
+    std::vector<Note*> written;
+
+    if (!score || tones.empty() || staffIndex < 0 || size_t(staffIndex) >= score->nstaves()) {
+        return written;
+    }
+    if (tick < 0 || durationTicks <= 0 || voice < 0 || voice >= int(VOICES)) {
+        return written;
+    }
+
+    const Fraction at = Fraction::fromTicks(tick);
+    if (at >= score->endTick()) {
+        return written;
+    }
+
+    Measure* measure = score->tick2measure(at);
+    if (!measure) {
+        return written;
+    }
+
+    const track_idx_t track = staff2track(staff_idx_t(staffIndex)) + track_idx_t(voice);
+    Segment* existing = measure->findSegment(SegmentType::ChordRest, at);
+    EngravingItem* existingItem = existing ? existing->element(track) : nullptr;
+
+    if (existingItem && existingItem->isChord() && !toChord(existingItem)->isGrace()) {
+        Chord* chord = toChord(existingItem);
+        Transaction& tx = score->transactionManager()->currentOrDummyTransaction();
+
+        std::vector<int> added;
+        for (const MidiChordTone& tone : tones) {
+            if (chordHasPitch(chord, tone.pitch)) {
+                continue;
+            }
+
+            NoteVal value(tone.pitch);
+            NoteInput::addPitchToChord(tx, score, value, chord, &scratch, false);
+            added.push_back(tone.pitch);
+        }
+
+        //! 只写**刚加进来的**音：和弦里原有的音不是这一次编辑的目标。
+        for (Note* note : chord->notes()) {
+            if (std::find(added.begin(), added.end(), note->pitch()) == added.end()) {
+                continue;
+            }
+
+            for (const MidiChordTone& tone : tones) {
+                if (tone.pitch == note->pitch()) {
+                    if (std::clamp(tone.velocity, 0, 127) != note->userVelocity()) {
+                        writeNoteVelocity(note, tone.velocity);
+                    }
+                    break;
+                }
+            }
+
+            written.push_back(note);
+        }
+
+        return written;
+    }
+
+    Segment* segment = recordSegmentAt(score, at, track, scratch);
+    if (!segment || segment->tick() != at) {
+        return written;
+    }
+
+    score->setNoteRest(segment, track, NoteVal(tones.front().pitch), Fraction::fromTicks(durationTicks),
+                       DirectionV::AUTO, false, {}, false, &scratch);
+
+    //! ⚠️ 段与和弦**重新找**：`setNoteRest()` 里的 `makeGap()` 会移除它替换掉的 ChordRest，而空掉的
+    //! 段会被一并删掉 ⇒ 新和弦落在**另一个**段对象上，传进去那一个已经悬空（见函数头与 §4.8.4）。
+    Measure* after = score->tick2measure(at);
+    Segment* created = after ? after->findSegment(SegmentType::ChordRest, at) : nullptr;
+    EngravingItem* createdItem = created ? created->element(track) : nullptr;
+    Chord* chord = (createdItem && createdItem->isChord()) ? toChord(createdItem) : nullptr;
+    if (!chord || chord->tick() != at) {
+        return written;
+    }
+
+    Transaction& tx = score->transactionManager()->currentOrDummyTransaction();
+    for (size_t i = 1; i < tones.size(); ++i) {
+        if (chordHasPitch(chord, tones[i].pitch)) {
+            continue;
+        }
+
+        NoteVal value(tones[i].pitch);
+        NoteInput::addPitchToChord(tx, score, value, chord, &scratch, false);
+    }
+
+    //! 力度走 `Pid::USER_VELOCITY`（力度车道与 Properties 面板写的**同一个**属性）——
+    //! 与 `applyRecordedChords()` 同一个理由：直接 `setUserVelocity()` 不进事务，撤销再重做就丢了。
+    writeChordToneVelocities(created, track, tones);
+
+    written.reserve(chord->notes().size());
+    for (Note* note : chord->notes()) {
+        written.push_back(note);
+    }
+
+    return written;
+}
+
+int deleteMidiNotes(Score* score, const std::vector<Note*>& notes, bool openCommand)
+{
+    if (!score || notes.empty()) {
+        return 0;
+    }
+
+    //! 按**和弦**分组：删掉和弦的最后一个音 = 整个和弦变成同时值的休止符（小节永远是满的），
+    //! 而和弦里还有别的音时只去掉被选中的那几个。这两种语义与记谱页按 Delete 完全一致，
+    //! 也正是 `Score::deleteItem()` 的实现（这里分组只是为了不让"删和弦里一个音"变成"删整个和弦"）。
+    std::vector<Chord*> chords;
+    std::vector<std::vector<Note*> > selectedInChord;
+    for (Note* note : notes) {
+        Chord* chord = (note && note->chord()) ? note->chord() : nullptr;
+        if (!chord || chord->isGrace()) {
+            continue;
+        }
+
+        size_t index = 0;
+        for (; index < chords.size(); ++index) {
+            if (chords[index] == chord) {
+                break;
+            }
+        }
+        if (index == chords.size()) {
+            chords.push_back(chord);
+            selectedInChord.push_back({});
+        }
+        selectedInChord[index].push_back(note);
+    }
+
+    if (chords.empty()) {
+        return 0;
+    }
+
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Delete notes"));
+    }
+
+    int removed = 0;
+    for (size_t i = 0; i < chords.size(); ++i) {
+        Chord* chord = chords[i];
+        const std::vector<Note*>& selected = selectedInChord[i];
+
+        bool wholeChord = !chord->notes().empty() && chord->notes().size() == selected.size();
+        if (wholeChord) {
+            //! 整个和弦都不要了：换成一个同时值的休止符（`deleteItem` 的 CHORD 分支就是这么做的）。
+            score->deleteItem(chord);
+            removed += int(selected.size());
+        } else {
+            //! 只去掉这几个音：和弦留着（`deleteItem()` 的 NOTE 分支走的是同一个调用）。
+            for (Note* note : selected) {
+                score->undoRemoveElement(note);
+                ++removed;
+            }
+        }
+    }
+
+    if (openCommand) {
+        score->endCmd();
+    }
+
+    return removed;
+}
+
+bool insertMidiNote(Score* score, int staffIndex, int voice, int tick, int durationTicks, int pitch, bool openCommand,
+                    std::vector<Note*>* insertedNotes)
+{
+    if (!score || pitch < 0 || pitch > 127 || durationTicks <= 0) {
+        return false;
+    }
+
+    const int at = std::max(0, tick);
+    const Fraction atFraction = Fraction::fromTicks(at);
+    if (atFraction >= score->endTick() || !score->tick2measure(atFraction)) {
+        return false;   // 谱面之外不写
+    }
+
+    //! 预判"这一下什么都不会发生"的情形，**免得压一个空的撤销步**：已经在这个和弦里 = 无操作。
+    if (staffIndex >= 0 && size_t(staffIndex) < score->nstaves() && voice >= 0 && voice < int(VOICES)) {
+        const Measure* measure = score->tick2measure(atFraction);
+        const Segment* segment = measure ? measure->findSegment(SegmentType::ChordRest, atFraction) : nullptr;
+        const track_idx_t track = staff2track(staff_idx_t(staffIndex)) + track_idx_t(voice);
+        const EngravingItem* item = segment ? segment->element(track) : nullptr;
+        if (item && item->isChord() && chordHasPitch(toChord(item), pitch)) {
+            return false;
+        }
+    }
+
+    std::vector<MidiChordTone> tones { { pitch, 0 } };
+
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Insert note"));
+    }
+
+    InputState scratch;
+    const std::vector<Note*> written = writeChordAt(score, staffIndex, voice, at, durationTicks, tones, scratch);
+
+    if (openCommand) {
+        score->endCmd();
+    }
+
+    if (written.empty()) {
+        return false;
+    }
+
+    if (insertedNotes) {
+        *insertedNotes = written;
+    }
+
+    return true;
+}
+
+int moveMidiNotes(Score* score, const std::vector<MidiNoteMove>& moves, bool openCommand,
+                  std::vector<Note*>* movedNotes)
+{
+    if (!score || moves.empty()) {
+        return 0;
+    }
+
+    //! ① **先抄数据**：下面删完源音之后，手里这些 `Note*` 全部作废。
+    struct PlannedMove {
+        Note* source = nullptr;
+        int staffIndex = 0;
+        int voice = 0;
+        int tick = 0;               //!< 目标 tick
+        int durationTicks = 0;
+        MidiNoteData data;
+    };
+
+    std::vector<PlannedMove> plans;
+    plans.reserve(moves.size());
+
+    const Fraction scoreEnd = score->endTick();   //! 删除不会缩短谱面，所以这一刻的末尾就是上限
+
+    for (const MidiNoteMove& move : moves) {
+        PlannedMove plan;
+        if (!move.note || !readNoteData(move.note, plan.data)) {
+            continue;
+        }
+
+        plan.source = move.note;
+        plan.staffIndex = int(move.note->staffIdx());
+        plan.voice = int(move.note->voice());
+        plan.tick = std::max(0, move.tick);
+        plan.durationTicks = move.durationTicks > 0 ? move.durationTicks : plan.data.durationTicks;
+
+        if (Fraction::fromTicks(plan.tick) >= scoreEnd) {
+            continue;   // 谱面之外不写
+        }
+
+        plans.push_back(plan);
+    }
+
+    if (plans.empty()) {
+        return 0;
+    }
+
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Move notes"));
+    }
+
+    //! ② 把**全部**源音先删掉，再在新位置重建 —— 这样"把 A 挪到 B 头上"这种批内重叠不会互相踩。
+    std::vector<Note*> sources;
+    sources.reserve(plans.size());
+    for (const PlannedMove& plan : plans) {
+        sources.push_back(plan.source);
+    }
+    deleteMidiNotes(score, sources, /*openCommand*/ false);
+
+    //! ③ 重建。演奏层按**相对偏移**平移（"这个音比记谱起点晚 20 tick 出声"这件事跟着音走）。
+    InputState scratch;
+    int moved = 0;
+
+    for (const PlannedMove& plan : plans) {
+        const MidiNoteData& data = plan.data;
+        const int playOffset = data.playTick - data.tick;
+        const std::vector<MidiChordTone> tones { { data.pitch, data.velocity } };
+
+        const std::vector<Note*> written = writeChordAt(score, plan.staffIndex, plan.voice, plan.tick,
+                                                        plan.durationTicks, tones, scratch);
+        if (written.empty()) {
+            continue;
+        }
+
+        for (Note* note : written) {
+            if (note->pitch() != data.pitch) {
+                continue;
+            }
+
+            if (data.hasPlayOverride) {
+                applyNotePlayOverride(score, note, plan.tick + playOffset, data.playDurationTicks,
+                                      data.playVelocityPercent, /*openCommand*/ false);
+            }
+
+            if (movedNotes) {
+                movedNotes->push_back(note);
+            }
+            ++moved;
+        }
+    }
+
+    if (openCommand) {
+        score->endCmd();
+    }
+
+    return moved;
+}
+
+int changeMidiNoteDurations(Score* score, const std::vector<std::pair<Note*, int> >& changes, bool openCommand)
+{
+    if (!score) {
+        return 0;
+    }
+
+    //! 一个和弦只做一次：时值是 **ChordRest 级**的，和弦里的音不可能各自有时值（这也是唯一一处
+    //! "改一个音会连带改同一个和弦里别的音"的编辑，界面上的说明写的就是这一点）。
+    std::vector<std::pair<Chord*, int> > plan;
+    for (const std::pair<Note*, int>& change : changes) {
+        Note* note = change.first;
+        if (!note || !note->chord() || note->chord()->isGrace()) {
+            continue;
+        }
+
+        const int ticks = change.second;
+        if (ticks <= 0) {
+            continue;
+        }
+
+        Chord* chord = note->chord();
+        if (chord->ticks() == Fraction::fromTicks(ticks)) {
+            continue;   // 没变
+        }
+
+        bool seen = false;
+        for (const std::pair<Chord*, int>& entry : plan) {
+            if (entry.first == chord) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            plan.emplace_back(chord, ticks);
+        }
+    }
+
+    if (plan.empty()) {
+        return 0;
+    }
+
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Change note length"));
+    }
+
+    int changed = 0;
+    for (const std::pair<Chord*, int>& entry : plan) {
+        //! 记谱页"选中音符换时值"用的就是这一个调用：变短自动补休止符、变长自动按小节切开并连音、
+        //! 谱面不够长自动加小节 —— 全交给上游，我们不碰 segment。
+        score->changeCRlen(entry.first, Fraction::fromTicks(entry.second));
+        ++changed;
+    }
+
+    if (openCommand) {
+        score->endCmd();
+    }
+
+    return changed;
+}
+
+std::vector<MidiClipboardNote> copyMidiNotes(const std::vector<Note*>& notes)
+{
+    std::vector<MidiNoteData> data;
+    data.reserve(notes.size());
+
+    for (Note* note : notes) {
+        MidiNoteData item;
+        if (readNoteData(note, item)) {
+            data.push_back(item);
+        }
+    }
+
+    std::vector<MidiClipboardNote> result;
+    if (data.empty()) {
+        return result;
+    }
+
+    int base = data.front().tick;
+    for (const MidiNoteData& item : data) {
+        base = std::min(base, item.tick);
+    }
+
+    //! 排序让粘贴时"同一个 tick 上的音"自然地挨在一起（它们要落成一个和弦）。
+    std::stable_sort(data.begin(), data.end(), [](const MidiNoteData& a, const MidiNoteData& b) {
+        if (a.tick != b.tick) {
+            return a.tick < b.tick;
+        }
+        return a.pitch < b.pitch;
+    });
+
+    result.reserve(data.size());
+    for (const MidiNoteData& item : data) {
+        MidiClipboardNote entry;
+        entry.tickOffset = item.tick - base;
+        entry.durationTicks = item.durationTicks;
+        entry.pitch = item.pitch;
+        entry.velocity = item.velocity;
+        entry.playOffsetTicks = item.playTick - item.tick;
+        entry.playDurationTicks = item.playDurationTicks;
+        entry.playVelocityPercent = item.playVelocityPercent;
+        result.push_back(entry);
+    }
+
+    return result;
+}
+
+int pasteMidiNotes(Score* score, int staffIndex, int voice, int atTick, const std::vector<MidiClipboardNote>& notes,
+                   bool openCommand, std::vector<Note*>* pastedNotes)
+{
+    if (!score || notes.empty() || staffIndex < 0 || size_t(staffIndex) >= score->nstaves()) {
+        return 0;
+    }
+    if (voice < 0 || voice >= int(VOICES)) {
+        return 0;
+    }
+
+    std::vector<MidiClipboardNote> ordered = notes;
+    std::stable_sort(ordered.begin(), ordered.end(), [](const MidiClipboardNote& a, const MidiClipboardNote& b) {
+        if (a.tickOffset != b.tickOffset) {
+            return a.tickOffset < b.tickOffset;
+        }
+        return a.pitch < b.pitch;
+    });
+
+    const int base = std::max(0, atTick);
+    const Fraction scoreEnd = score->endTick();
+
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Paste notes"));
+    }
+
+    InputState scratch;
+    int written = 0;
+
+    for (size_t i = 0; i < ordered.size();) {
+        //! 同一个 tickOffset 的一组 = 一个和弦。
+        size_t end = i;
+        int durationTicks = 0;
+        std::vector<MidiChordTone> tones;
+        while (end < ordered.size() && ordered[end].tickOffset == ordered[i].tickOffset) {
+            tones.push_back({ ordered[end].pitch, ordered[end].velocity });
+            durationTicks = std::max(durationTicks, ordered[end].durationTicks);
+            ++end;
+        }
+
+        const int tick = base + ordered[i].tickOffset;
+        if (Fraction::fromTicks(tick) >= scoreEnd || durationTicks <= 0) {
+            i = end;
+            continue;
+        }
+
+        const std::vector<Note*> created = writeChordAt(score, staffIndex, voice, tick, durationTicks, tones, scratch);
+        if (created.empty()) {
+            i = end;
+            continue;
+        }
+
+        //! 演奏层与力度一起粘回来：复制的是"这个音听起来是什么样"，不只是音高。
+        for (Note* note : created) {
+            if (pastedNotes) {
+                pastedNotes->push_back(note);
+            }
+            ++written;
+
+            for (size_t k = i; k < end; ++k) {
+                if (ordered[k].pitch != note->pitch()) {
+                    continue;
+                }
+
+                const int playTick = tick + ordered[k].playOffsetTicks;
+                if (playTick != note->tick().ticks()
+                    || ordered[k].playDurationTicks != note->chord()->actualTicks().ticks()
+                    || ordered[k].playVelocityPercent != 100) {
+                    applyNotePlayOverride(score, note, playTick, ordered[k].playDurationTicks,
+                                          ordered[k].playVelocityPercent, /*openCommand*/ false);
+                }
+                break;
+            }
+        }
+
+        i = end;
+    }
+
+    if (openCommand) {
+        score->endCmd();
+    }
+
+    return written;
 }
 
 //! The Dynamics curve key of one staff, built the way the notation page builds it

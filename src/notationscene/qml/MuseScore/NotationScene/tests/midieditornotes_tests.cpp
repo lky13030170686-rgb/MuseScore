@@ -33,11 +33,14 @@
 #include "engraving/automation/automationtypes.h"
 #include "engraving/automation/internal/automationrw.h"
 #include "engraving/automation/tempovalues.h"
+#include "engraving/dom/chord.h"
 #include "engraving/dom/masterscore.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/repeatlist.h"
+#include "engraving/dom/rest.h"
 #include "engraving/dom/score.h"
+#include "engraving/dom/segment.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/tempotimeline.h"
 #include "engraving/playback/playbackcontext.h"
@@ -1499,4 +1502,517 @@ TEST_F(MidiEditorNotesTests, TheNumberOfPassesIsBoundedByTheBudget)
     EXPECT_FALSE(makePlaybackLoopExpansion(repeats, 960, 960, 4.0, true).isActive());
     EXPECT_EQ(makePlaybackLoopExpansion(repeats, 0, TEST_SCORE_TICKS, 4.0, false).expandedTicks(), TEST_SCORE_TICKS);
 }
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+//  结构性编辑：增 / 删 / 移 / 改记谱时长 / 复制粘贴
+//
+//  这一组和前四个写入函数**不是一回事**：前四个只改属性，这一组改的是**谱面结构**（哪一段上有没有
+//  和弦），走的是上游输入音符那套（`Score::setNoteRest()` / `Score::changeCRlen()` /
+//  `Score::deleteItem()`）。所以这里的断言分三层：
+//    ① 数据对不对（音高/时值/力度/演奏层）；
+//    ② **小节还是满的**（`sanityCheck()` —— 「测试全绿但工程打不开」正是第十轮的翻车方式）；
+//    ③ 一次手势 = **一次撤销**（整批一个命令）。
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+//! 测试用的夹具：这份谱子是 4/4 × 2 小节 —— 第 1 小节四个四分音符（60/62/64/65），
+//! 第 2 小节一个全小节休止符。下面所有"起点/落点"的假设都基于它。
+static constexpr int TEST_QUARTER = 480;
+static constexpr int TEST_MEASURE = 1920;
+
+static Chord* chordAt(const Score* score, int tick, int staffIndex = 0, int voice = 0)
+{
+    const Measure* measure = score->tick2measure(Fraction::fromTicks(tick));
+    if (!measure) {
+        return nullptr;
+    }
+
+    Segment* segment = measure->findSegment(SegmentType::ChordRest, Fraction::fromTicks(tick));
+    if (!segment) {
+        return nullptr;
+    }
+
+    EngravingItem* item = segment->element(staff2track(staff_idx_t(staffIndex)) + track_idx_t(voice));
+    return (item && item->isChord()) ? toChord(item) : nullptr;
+}
+
+static Note* noteAtTick(const Score* score, int tick, int pitch)
+{
+    Chord* chord = chordAt(score, tick);
+    if (!chord) {
+        return nullptr;
+    }
+
+    for (Note* note : chord->notes()) {
+        if (note->pitch() == pitch) {
+            return note;
+        }
+    }
+
+    return nullptr;
+}
+
+static int noteCount(const Score* score)
+{
+    return int(collectMidiNotes(score).size());
+}
+
+//! 删掉和弦的**最后一个音** = 整个和弦换成同时值的休止符（记谱页按 Delete 的语义）——
+//! 重点是**小节不能留空**：`sanityCheck` 一失败，真实程序里那份工程就直接打不开。
+TEST_F(MidiEditorNotesTests, DeletingTheLastNoteOfAChordLeavesARestOfTheSameLength)
+{
+    Note* first = noteAtTick(m_score, 0, 60);
+    ASSERT_TRUE(first);
+
+    EXPECT_EQ(deleteMidiNotes(m_score, { first }), 1);
+
+    EXPECT_EQ(noteCount(m_score), 3) << "the note should be gone";
+    EXPECT_FALSE(chordAt(m_score, 0)) << "the chord should have become a rest";
+
+    //! 休止符占着原来的时值 —— 小节仍然是 4/4。
+    Measure* measure = m_score->tick2measure(Fraction::fromTicks(0));
+    ASSERT_TRUE(measure);
+    EXPECT_EQ(measure->endTick().ticks(), TEST_MEASURE);
+    EXPECT_TRUE(m_score->sanityCheck()) << "a deleted note must not leave the measure incomplete";
+
+    m_score->undoRedo(true, nullptr);
+    EXPECT_EQ(noteCount(m_score), 4) << "one undo should bring the note back";
+    EXPECT_TRUE(noteAtTick(m_score, 0, 60));
+}
+
+//! 和弦里还有别的音时，只去掉被选中的那一个（否则删一个和弦音会把整个和弦清掉）。
+TEST_F(MidiEditorNotesTests, DeletingOneNoteOfAChordKeepsTheRestOfIt)
+{
+    //! 先在同一 tick 上加一个音，做出一个真正的二音和弦。
+    ASSERT_TRUE(insertMidiNote(m_score, 0, 0, 0, TEST_QUARTER, 64));
+    Chord* chord = chordAt(m_score, 0);
+    ASSERT_TRUE(chord);
+    ASSERT_EQ(chord->notes().size(), 2u) << "the insert should have added a chord tone";
+
+    EXPECT_EQ(deleteMidiNotes(m_score, { noteAtTick(m_score, 0, 60) }), 1);
+
+    chord = chordAt(m_score, 0);
+    ASSERT_TRUE(chord) << "the chord must survive deleting one of its notes";
+    ASSERT_EQ(chord->notes().size(), 1u);
+    EXPECT_EQ(chord->notes().front()->pitch(), 64);
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+//! 整批一次撤销：一次手势删十个音，`Ctrl+Z` 必须是**一次**退回去。
+TEST_F(MidiEditorNotesTests, ABatchOfDeletionsIsASingleUndoStep)
+{
+    std::vector<Note*> doomed { noteAtTick(m_score, 0, 60), noteAtTick(m_score, TEST_QUARTER, 62) };
+    ASSERT_TRUE(doomed[0]);
+    ASSERT_TRUE(doomed[1]);
+
+    EXPECT_EQ(deleteMidiNotes(m_score, doomed), 2);
+    EXPECT_EQ(noteCount(m_score), 2);
+
+    m_score->undoRedo(true, nullptr);
+    EXPECT_EQ(noteCount(m_score), 4) << "one undo left a note behind, so the batch was not one command";
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+//! 在**休止符**上插入：走 `setNoteRest()`，余下的时值由上游补成休止符（小节仍然满）。
+TEST_F(MidiEditorNotesTests, InsertingANoteOnARestKeepsTheMeasureComplete)
+{
+    //! 第 2 小节是整小节休止符 —— 正是"空谱表上画一个音"的情形。
+    ASSERT_TRUE(insertMidiNote(m_score, 0, 0, TEST_MEASURE, TEST_QUARTER, 67));
+
+    Note* inserted = noteAtTick(m_score, TEST_MEASURE, 67);
+    ASSERT_TRUE(inserted) << "the note was not written";
+    EXPECT_EQ(inserted->chord()->ticks().ticks(), TEST_QUARTER);
+
+    Measure* measure = m_score->tick2measure(Fraction::fromTicks(TEST_MEASURE));
+    ASSERT_TRUE(measure);
+    EXPECT_EQ(measure->endTick().ticks(), 2 * TEST_MEASURE) << "no measure may have been added";
+    EXPECT_TRUE(m_score->sanityCheck());
+
+    m_score->undoRedo(true, nullptr);
+    EXPECT_FALSE(noteAtTick(m_score, TEST_MEASURE, 67)) << "one undo should take the note away again";
+}
+
+//! 已经有和弦时插入 = **加和弦音**，而且**同一个音高不会写第二遍**（重复音高在谱面上是脏数据）。
+TEST_F(MidiEditorNotesTests, InsertingOnAChordAddsAToneAndNeverDuplicatesAPitch)
+{
+    ASSERT_TRUE(insertMidiNote(m_score, 0, 0, 0, TEST_QUARTER, 67));
+    Chord* chord = chordAt(m_score, 0);
+    ASSERT_TRUE(chord);
+    EXPECT_EQ(chord->notes().size(), 2u);
+    EXPECT_TRUE(noteAtTick(m_score, 0, 67));
+
+    //! 同一个音高再来一次：**无操作**（返回 false），和弦不变。
+    EXPECT_FALSE(insertMidiNote(m_score, 0, 0, 0, TEST_QUARTER, 67));
+    EXPECT_EQ(chordAt(m_score, 0)->notes().size(), 2u);
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+//! 谱面之外一律不写 —— 这是**故意**的边界：`setNoteRest()` 其实会自己加小节，
+//! 但那会让"点错一下"变成"莫名其妙多出几十小节"。
+TEST_F(MidiEditorNotesTests, InsertingOutsideTheScoreWritesNothing)
+{
+    const int measuresBefore = int(collectMidiMeasures(m_score).size());
+    const int notesBefore = noteCount(m_score);
+
+    EXPECT_FALSE(insertMidiNote(m_score, 0, 0, 2 * TEST_MEASURE + TEST_QUARTER, TEST_QUARTER, 67));
+    EXPECT_FALSE(insertMidiNote(m_score, 0, 0, 2 * TEST_MEASURE, TEST_QUARTER, 67));
+
+    EXPECT_EQ(int(collectMidiMeasures(m_score).size()), measuresBefore) << "no measure may be added";
+    EXPECT_EQ(noteCount(m_score), notesBefore);
+    EXPECT_FALSE(insertMidiNote(m_score, 99, 0, 0, TEST_QUARTER, 67)) << "unknown staff";
+    EXPECT_FALSE(insertMidiNote(m_score, 0, 0, 0, 0, 67)) << "zero length";
+}
+
+//! 移动：**音高 / 力度 / 演奏层都跟着走**，原位置变回休止符，小节仍然满。
+//! ⚠️ 连音线、记号不在复刻之列（结构性编辑的已知边界，与录制的写回同源）。
+TEST_F(MidiEditorNotesTests, MovingANoteKeepsWhatMakesItSoundAndLeavesARestBehind)
+{
+    Note* source = noteAtTick(m_score, TEST_QUARTER, 62);
+    ASSERT_TRUE(source);
+
+    ASSERT_TRUE(applyNoteVelocity(m_score, source, 111));
+    //! 演奏层：晚 1/4 出声、只演奏一半、力度乘子 80%。
+    ASSERT_TRUE(applyNotePlayOverride(m_score, source, TEST_QUARTER + TEST_QUARTER / 4, TEST_QUARTER / 2, 80));
+
+    const std::vector<Note*> moved = [this, source]() {
+                                         std::vector<MidiNoteMove> moves;
+                                         MidiNoteMove move;
+                                         move.note = source;
+                                         move.tick = TEST_MEASURE;    //! 第 2 小节（原来是个休止符）
+                                         moves.push_back(move);
+
+                                         std::vector<Note*> out;
+                                         EXPECT_EQ(moveMidiNotes(m_score, moves, true, &out), 1);
+                                         return out;
+                                     }();
+
+    ASSERT_EQ(moved.size(), 1u);
+    Note* landed = noteAtTick(m_score, TEST_MEASURE, 62);
+    ASSERT_TRUE(landed) << "the note is not where it was moved to";
+    EXPECT_EQ(landed->userVelocity(), 111) << "the velocity must travel with the note";
+
+    //! 演奏层按**相对偏移**平移：原来晚 120 tick，搬完之后还是晚 120 tick。
+    const NoteEventList& events = landed->playEvents();
+    ASSERT_FALSE(events.empty());
+    const int shift = (TEST_QUARTER * events.front().ontime()) / NoteEvent::NOTE_LENGTH;
+    EXPECT_EQ(shift, TEST_QUARTER / 4) << "the played start should keep its offset";
+    EXPECT_EQ((TEST_QUARTER * events.front().len()) / NoteEvent::NOTE_LENGTH, TEST_QUARTER / 2);
+    EXPECT_NEAR(events.front().velocityMultiplier(), 0.8, 1e-9);
+
+    EXPECT_FALSE(noteAtTick(m_score, TEST_QUARTER, 62)) << "the original position must be freed";
+    EXPECT_EQ(noteCount(m_score), 4) << "moving must not lose or duplicate a note";
+    EXPECT_TRUE(m_score->sanityCheck());
+
+    m_score->undoRedo(true, nullptr);
+    EXPECT_TRUE(noteAtTick(m_score, TEST_QUARTER, 62)) << "one undo should put it back";
+    EXPECT_FALSE(noteAtTick(m_score, TEST_MEASURE, 62));
+}
+
+//! 批内**互相踩**的情形：两个音互换位置。做法是"先把源音全删掉、再在目标上重建"，
+//! 所以这一种必须两个都活下来（逐个搬的话后一个会把前一个刚搬过去的音盖掉）。
+TEST_F(MidiEditorNotesTests, MovingTwoNotesOntoEachOtherKeepsBoth)
+{
+    Note* a = noteAtTick(m_score, 0, 60);
+    Note* b = noteAtTick(m_score, TEST_QUARTER, 62);
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(b);
+
+    std::vector<MidiNoteMove> moves;
+    moves.push_back({ a, TEST_QUARTER, 0 });
+    moves.push_back({ b, 0, 0 });
+
+    EXPECT_EQ(moveMidiNotes(m_score, moves), 2);
+
+    EXPECT_TRUE(noteAtTick(m_score, 0, 62));
+    EXPECT_TRUE(noteAtTick(m_score, TEST_QUARTER, 60));
+    EXPECT_EQ(noteCount(m_score), 4) << "a swap must not lose a note";
+    EXPECT_TRUE(m_score->sanityCheck());
+
+    m_score->undoRedo(true, nullptr);
+    EXPECT_TRUE(noteAtTick(m_score, 0, 60)) << "one undo should undo the whole swap";
+    EXPECT_TRUE(noteAtTick(m_score, TEST_QUARTER, 62));
+}
+
+//! 改**记谱时长**（外框）：走上游的 `changeCRlen()`，所以变长会自动按小节切开并连音、
+//! 被盖住的音由 `makeGap()` 让位，而**小节永远是满的**。
+TEST_F(MidiEditorNotesTests, ChangingTheNotatedLengthReshapesTheScoreAndKeepsItMeasurable)
+{
+    Note* first = noteAtTick(m_score, 0, 60);
+    ASSERT_TRUE(first);
+
+    //! 四分 → 二分：后一个音（62）的时间被让出去。
+    EXPECT_EQ(changeMidiNoteDurations(m_score, { { first, 2 * TEST_QUARTER } }), 1);
+
+    Chord* resized = chordAt(m_score, 0);
+    ASSERT_TRUE(resized);
+    EXPECT_EQ(resized->ticks().ticks(), 2 * TEST_QUARTER);
+    EXPECT_EQ(resized->notes().front()->pitch(), 60) << "resizing must not change the pitch";
+
+    Measure* measure = m_score->tick2measure(Fraction::fromTicks(0));
+    ASSERT_TRUE(measure);
+    EXPECT_EQ(measure->endTick().ticks(), TEST_MEASURE);
+    EXPECT_TRUE(m_score->sanityCheck());
+
+    m_score->undoRedo(true, nullptr);
+    EXPECT_EQ(chordAt(m_score, 0)->ticks().ticks(), TEST_QUARTER);
+    EXPECT_TRUE(noteAtTick(m_score, TEST_QUARTER, 62)) << "one undo should bring the swallowed note back";
+}
+
+//! ⭐ **外框与实心条是两件事**（用户 2026-07-10 明确要求保留这两种状态）：
+//! 改记谱时值动的是外框；演奏层存的是**千分比**，所以它跟着标称时值等比缩放，形状不变。
+TEST_F(MidiEditorNotesTests, TheNotatedFrameAndThePlayedBarAreTwoDifferentEdges)
+{
+    Note* first = noteAtTick(m_score, 0, 60);
+    ASSERT_TRUE(first);
+
+    //! 演奏时值 = 标称的一半（‰ = 500）。
+    ASSERT_TRUE(applyNotePlayOverride(m_score, first, 0, TEST_QUARTER / 2, 100));
+    ASSERT_TRUE(collectMidiNotes(m_score).front().hasPlayOverride);
+
+    //! 只改外框：四分 → 二分。
+    EXPECT_EQ(changeMidiNoteDurations(m_score, { { first, 2 * TEST_QUARTER } }), 1);
+
+    const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+    const MidiNoteItem* resized = findItem(items, noteAtTick(m_score, 0, 60));
+    ASSERT_TRUE(resized);
+
+    EXPECT_EQ(resized->durationTicks, 2 * TEST_QUARTER) << "the frame is what the notated length drives";
+    EXPECT_TRUE(resized->hasPlayOverride) << "the played layer must survive a notated resize";
+    EXPECT_EQ(resized->playDurationTicks, TEST_QUARTER)
+        << "the played length is a thousandth of the nominal one, so it scales with the frame";
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+//! 批量改记谱时值：一个和弦只做一次（时值是 ChordRest 级的，和弦里的音不可能各自有时值）。
+TEST_F(MidiEditorNotesTests, AChordIsResizedOnceHoweverManyOfItsNotesAreSelected)
+{
+    ASSERT_TRUE(insertMidiNote(m_score, 0, 0, 0, TEST_QUARTER, 67));
+    Chord* chord = chordAt(m_score, 0);
+    ASSERT_TRUE(chord);
+    ASSERT_EQ(chord->notes().size(), 2u);
+
+    //! 同一个和弦的两个音各请求一次：只应产生**一次**改动。
+    EXPECT_EQ(changeMidiNoteDurations(m_score, { { chord->notes()[0], 2 * TEST_QUARTER },
+                                                 { chord->notes()[1], 2 * TEST_QUARTER } }), 1);
+    EXPECT_EQ(chordAt(m_score, 0)->ticks().ticks(), 2 * TEST_QUARTER);
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+//! ⭐ 演奏力度（`NoteEvent::velocityMultiplier`）批量写入 —— 力度车道的**第二个通道**。
+//! ⚠️ 它只动乘子：`ontime` / `len` 一个都不能被顺手改掉（那是另一条通道、另一条手势）。
+TEST_F(MidiEditorNotesTests, ABatchOfPlayedVelocitiesChangesTheMultiplierAndNothingElse)
+{
+    Note* first = noteAtTick(m_score, 0, 60);
+    Note* second = noteAtTick(m_score, TEST_QUARTER, 62);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+
+    //! 先给第一个音一条非中性的演奏时值，用来证明"改乘子不会碰它"。
+    ASSERT_TRUE(applyNotePlayOverride(m_score, first, TEST_QUARTER / 4, TEST_QUARTER / 2, 100));
+
+    EXPECT_EQ(applyNotePlayVelocities(m_score, { { first, 150 }, { second, 60 } }), 2);
+
+    const NoteEventList& firstEvents = first->playEvents();
+    ASSERT_FALSE(firstEvents.empty());
+    EXPECT_NEAR(firstEvents.front().velocityMultiplier(), 1.5, 1e-9);
+    EXPECT_EQ((TEST_QUARTER * firstEvents.front().ontime()) / NoteEvent::NOTE_LENGTH, TEST_QUARTER / 4)
+        << "the played start must not move when the played velocity is written";
+    EXPECT_EQ((TEST_QUARTER * firstEvents.front().len()) / NoteEvent::NOTE_LENGTH, TEST_QUARTER / 2);
+
+    ASSERT_FALSE(second->playEvents().empty());
+    EXPECT_NEAR(second->playEvents().front().velocityMultiplier(), 0.6, 1e-9);
+    //! 时值没被动过：这个音原来没有演奏层覆盖，写完之后**仍然没有**。
+    EXPECT_EQ((TEST_QUARTER * second->playEvents().front().len()) / NoteEvent::NOTE_LENGTH, TEST_QUARTER);
+
+    //! 回到 100% = 中性 = "没调过"（画法跟着回到实心块）。
+    EXPECT_EQ(applyNotePlayVelocities(m_score, { { second, 100 } }), 1);
+    {
+        const std::vector<MidiNoteItem> items = collectMidiNotes(m_score);
+        const MidiNoteItem* entry = findItem(items, second);
+        ASSERT_TRUE(entry);
+        EXPECT_FALSE(entry->hasPlayOverride) << "100% with a neutral timing is 'untouched' again";
+        EXPECT_EQ(entry->playVelocityPercent, 100);
+    }
+
+    m_score->undoRedo(true, nullptr);
+    EXPECT_NEAR(second->playEvents().front().velocityMultiplier(), 0.6, 1e-9)
+        << "one undo should take the whole batch back";
+}
+
+//! 批量改音高：一次拖动提交一次，**一个命令**（N 个音 = N 次全谱通知是踩过的坑）。
+TEST_F(MidiEditorNotesTests, ABatchOfPitchesIsASingleUndoStep)
+{
+    Note* first = noteAtTick(m_score, 0, 60);
+    Note* second = noteAtTick(m_score, TEST_QUARTER, 62);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+
+    EXPECT_EQ(applyNotePitches(m_score, { { first, 62 }, { second, 64 } }), 2);
+    EXPECT_EQ(noteAtTick(m_score, 0, 62), first);
+    EXPECT_EQ(noteAtTick(m_score, TEST_QUARTER, 64), second);
+
+    //! 整批无变化 → 不写、不开命令。
+    EXPECT_EQ(applyNotePitches(m_score, { { first, 62 }, { second, 64 } }), 0);
+
+    m_score->undoRedo(true, nullptr);
+    EXPECT_EQ(noteAtTick(m_score, 0, 60), first) << "one undo should take the whole batch back";
+    EXPECT_EQ(noteAtTick(m_score, TEST_QUARTER, 62), second);
+}
+
+//! 复制粘贴：**音高 / 时值 / 力度 / 演奏层**一起过去 —— 复制的是"这个音听起来是什么样"。
+TEST_F(MidiEditorNotesTests, PastingBringsBackWhatMakesTheNotesSound)
+{
+    Note* first = noteAtTick(m_score, 0, 60);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(applyNoteVelocity(m_score, first, 99));
+    ASSERT_TRUE(applyNotePlayOverride(m_score, first, TEST_QUARTER / 4, TEST_QUARTER / 2, 70));
+
+    std::vector<Note*> sources;
+    for (const MidiNoteItem& item : collectMidiNotes(m_score)) {
+        sources.push_back(item.note);
+    }
+    const std::vector<MidiClipboardNote> clipboard = copyMidiNotes(sources);
+    ASSERT_EQ(clipboard.size(), 4u);
+    EXPECT_EQ(clipboard.front().tickOffset, 0) << "the offsets are relative to the earliest note";
+    EXPECT_EQ(clipboard.back().tickOffset, 3 * TEST_QUARTER);
+
+    std::vector<Note*> pasted;
+    EXPECT_EQ(pasteMidiNotes(m_score, 0, 0, TEST_MEASURE, clipboard, true, &pasted), 4);
+    EXPECT_EQ(pasted.size(), 4u);
+
+    Note* copiedFirst = noteAtTick(m_score, TEST_MEASURE, 60);
+    ASSERT_TRUE(copiedFirst);
+    EXPECT_EQ(copiedFirst->userVelocity(), 99) << "the velocity must be pasted too";
+
+    const NoteEventList& events = copiedFirst->playEvents();
+    ASSERT_FALSE(events.empty());
+    EXPECT_NEAR(events.front().velocityMultiplier(), 0.7, 1e-9);
+    EXPECT_EQ((TEST_QUARTER * events.front().len()) / NoteEvent::NOTE_LENGTH, TEST_QUARTER / 2);
+
+    EXPECT_EQ(noteCount(m_score), 8);
+    EXPECT_TRUE(m_score->sanityCheck());
+
+    //! 粘完一次撤销**整块**。
+    m_score->undoRedo(true, nullptr);
+    EXPECT_EQ(noteCount(m_score), 4) << "one undo should take the whole paste back";
+}
+
+//! 同一个 tickOffset 上的音落成**一个和弦**（复制的是和弦，粘出来的也得是）。
+TEST_F(MidiEditorNotesTests, PastingTwoNotesOfTheSameTickBuildsOneChord)
+{
+    std::vector<MidiClipboardNote> clipboard;
+    clipboard.push_back({ 0, TEST_QUARTER, 60, 0, 0, TEST_QUARTER, 100 });
+    clipboard.push_back({ 0, TEST_QUARTER, 64, 90, 0, TEST_QUARTER, 100 });
+
+    EXPECT_EQ(pasteMidiNotes(m_score, 0, 0, TEST_MEASURE, clipboard), 2);
+
+    Chord* chord = chordAt(m_score, TEST_MEASURE);
+    ASSERT_TRUE(chord);
+    EXPECT_EQ(chord->notes().size(), 2u);
+    EXPECT_EQ(chord->notes()[0]->userVelocity(), 0);
+    EXPECT_EQ(chord->notes()[1]->userVelocity(), 90);
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+//! 谱面之外的部分跳过，但**不报错也不写坏**：粘一半也要把能放下的放下。
+TEST_F(MidiEditorNotesTests, PastingPastTheEndOfTheScoreSkipsWhatDoesNotFit)
+{
+    std::vector<MidiClipboardNote> clipboard;
+    clipboard.push_back({ 0, TEST_QUARTER, 60, 0, 0, TEST_QUARTER, 100 });
+    clipboard.push_back({ 4 * TEST_QUARTER, TEST_QUARTER, 62, 0, 0, TEST_QUARTER, 100 });   //! 落到谱面之外
+
+    EXPECT_EQ(pasteMidiNotes(m_score, 0, 0, TEST_MEASURE, clipboard), 1);
+    EXPECT_TRUE(noteAtTick(m_score, TEST_MEASURE, 60));
+    EXPECT_FALSE(noteAtTick(m_score, TEST_MEASURE + 4 * TEST_QUARTER, 62));
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+//! 空输入 / 空指针一律**无操作**（试听与编辑的入口都会被脚本或快捷键打进来越界值）。
+TEST_F(MidiEditorNotesTests, StructuralEditsSurviveNothingBeingThere)
+{
+    EXPECT_EQ(deleteMidiNotes(m_score, {}), 0);
+    EXPECT_EQ(deleteMidiNotes(nullptr, { noteAtTick(m_score, 0, 60) }), 0);
+    EXPECT_EQ(deleteMidiNotes(m_score, { nullptr }), 0);
+
+    EXPECT_EQ(moveMidiNotes(m_score, {}), 0);
+    EXPECT_EQ(moveMidiNotes(m_score, { { nullptr, 0, 0 } }), 0);
+    EXPECT_EQ(moveMidiNotes(nullptr, {}), 0);
+
+    EXPECT_EQ(changeMidiNoteDurations(m_score, {}), 0);
+    EXPECT_EQ(changeMidiNoteDurations(m_score, { { nullptr, 480 } }), 0);
+    EXPECT_EQ(changeMidiNoteDurations(nullptr, { { noteAtTick(m_score, 0, 60), 480 } }), 0);
+
+    EXPECT_TRUE(copyMidiNotes({}).empty());
+    EXPECT_EQ(pasteMidiNotes(m_score, 0, 0, 0, {}), 0);
+    EXPECT_EQ(pasteMidiNotes(nullptr, 0, 0, 0, { { 0, 480, 60, 0, 0, 480, 100 } }), 0);
+
+    EXPECT_EQ(noteCount(m_score), 4) << "nothing above may have changed the score";
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+//! ⭐ **存得住、读得回、真实程序打得开** —— 结构编辑最后一道关。
+//!
+//! 三种结构改动各来一次（删 / 改记谱时值 / 在休止符上插入），存盘再读回：
+//!  * 单测用的是 engraving 层的 `compat::loadMsczOrMscx`，**不跑 `Score::sanityCheck`**；
+//!  * 所以这里先自己断言 `sanityCheck()`，再由真实 exe 打开这份文件（`-o out.png`，exit 0 = 能打开）
+//!    —— 第十轮"测试全绿但工程打不开"就是漏了后面那一步。
+//! 设 `MUSE_MIDIEDITOR_KEEP_SCORE=1` 时把产物留在 `%TEMP%\dsh-midieditor-structural.mscx`。
+TEST_F(MidiEditorNotesTests, StructuralEditsSurviveSaveAndReload)
+{
+    const bool keepScore = qEnvironmentVariableIsSet("MUSE_MIDIEDITOR_KEEP_SCORE");
+    const QString savedPath = keepScore
+                              ? QDir::tempPath() + QStringLiteral("/dsh-midieditor-structural.mscx")
+                              : QDir::tempPath() + QStringLiteral("/dsh-midieditor-structural-roundtrip.mscx");
+    QFile::remove(savedPath);
+
+    {
+        MasterScore* score = ScoreRW::readScore(TEST_SCORE_PATH);
+        ASSERT_TRUE(score);
+
+        //! ① 删掉第 1 小节第 3 拍那个音（原位应变成休止符）
+        ASSERT_EQ(deleteMidiNotes(score, { noteAtTick(score, 2 * TEST_QUARTER, 64) }), 1);
+
+        //! ② 把第 1 个音改短成八分（记谱层 = 外框）
+        ASSERT_EQ(changeMidiNoteDurations(score, { { noteAtTick(score, 0, 60), TEST_QUARTER / 2 } }), 1);
+
+        //! ③ 在第 2 小节的休止符上插一个音
+        ASSERT_TRUE(insertMidiNote(score, 0, 0, TEST_MEASURE, TEST_QUARTER, 67));
+
+        EXPECT_TRUE(score->sanityCheck()) << "the score must stay loadable before it is even saved";
+
+        ASSERT_TRUE(ScoreRW::saveScore(score, savedPath)) << "could not save the score";
+        delete score;
+    }
+
+    ASSERT_TRUE(QFile::exists(savedPath)) << "the saved score is not on disk";
+
+    MasterScore* reloaded = ScoreRW::readScore(savedPath, /*isAbsolutePath*/ true);
+    ASSERT_TRUE(reloaded) << "could not reopen the saved score";
+    EXPECT_TRUE(reloaded->sanityCheck());
+
+    const std::vector<MidiNoteItem> again = collectMidiNotes(reloaded);
+    ASSERT_EQ(again.size(), 4u) << "the structural edits did not survive the round trip";
+
+    //! 四个音应当正好是"短了的 60 / 62 / 插进去的 67"，而 64 已经不在了。
+    int atEightNote = 0;
+    int atSecondMeasure = 0;
+    bool sawDeleted = false;
+    for (const MidiNoteItem& item : again) {
+        if (item.pitch == 60 && item.tick == 0) {
+            atEightNote = item.durationTicks;
+        }
+        if (item.pitch == 67 && item.tick == TEST_MEASURE) {
+            atSecondMeasure = item.durationTicks;
+        }
+        if (item.pitch == 64) {
+            sawDeleted = true;
+        }
+    }
+
+    EXPECT_EQ(atEightNote, TEST_QUARTER / 2) << "the notated length was lost on save/reload";
+    EXPECT_EQ(atSecondMeasure, TEST_QUARTER) << "the inserted note was lost on save/reload";
+    EXPECT_FALSE(sawDeleted) << "the deleted note came back";
+
+    delete reloaded;
+}
+
 
