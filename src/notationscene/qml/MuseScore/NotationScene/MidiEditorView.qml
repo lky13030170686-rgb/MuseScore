@@ -99,7 +99,8 @@ Item {
             "velocityLane": velocityLaneVisible,
             "automationMode": automationMode,
             "gridIndex": gridIndex,
-            "playedChannel": velocityPlayedChannel
+            "playedChannel": velocityPlayedChannel,
+            "editTool": editTool
         })
     }
 
@@ -128,6 +129,10 @@ Item {
         }
         if (state.playedChannel !== undefined) {
             velocityPlayedChannel = state.playedChannel
+        }
+        //! 🆕 工具也按乐谱分开记：换页回来还是刚才那个工具（与网格/车道开关同一条）。
+        if (state.editTool !== undefined) {
+            editTool = clamp(state.editTool, 0, editTools.length - 1)
         }
         if (state.pixelsPerTick !== undefined) {
             pixelsPerTick = clamp(state.pixelsPerTick, 0.01, 4.0)
@@ -514,6 +519,77 @@ Item {
     //! 的用法，以及 `维护手册.md` §4.8 里"试听"那一行）。
     property int dragPlayedPitch: -1
 
+    // ── 🆕 编辑工具（Cubase 式工具条）──────────────────────────────────────────────
+    //!
+    //! **工具不实现任何东西，它只决定"按下/拖动是什么意思"**：插/删/移/改时值/切这五件事
+    //! 数据层早就有了（`MidiEditorModel` 的 `insertNoteAt` / `deleteSelectedNotes` /
+    //! `moveSelectedNotes` / `resizeSelectedNotes` / `splitNoteAt`），工具只是把它们**分派到手势上**。
+    //! 这样"换个工具"永远不会变成"第二份实现"，也就不会出现"两个工具的行为悄悄不一致"。
+    //!
+    //! 与 Cubase 的对应：`Move` = 箭头（自由移动：时间 + 音高）、`Draw` = 画笔（在空白处拖出一个音）、
+    //! `Split` = 剪刀（点一下切开）、`Trim` = 拉长/裁剪（拖 = 改记谱时值）、`Erase` = 橡皮（划过即删）。
+    //!
+    //! ⚠️ 与"修饰键手势"的关系：工具是**主**路径，修饰键（Shift/Alt）仍然有效 ——
+    //! 演奏层那两条（Shift = 演奏起点、右边缘 = 演奏时长）在任何工具下都还在，
+    //! 因为它们改的是**另一套时值**（实心条），不属于这五个工具的分工。
+    readonly property int toolMove: 0
+    readonly property int toolDraw: 1
+    readonly property int toolSplit: 2
+    readonly property int toolTrim: 3
+    readonly property int toolErase: 4
+
+    property int editTool: 0
+
+    //! 工具按钮的清单（标签 + 提示 + 光标）。工具条与 `cursorShape` 都读它，不写第二份。
+    readonly property var editTools: [
+        { "id": 0, "label": "Move", "cursor": Qt.ArrowCursor,
+          "tip": qsTrc("notationscene", "Move: drag a note to change its time and pitch · right edge = played length · Shift+drag = played start · drag empty space = box select") },
+        { "id": 1, "label": "Draw", "cursor": Qt.CrossCursor,
+          "tip": qsTrc("notationscene", "Draw: drag on empty space to write a note (the drag sets its length) · on an existing note the drag changes its notated length") },
+        { "id": 2, "label": "Split", "cursor": Qt.SplitHCursor,
+          "tip": qsTrc("notationscene", "Split: click a note to cut it in two at that point - the halves are tied, so the sound does not change") },
+        { "id": 3, "label": "Trim", "cursor": Qt.SizeHorCursor,
+          "tip": qsTrc("notationscene", "Trim: drag a note to change its notated length (the outer frame). Shortening fills with rests, lengthening splits at barlines and ties") },
+        { "id": 4, "label": "Erase", "cursor": Qt.PointingHandCursor,
+          "tip": qsTrc("notationscene", "Erase: click or sweep over notes to delete them (one command for the whole sweep, so one undo brings them back)") }
+    ]
+
+    function editToolLabel(tool) {
+        for (var i = 0; i < editTools.length; ++i) {
+            if (editTools[i].id === tool) {
+                return editTools[i].label
+            }
+        }
+        return "?"
+    }
+
+    function editToolCursor(tool) {
+        for (var i = 0; i < editTools.length; ++i) {
+            if (editTools[i].id === tool) {
+                return editTools[i].cursor
+            }
+        }
+        return Qt.ArrowCursor
+    }
+
+    //! 这个工具"拖一下"有意义吗？剪刀与橡皮**没有**（点一下就是动作）——
+    //! 手势分派与绘制都读它，免得两处各写一份判断而分叉。
+    readonly property bool toolHasDrag: editTool === toolMove || editTool === toolDraw || editTool === toolTrim
+
+    //! 🆕 `Move` 工具里"横向真的动了"的阈值（像素）。吸附到网格**还不够**：默认缩放下
+    //! 一格只有 5.4px，手一抖 3px 就会把音挪到下一格 —— 而记谱层的挪动是**结构编辑**
+    //! （删了重建，连音线/记号会丢），误触的代价比演奏层大得多。所以给它一个死区。
+    readonly property real timeMoveThreshold: Math.max(3, snapTicks * pixelsPerTick * 0.6)
+
+    //! 🆕 画笔（`Draw`）正在拖出来的那个音：预览矩形 + 松手时提交的参数。
+    property bool drawActive: false
+    property int drawPreviewTick: 0
+    property int drawPreviewDuration: 0
+    property int drawPitch: 0
+
+    //! 🆕 橡皮（`Erase`）划过时的"正在擦"状态（松手才真的删，整笔一个命令 = 一次撤销）。
+    property bool eraseActive: false
+
     //! What the current drag edits. Dorico draws the played extent over the notated one; grabbing the
     //! right edge of a block edits the played length, Shift+dragging edits the played start, and a
     //! plain drag still edits the pitch.
@@ -532,6 +608,10 @@ Item {
     readonly property int dragModePlayLength: 2
     readonly property int dragModeNotatedMove: 3
     readonly property int dragModeNotatedLength: 4
+    //! 🆕 `Move` 工具的自由移动：**时间与音高一起改**（Cubase 的箭头就是这个）。
+    //! 单独一支而不是复用 `dragModePitch`：两者的提交路径不同 —— 只改音高走"只改属性"的便宜路
+    //! （不换对象、连音线留着），一旦时间也变了就必须走结构编辑（同一批一个命令）。
+    readonly property int dragModeFreeMove: 5
     property int dragMode: 0
 
     property real dragStartX: 0
@@ -1467,6 +1547,14 @@ Item {
         repaintAll()
         syncViewState()
     }
+    onEditToolChanged: {
+        //! 换工具要有确定的手势起点：把进行中的状态清干净（与工具条按钮点击同一条）。
+        drawActive = false
+        eraseActive = false
+        marqueeActive = false
+        repaintAll()
+        syncViewState()
+    }
     onNotesChanged: {
         //! The model has reported back, so the stored values now match what was painted; the trail
         //! has done its job and the bars switch over to the real data without a visible step.
@@ -1605,7 +1693,7 @@ Item {
             visible: root.hasScore
             elide: Text.ElideRight
 
-            text: qsTrc("notationscene", "Click = select · Ctrl+click or drag a box = multi-select · drag a note = pitch, its right edge = played length, Shift+drag = played start · Alt+drag = move in time, Alt+right edge = notated length · double-click empty space = insert · Del/Ctrl+C/Ctrl+V · velocity lane: drag = own velocity, right-click = follow dynamics · ruler: click = play from here, drag = loop, right-click = clear loop")
+            text: qsTrc("notationscene", "The tool decides what the mouse does: Move = drag time+pitch · Draw = write a note on empty space · Split = cut a note in two (tied) · Trim = change the notated length · Erase = click or sweep to delete. Click = select, Ctrl+click / drag a box = multi-select, Del / Ctrl+C / Ctrl+V. Velocity lane: drag = own velocity, right-click = follow dynamics. Ruler: click = play from here, drag = loop, right-click = clear loop")
 
             color: root.dimTextColor
             font: ui.theme.bodyFont
@@ -1618,6 +1706,58 @@ Item {
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
+
+            //! 🆕 ── 编辑工具（Cubase 式）──────────────────────────────────────────────
+            //!
+            //! 放在这一行的**最左边**：工具是"我现在要干什么"的开关，别的按钮都是它的补充。
+            //! 用**真 `FlatButton`**（无障碍树里点得到）：本环境画布上的合成鼠标无效，
+            //! 工具按钮因此是这一组功能里**唯一机器可验**的入口
+            //! （`tools/ui-probe.ps1 -Action click -Name Split -ControlType Button`，见 §7.6）。
+            Repeater {
+                model: root.editTools
+
+                delegate: FlatButton {
+                    id: toolButton
+
+                    required property var modelData
+
+                    height: 22
+                    //! 短标签用 Horizontal 那一档（margins 12 / minWidth 24）：
+                    //! TextOnly 默认 minWidth 132，五个这样的按钮就能把这一行撑爆。
+                    buttonType: FlatButton.Horizontal
+
+                    text: modelData.label
+                    transparent: root.editTool !== modelData.id
+                    accentButton: root.editTool === modelData.id
+
+                    toolTipTitle: modelData.label
+                    toolTipDescription: modelData.tip
+
+                    //! 无障碍名带状态：机器既能按名字点中，也能读出"现在是哪个工具"。
+                    accessible.name: modelData.label + "  "
+                                     + (root.editTool === modelData.id ? qsTrc("global", "On") : qsTrc("global", "Off"))
+
+                    onClicked: {
+                        root.editTool = modelData.id
+                        //! 换工具就把进行中的手势清干净：留着会让画笔的预览框挂到下一个工具上。
+                        root.drawActive = false
+                        root.eraseActive = false
+                        root.marqueeActive = false
+                        gridCanvas.requestPaint()
+
+                        //! 观测点（验证用）：工具切换是"按了没反应"类问题的第一现场。
+                        console.warn("[midi-tool] tool =", modelData.label)
+                    }
+                }
+            }
+
+            //! 工具与其它按钮之间的一道细竖线：一眼看出"这五个是一组"。
+            Rectangle {
+                width: 1
+                height: 18
+                anchors.verticalCenter: parent.verticalCenter
+                color: root.gridColor
+            }
 
             //! ── 实时录制 ─────────────────────────────────────────────────────────────
             //!
@@ -2731,6 +2871,11 @@ Item {
                                 noteTick = root.dragPreviewNotatedTick
                             } else if (root.dragMode === root.dragModeNotatedLength) {
                                 noteDuration = root.dragPreviewNotatedDuration
+                            } else if (root.dragMode === root.dragModeFreeMove) {
+                                //! 🆕 `Move` 工具：被抓住的那个也走**增量**（与同批的其它音同一套），
+                                //! 这样"整块一起动"在画面上是齐的。
+                                noteTick = note.tick + root.dragDeltaTicks
+                                notePitch = root.clamp(note.pitch + root.dragDeltaPitch, 0, 127)
                             }
                         } else if (batch) {
                             //! 同一批里的其它音：跟着**增量**走。
@@ -2804,6 +2949,25 @@ Item {
                             ctx.lineWidth = 1
                             ctx.strokeRect(nx + 0.5, ny + 0.5, Math.max(1, nw - 1), Math.max(1, nh - 1))
                         }
+                    }
+
+                    //! 🆕 画笔（`Draw`）正在拖出来的那个音：半透明色块 + 虚线框。
+                    //! 长度**就是松手后会写进去的长度**（吸附之后的值），所以拖的时候就看得见结果。
+                    if (root.drawActive) {
+                        var dx = root.xForTick(root.drawPreviewTick)
+                        var dy = root.yForPitch(root.drawPitch)
+                        var dw = Math.max(3, root.drawPreviewDuration * root.pixelsPerTick - 1)
+
+                        ctx.fillStyle = root.staffColor(root.currentStaff)
+                        ctx.globalAlpha = 0.35
+                        ctx.fillRect(dx, dy, dw, nh)
+                        ctx.globalAlpha = 1.0
+
+                        ctx.strokeStyle = root.cursorColor
+                        ctx.lineWidth = 1
+                        ctx.setLineDash([4, 3])
+                        ctx.strokeRect(dx + 0.5, dy + 0.5, dw, nh)
+                        ctx.setLineDash([])
                     }
 
                     //! 🆕 框选矩形：画在音符**上面**（否则框到音上就看不见边界了），
@@ -2883,6 +3047,10 @@ Item {
 
                 hoverEnabled: true
 
+                //! 🆕 光标跟着工具走（Cubase 同款）：画笔 = 十字、剪刀 = 左右切分、拉长 = 左右箭头、
+                //! 橡皮 = 手形。**光标是"现在是什么工具"最便宜的提示** —— 用户不必回头看工具条。
+                cursorShape: root.editToolCursor(root.editTool)
+
                 onPressed: function(mouse) {
                     //! 🆕 点一下画布就把键盘焦点收回来 —— 否则"先点了播放键、再想用电脑键盘弹"
                     //! 的按键会全落在那个按钮上（电脑键盘弹音与 Ctrl+Z 都要这一句）。
@@ -2914,9 +3082,21 @@ Item {
                     root.dragMoved = false
                     root.dragDeltaPitch = 0
                     root.dragDeltaTicks = 0
+                    root.drawActive = false
+                    root.eraseActive = false
                     if (index >= 0) {
                         var grabbed = root.visibleRows[index].note
                         var grabbedRow = root.visibleRows[index].row
+
+                        //! 🆕 `Erase`：不动选中集合的语义（点谁擦谁），按下时**从这一个音开始**，
+                        //! 划过谁就把谁加进来，松手时**一次**删掉（整笔一个命令 = 一次撤销）。
+                        if (root.editTool === root.toolErase) {
+                            root.eraseActive = true
+                            root.model.setSelectedRows([grabbedRow], false)
+                            root.dragNoteIndex = index
+                            gridCanvas.requestPaint()
+                            return
+                        }
 
                         //! 🆕 **选中**（按下时先定下来，之后整条手势都作用于这个集合）：
                         //!  * Ctrl + 点 = 把这个音加进/移出选中（记谱页与文件管理器同一套约定）；
@@ -2950,38 +3130,69 @@ Item {
                         //! 设置两页一起生效。行号映射收在 `auditionNoteAt()` 里（只写一次）。
                         //! 记在 `dragPlayedPitch` 上：拖动中只在音高**真的变了**时才再响一声，
                         //! 免得鼠标每动一像素都发一次音（记谱页拖动也是这个判据）。
-                        root.dragPlayedPitch = root.dragStartPitch
-                        root.auditionNoteAt(index)
+                        //! ⚠️ 剪刀与橡皮下**不试听**：那两个工具点一下就要改谱，响一声只会添乱。
+                        if (root.editTool !== root.toolSplit && root.editTool !== root.toolErase) {
+                            root.dragPlayedPitch = root.dragStartPitch
+                            root.auditionNoteAt(index)
+                        }
 
                         //! NOTE: which part of the block was grabbed decides what the drag edits.
                         //!       The edge test uses the PLAYED bar, not the notated block: that bar is
                         //!       what the user sees on top and aims at, and the two only coincide when
                         //!       the note has no override at all.
-                        //! ⚠️ **Alt 把两条手势整个换到记谱层**（外框那条）：Alt + 右边缘 = 改记谱时值、
-                        //! Alt + 其它 = 左右移动记谱位置。故意用修饰键而不是"水平拖 = 移动"：
-                        //! 记谱层会改谱面结构（连音线/休止符/小节），误触代价比演奏层大得多。
+                        //!
+                        //! 🆕 **工具优先**：Cubase 式工具条上选了哪个工具，拖动就干那件事 ——
+                        //! 修饰键只是补充（Alt 仍然可以把两条记谱层手势拿出来用，Shift 仍然是演奏起点）。
+                        //!  * `Move`  → 自由移动（时间 + 音高）；右边缘仍是**演奏时长**（那是另一套时值）
+                        //!  * `Draw`  → 在既有音上拖 = 改**记谱时值**（等价于 Trim，画笔扫过就是修长短）
+                        //!  * `Trim`  → 拖 = 改**记谱时值**（外框）
+                        //!  * `Split` / `Erase` → 不拖（点一下就是动作），只保留 Shift 的演奏起点
                         var grabbedX = root.xForTick(grabbed.playTick)
                         var grabbedW = root.playedWidth(grabbed)
                         var edge = Math.max(4, Math.min(8, grabbedW * 0.25))
-                        if (mouse.modifiers & Qt.AltModifier) {
-                            if (mouse.x >= grabbedX + grabbedW - edge) {
-                                root.dragMode = root.dragModeNotatedLength
-                            } else {
-                                root.dragMode = root.dragModeNotatedMove
-                            }
-                        } else if (mouse.x >= grabbedX + grabbedW - edge) {
+                        var onRightEdge = mouse.x >= grabbedX + grabbedW - edge
+
+                        if (root.editTool === root.toolTrim
+                                || (root.editTool === root.toolDraw && !(mouse.modifiers & Qt.AltModifier))) {
+                            //! Trim（以及 Draw 在既有音上）：拖 = 记谱时值。Alt 让 Draw 仍然能"移动"。
+                            root.dragMode = (mouse.modifiers & Qt.AltModifier)
+                                            ? root.dragModeFreeMove
+                                            : root.dragModeNotatedLength
+                        } else if (root.editTool === root.toolSplit || root.editTool === root.toolErase) {
+                            //! 剪刀 / 橡皮：**点一下就是动作，拖动没有意义**（`toolHasDrag` 为假，
+                            //! `onPositionChanged` 会整段跳过）。这里给一个惰性模式，避免"手一动
+                            //! 就把音高/时值改掉"——那正是这两个工具最不该发生的事。
+                            root.dragMode = root.dragModePitch
+                        } else if (mouse.modifiers & Qt.AltModifier) {
+                            //! Move 工具下的 Alt：把两条**记谱层**手势拿出来（老手感，保留）。
+                            root.dragMode = onRightEdge ? root.dragModeNotatedLength : root.dragModeNotatedMove
+                        } else if (onRightEdge) {
                             root.dragMode = root.dragModePlayLength
                         } else if (mouse.modifiers & Qt.ShiftModifier) {
                             root.dragMode = root.dragModePlayStart
                         } else {
-                            root.dragMode = root.dragModePitch
+                            //! 🆕 `Move`：时间与音高一起改（Cubase 的箭头）。
+                            root.dragMode = root.dragModeFreeMove
                         }
 
                         gridCanvas.requestPaint()
-                    } else {
+                    } else if (root.editTool === root.toolDraw) {
+                        //! 🆕 **画笔**：在空白处按下 = 开始拖出一个音。
+                        //! 起点吸附到网格、音高取按下的那一行；长度由拖动决定（松手才提交）。
+                        root.drawActive = true
+                        root.drawPitch = root.clamp(root.pitchForY(mouse.y), 0, 127)
+                        root.drawPreviewTick = root.clamp(root.snapTick(Math.round(root.tickForX(mouse.x))),
+                                                          0, Math.max(0, root.totalTicks - root.snapTicks))
+                        root.drawPreviewDuration = root.snapTicks
+                        //! 画笔模式下空白拖动**不是**"定位播放位置"，所以把定位那条路关掉。
+                        root.rollPressSeekTick = -1
+                        gridCanvas.requestPaint()
+                    } else if (root.editTool !== root.toolErase && root.editTool !== root.toolSplit) {
                         //! 🆕 空白处按下 = **框选**（拖动时）或**定位**（只是点一下，见 onReleased）。
                         //! 两者共用同一条起手式，判据是"移动超过 3px 没有" —— 与标尺上
                         //! "点 = 定位 / 拖 = 循环"完全同一种做法，用户不用记两套。
+                        //! ⚠️ 橡皮（`Erase`）与剪刀（`Split`）在空白处**不拉框**：
+                        //! 一个"划过就删"、一个"点一下切开"，拉出一个框只会误事。
                         root.marqueeActive = false
                         root.marqueeX0 = mouse.x
                         root.marqueeY0 = mouse.y
@@ -3006,9 +3217,41 @@ Item {
                         return
                     }
 
+                    //! 🆕 **画笔拖出来的音**：长度跟着指针走（吸附到网格、至少一格）。
+                    //! ⚠️ 必须放在"空白处拖动 = 框选"那条**前面**：画笔画的正是空白处，
+                    //! 而它按下时 `dragNoteIndex` 是 -1 —— 顺序反了就会被框选那条吃掉。
+                    if (root.drawActive) {
+                        var drawnTick = root.clamp(root.snapTick(Math.round(root.tickForX(mouse.x))),
+                                                   0, Math.max(0, root.totalTicks - root.snapTicks))
+                        var lo = Math.min(root.drawPreviewTick, drawnTick)
+                        var hi = Math.max(root.drawPreviewTick, drawnTick)
+                        //! 往左拖也支持：起点跟着挪，长度 = 两端之差（Cubase 也是往回画得出来的）。
+                        root.drawPreviewTick = lo
+                        root.drawPreviewDuration = Math.max(root.snapTicks, hi - lo)
+                        gridCanvas.requestPaint()
+                        return
+                    }
+
+                    //! 🆕 **橡皮划过**：把扫到的音一个个加进选中（松手时一次删掉 = 一次撤销）。
+                    if (root.eraseActive) {
+                        var swept = root.noteIndexAt(mouse.x, mouse.y)
+                        if (swept >= 0) {
+                            root.model.setSelectedRows([root.visibleRows[swept].row], /*additive*/ true)
+                            root.dragNoteIndex = swept
+                            gridCanvas.requestPaint()
+                        }
+                        return
+                    }
+
                     if (root.dragNoteIndex < 0) {
                         //! 🆕 空白处拖动 = **框选**。判据 3px（与"点空白 = 定位"共用起手式）——
                         //! 比这更小的位移仍然算"点了一下"，不会甩出一个几乎看不见的框。
+                        //! ⚠️ 剪刀与橡皮**不给框选**：它们的动作是"点/划"，空白处拉出一个框只会误事
+                        //! （Cubase 里选框也是另一个工具的事）。
+                        if (root.editTool === root.toolErase || root.editTool === root.toolSplit) {
+                            return
+                        }
+
                         if (!root.marqueeActive
                                 && (Math.abs(mouse.x - root.marqueeX0) > 3
                                     || Math.abs(mouse.y - root.marqueeY0) > 3)) {
@@ -3023,7 +3266,18 @@ Item {
                         return
                     }
 
-                    root.dragMoved = true
+                    //! 剪刀 / 橡皮之外的"点一下就完事"的工具没有拖动语义（见 `toolHasDrag`）。
+                    if (!root.toolHasDrag) {
+                        return
+                    }
+
+                    //! ⚠️ "拖动过"要给一个**阈值**（3px，与空白处"点 = 定位 / 拖 = 框选"同一个数）：
+                    //! 鼠标一动就置真的话，剪刀的"点一下"会被判成"拖了"—— 手抖 2px 就切不动
+                    //! （这是加工具那一轮实测抓到的：`onPositionChanged` 无条件置 `dragMoved`）。
+                    if (!root.dragMoved) {
+                        root.dragMoved = Math.abs(mouse.x - root.dragStartX) > 3
+                                         || Math.abs(mouse.y - root.dragStartY) > 3
+                    }
 
                     if (root.dragMode === root.dragModePitch) {
                         var deltaRows = Math.round((mouse.y - root.dragStartY) / root.rowHeight)
@@ -3051,6 +3305,29 @@ Item {
 
                     //! 🆕 记谱层两条：**左右移动**与**改时值**。它们改的是外框，所以预览值是
                     //! 绝对 tick / 绝对时值（而不是演奏层那种"起点 + 时长"）。
+                    //!
+                    //! 🆕 `Move` 工具的自由移动：**时间与音高一起**。横向给一个**死区**
+                    //! （`timeMoveThreshold`）—— 默认缩放下吸附一格只有 5.4px，手一抖 3px 就会把音
+                    //! 挪到下一格，而记谱层的挪动是结构编辑（删了重建），误触代价比演奏层大得多。
+                    if (root.dragMode === root.dragModeFreeMove) {
+                        var rowsMoved = Math.round((mouse.y - root.dragStartY) / root.rowHeight)
+                        var freePitch = root.clamp(root.dragStartPitch - rowsMoved, 0, 127)
+                        root.dragDeltaPitch = freePitch - root.dragStartPitch
+                        root.dragDeltaTicks = (Math.abs(mouse.x - root.dragStartX) >= root.timeMoveThreshold)
+                                              ? deltaTicks
+                                              : 0
+                        //! 拖动中的试听：音高真的变了才响一声（与单音那条判据一致）。
+                        if (freePitch !== root.dragPreviewPitch) {
+                            root.dragPreviewPitch = freePitch
+                            if (freePitch !== root.dragPlayedPitch) {
+                                root.dragPlayedPitch = freePitch
+                                root.auditionNoteAt(root.dragNoteIndex, freePitch)
+                            }
+                        }
+                        gridCanvas.requestPaint()
+                        return
+                    }
+
                     if (root.dragMode === root.dragModeNotatedMove) {
                         var movedTick = Math.max(0, root.dragStartNotatedTick + deltaTicks)
                         root.dragDeltaTicks = movedTick - root.dragStartNotatedTick
@@ -3088,13 +3365,78 @@ Item {
                 }
 
                 onReleased: function(mouse) {
+                    //! 🆕 **画笔**：松手这一刻才写进乐谱（一个命令 = 一次撤销）。
+                    //! 只是点一下（没拖）也算：按时值 = 一格画出一个小音符 —— "点一下就有一个音"
+                    //! 是画笔最常用的用法。
+                    if (root.drawActive) {
+                        var drawTick = root.drawPreviewTick
+                        var drawDuration = root.drawPreviewDuration
+                        var drawPitch = root.drawPitch
+                        root.drawActive = false
+
+                        console.warn("[midi-tool] draw tick", drawTick, "pitch", drawPitch, "len", drawDuration)
+                        root.model.insertNoteAt(root.currentStaff, drawTick, drawPitch, drawDuration)
+                        gridCanvas.requestPaint()
+                        return
+                    }
+
+                    //! 🆕 **橡皮**：划过的那一串在松手时**一次**删掉（整笔一个命令）。
+                    if (root.eraseActive) {
+                        root.eraseActive = false
+                        var erased = root.selectedCount
+                        if (erased > 0) {
+                            console.warn("[midi-tool] erase", erased, "note(s)")
+                            root.model.deleteSelectedNotes()
+                        }
+                        root.dragNoteIndex = -1
+                        gridCanvas.requestPaint()
+                        return
+                    }
+
                     if (root.dragNoteIndex >= 0 && root.dragNoteIndex < root.visibleRows.length) {
                         var entry = root.visibleRows[root.dragNoteIndex]
                         var released = entry.note
                         var multi = root.selectedCount > 1 && root.isSelectedRow(entry.row)
 
+                        //! 🆕 **剪刀**：点一下（没拖动）就在**按下的位置**切开。切点吸附到网格 ——
+                        //! 与别的手势同一套吸附，用户不用记第二个精度。
+                        if (root.editTool === root.toolSplit) {
+                            if (!root.dragMoved) {
+                                var splitTick = root.clamp(root.snapTick(Math.round(root.tickForX(mouse.x))),
+                                                           0, root.totalTicks)
+                                console.warn("[midi-tool] split row", entry.row, "at tick", splitTick)
+                                root.model.splitNoteAt(entry.row, splitTick)
+                            }
+                            root.dragNoteIndex = -1
+                            root.dragMoved = false
+                            gridCanvas.requestPaint()
+                            return
+                        }
+
                         //! The model takes indexes into `notes`, not into the filtered view.
-                        if (root.dragMode === root.dragModePitch) {
+                        if (root.dragMode === root.dragModeFreeMove) {
+                            //! 🆕 `Move`：时间 + 音高。
+                            //!  * 时间没变 → 走"只改属性"的便宜路（**不换对象、连音线留着**）；
+                            //!  * 时间变了 → 走结构编辑，**两件事在同一个命令里**（一次撤销退回去）。
+                            if (root.dragDeltaTicks !== 0) {
+                                root.model.moveSelectedNotes(root.dragDeltaTicks, root.dragDeltaPitch)
+                            } else if (root.dragDeltaPitch !== 0) {
+                                if (multi) {
+                                    var freeRows = []
+                                    var freeValues = []
+                                    var freeList = root.visibleRows
+                                    for (var f = 0; f < freeList.length; ++f) {
+                                        if (root.isSelectedRow(freeList[f].row)) {
+                                            freeRows.push(freeList[f].row)
+                                            freeValues.push(root.clamp(freeList[f].note.pitch + root.dragDeltaPitch, 0, 127))
+                                        }
+                                    }
+                                    root.model.setNotePitches(freeRows, freeValues)
+                                } else {
+                                    root.model.setNotePitch(entry.row, root.dragPreviewPitch)
+                                }
+                            }
+                        } else if (root.dragMode === root.dragModePitch) {
                             if (root.dragPreviewPitch >= 0 && root.dragPreviewPitch !== root.dragStartPitch) {
                                 if (multi && root.dragDeltaPitch !== 0) {
                                     //! 🆕 多选：整批一起挪同样的半音数，**一个命令**。

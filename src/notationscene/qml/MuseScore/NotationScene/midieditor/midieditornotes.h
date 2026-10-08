@@ -233,11 +233,18 @@ struct MidiClipboardNote {
     int playVelocityPercent = 100;
 };
 
-//! 把一个音符移到另一个 tick（可同时改记谱时长）。`durationTicks == 0` = 保持原时长。
+//! 把一个音符移到另一个 tick（可同时改记谱时长与音高）。
+//! `durationTicks <= 0` = 保持原时长；`pitch < 0` = 保持原音高（**0 是合法音高**，不能用 0 表示"不改"）。
+//!
+//! ⚠️ 为什么音高也挤进这条"移动"的路：Cubase 式**移动工具**一次手势既改时间又改音高，而
+//! "一次手势 = 一个命令"（§4.8）⇒ 两件事必须在**同一个事务**里做完。
+//! ⚠️ 但**只改音高**（tick 不变）时**不要**走这里：这条路是"删了重建"，会把连音线/记号丢掉 ——
+//! 用 `applyNotePitch()` / `applyNotePitches()`（只改属性、不换对象）。
 struct MidiNoteMove {
     engraving::Note* note = nullptr;
     int tick = 0;
     int durationTicks = 0;
+    int pitch = -1;
 };
 
 //! 删掉这些音，**整批一个命令**。
@@ -262,7 +269,7 @@ int deleteMidiNotes(engraving::Score* score, const std::vector<engraving::Note*>
 bool insertMidiNote(engraving::Score* score, int staffIndex, int voice, int tick, int durationTicks, int pitch,
                     bool openCommand = true, std::vector<engraving::Note*>* insertedNotes = nullptr);
 
-//! 移动（可同时改时值）一批音，**整批一个命令**。
+//! 移动（可同时改时值 / 音高）一批音，**整批一个命令**。
 //!
 //! 做法是**先把要保留的数据抄出来 → 删掉全部源音 → 在新位置上重建**：这样"把 A 挪到 B 头上"这种
 //! 批内重叠不会互相踩。代价（如实记录，与录制的写回边界同源）：**连音线、记号、附点不在复刻之列**，
@@ -283,6 +290,21 @@ int moveMidiNotes(engraving::Score* score, const std::vector<MidiNoteMove>& move
 //! 同一个和弦被请求多次时只做第一次。返回真正改动的和弦数。
 int changeMidiNoteDurations(engraving::Score* score, const std::vector<std::pair<engraving::Note*, int> >& changes,
                             bool openCommand = true);
+
+//! ── 剪刀：在 `atTick` 处把一个音切开 ────────────────────────────────────────────────────────────
+//!
+//! 切开的是**整个和弦**（同一 tick 上的音本来就是一个 `ChordRest`，只切一个音会让两边对不上），
+//! 新生成的两半之间自动加**连音线** ⇒ **声音完全不变**（这正是"切一刀"该有的语义，也是记谱页表示
+//! "一个音写成多个音符"的唯一办法）。要"重新起音"的切法（Cubase 那种两个独立音）本函数**不做**。
+//!
+//! 做法：① 先把和弦**截短**成前半（`changeCRlen()` —— 原有的连音线/记号/附点因此全都留着）；
+//! ② 在切点重建后半（`writeChordAt()`）；③ 逐音高补连音线（`Factory::createTie()` +
+//! `undoAddElement()`，与 `Score::createCRSequence()` 同一个recipe）。
+//!
+//! `atTick` 必须**严格落在音的内部**（<= 起点或 >= 终点都是无操作，返回 false）——
+//! 用户切在边上的那一下不该把音弄坏。`rightHalf`（可选）拿回后半段的音，视图要选中它们。
+bool splitMidiNote(engraving::Score* score, engraving::Note* note, int atTick, bool openCommand = true,
+                   std::vector<engraving::Note*>* rightHalf = nullptr);
 
 //! 读出这些音的完整数据（复制的内容）。**纯读**：不改乐谱、不开命令。
 //! 位置已换算成相对**最早那个音**的偏移，顺序按 tick 排好。

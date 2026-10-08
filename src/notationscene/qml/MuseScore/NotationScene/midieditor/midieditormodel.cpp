@@ -999,9 +999,9 @@ void MidiEditorModel::deleteSelectedNotes()
     });
 }
 
-void MidiEditorModel::moveSelectedNotes(int deltaTicks)
+void MidiEditorModel::moveSelectedNotes(int deltaTicks, int deltaPitch)
 {
-    if (m_selectedNotes.empty() || deltaTicks == 0) {
+    if (m_selectedNotes.empty() || (deltaTicks == 0 && deltaPitch == 0)) {
         return;
     }
 
@@ -1016,6 +1016,8 @@ void MidiEditorModel::moveSelectedNotes(int deltaTicks)
         move.note = note;
         move.tick = std::max(0, note->tick().ticks() + deltaTicks);
         move.durationTicks = 0;    //! 移动不改时值（改时值是另一条手势）
+        //! Cubase 式移动：时间与音高在**同一个命令**里一起改（< 0 = 不改音高）。
+        move.pitch = deltaPitch != 0 ? std::clamp(note->pitch() + deltaPitch, 0, 127) : -1;
         moves.push_back(move);
     }
 
@@ -1038,6 +1040,32 @@ void MidiEditorModel::moveSelectedNotes(int deltaTicks)
 
     //! 结构编辑换掉了音符对象：把选中搬到新对象上，否则松手之后选中就是空的，下一次操作落空。
     setSelection(moved);
+}
+
+//! 🆕 剪刀。与"移动/插入"一样是**结构编辑**（会换掉音符对象），所以身后要把选中搬到后半段上。
+void MidiEditorModel::splitNoteAt(int row, int atTick)
+{
+    Note* note = noteAt(row);
+    if (!note) {
+        return;
+    }
+
+    std::vector<Note*> rightHalf;
+
+    mutateOnce([this, note, atTick, &rightHalf]() {
+        if (INotationPtr notation = context()->currentNotation()) {
+            notation->undoStack()->transaction(TranslatableString("midieditor", "Split note"),
+                                               [this, note, atTick, &rightHalf](engraving::Transaction&) {
+                splitMidiNote(currentScore(), note, atTick, /*openCommand*/ false, &rightHalf);
+            });
+        }
+    });
+
+    //! 切完选中**后半段**：Cubase 里切一刀多半就是为了接着搬/删后半段。
+    //! （没切成时 `rightHalf` 是空的 —— 那正好表示"什么都没发生"，不动选中。）
+    if (!rightHalf.empty()) {
+        setSelection(rightHalf);
+    }
 }
 
 void MidiEditorModel::resizeSelectedNotes(int deltaTicks)

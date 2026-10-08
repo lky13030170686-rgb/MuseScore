@@ -34,6 +34,7 @@
 #include "engraving/automation/internal/automationrw.h"
 #include "engraving/automation/tempovalues.h"
 #include "engraving/dom/chord.h"
+#include "engraving/dom/factory.h"
 #include "engraving/dom/masterscore.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/note.h"
@@ -43,6 +44,7 @@
 #include "engraving/dom/segment.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/tempotimeline.h"
+#include "engraving/dom/tie.h"
 #include "engraving/playback/playbackcontext.h"
 #include "engraving/playback/playbackloopexpansion.h"
 #include "engraving/tests/utils/scorerw.h"
@@ -1926,6 +1928,100 @@ TEST_F(MidiEditorNotesTests, PastingPastTheEndOfTheScoreSkipsWhatDoesNotFit)
     EXPECT_TRUE(m_score->sanityCheck());
 }
 
+//! ⭐ **剪刀**（Cubase 工具栏里的那一个）：在音的内部切一刀 = 变成两个**用连音线连着**的音符。
+//!
+//! 判据三条，缺一不可：① 两半的起点/时值对得上；② **有连音线**（`tieFor`/`tieBack`）——
+//! 没有它就不是"切一刀"而是"改成两个重新起音的音"，声音会变；③ 一次撤销回到一个音。
+TEST_F(MidiEditorNotesTests, SplittingANoteGivesTwoTiedHalves)
+{
+    Note* first = noteAtTick(m_score, 0, 60);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(applyNoteVelocity(m_score, first, 88));
+
+    std::vector<Note*> rightHalf;
+    EXPECT_TRUE(splitMidiNote(m_score, first, TEST_QUARTER / 2, true, &rightHalf));
+
+    //! 左半段：起点不动、时值变成一半，而且**还是原来那个音的对象语义**（力度留着）。
+    Chord* left = chordAt(m_score, 0);
+    ASSERT_TRUE(left);
+    EXPECT_EQ(left->ticks().ticks(), TEST_QUARTER / 2);
+    ASSERT_EQ(left->notes().size(), 1u);
+    EXPECT_EQ(left->notes().front()->pitch(), 60);
+    EXPECT_EQ(left->notes().front()->userVelocity(), 88) << "切一刀不该动力度";
+
+    //! 右半段：从切点开始、时值 = 剩下的一半。
+    Note* right = noteAtTick(m_score, TEST_QUARTER / 2, 60);
+    ASSERT_TRUE(right);
+    EXPECT_EQ(right->chord()->ticks().ticks(), TEST_QUARTER / 2);
+    ASSERT_EQ(rightHalf.size(), 1u) << "后半段要交回给视图（切完选中它）";
+    EXPECT_EQ(rightHalf.front(), right);
+
+    //! **连音线**：左半 `tieFor` → 右半，右半 `tieBack` → 左半（同一条 Tie 对象）。
+    ASSERT_TRUE(left->notes().front()->tieFor()) << "两半之间必须有连音线，否则声音会变";
+    ASSERT_TRUE(right->tieBack());
+    EXPECT_EQ(left->notes().front()->tieFor(), right->tieBack());
+
+    EXPECT_EQ(noteCount(m_score), 5) << "切开一个音 = 多出一个音";
+    EXPECT_TRUE(m_score->sanityCheck());
+
+    m_score->undoRedo(true, nullptr);
+    EXPECT_EQ(noteCount(m_score), 4) << "一次撤销应当回到「一个音」";
+    Chord* back = chordAt(m_score, 0);
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->ticks().ticks(), TEST_QUARTER);
+    EXPECT_FALSE(noteAtTick(m_score, TEST_QUARTER / 2, 60));
+}
+
+//! 切在音**外面**（起点上、终点上、更远）一律无操作：用户手一抖切在边上，不该把音弄坏。
+TEST_F(MidiEditorNotesTests, SplittingOutsideTheNoteIsANoOp)
+{
+    Note* first = noteAtTick(m_score, 0, 60);
+    ASSERT_TRUE(first);
+
+    EXPECT_FALSE(splitMidiNote(m_score, first, 0)) << "切在起点上";
+    EXPECT_FALSE(splitMidiNote(m_score, first, TEST_QUARTER)) << "切在终点上（那是下一个音的地盘）";
+    EXPECT_FALSE(splitMidiNote(m_score, first, -10));
+    EXPECT_FALSE(splitMidiNote(m_score, first, 10 * TEST_QUARTER));
+    EXPECT_FALSE(splitMidiNote(m_score, nullptr, 100));
+    EXPECT_FALSE(splitMidiNote(nullptr, first, 100));
+
+    EXPECT_EQ(noteCount(m_score), 4) << "上面一个都不该改动乐谱";
+    EXPECT_EQ(chordAt(m_score, 0)->ticks().ticks(), TEST_QUARTER);
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+//! 🆕 **移动工具**（Cubase 的箭头）：一次手势同时改时间与音高，**一个命令**。
+//! （只改音高时模型走的是 `setNotePitches` 那条便宜路 —— 不换对象、不丢连音线，见视图侧。）
+TEST_F(MidiEditorNotesTests, MovingANoteCanChangeItsPitchInTheSameCommand)
+{
+    Note* source = noteAtTick(m_score, 0, 60);
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(applyNoteVelocity(m_score, source, 77));
+
+    //! 往右挪两拍（0 → 960）、同时升高 3 个半音（60 → 63）。
+    std::vector<Note*> moved;
+    std::vector<MidiNoteMove> moves;
+    MidiNoteMove move;
+    move.note = source;
+    move.tick = 2 * TEST_QUARTER;
+    move.pitch = 63;
+    moves.push_back(move);
+
+    EXPECT_EQ(moveMidiNotes(m_score, moves, true, &moved), 1);
+    ASSERT_EQ(moved.size(), 1u);
+
+    EXPECT_FALSE(noteAtTick(m_score, 0, 60)) << "原来的位置该空出来";
+    Note* landed = noteAtTick(m_score, 2 * TEST_QUARTER, 63);
+    ASSERT_TRUE(landed) << "时间和音高应当一起改到";
+    EXPECT_EQ(landed->userVelocity(), 77);
+    EXPECT_TRUE(m_score->sanityCheck());
+
+    //! 一次撤销把**两件事**一起退回去（这就是"一个命令"的可观测形式）。
+    m_score->undoRedo(true, nullptr);
+    EXPECT_TRUE(noteAtTick(m_score, 0, 60)) << "一次撤销应当同时还原时间与音高";
+    EXPECT_FALSE(noteAtTick(m_score, 2 * TEST_QUARTER, 63));
+}
+
 //! 空输入 / 空指针一律**无操作**（试听与编辑的入口都会被脚本或快捷键打进来越界值）。
 TEST_F(MidiEditorNotesTests, StructuralEditsSurviveNothingBeingThere)
 {
@@ -1977,6 +2073,10 @@ TEST_F(MidiEditorNotesTests, StructuralEditsSurviveSaveAndReload)
         //! ③ 在第 2 小节的休止符上插一个音
         ASSERT_TRUE(insertMidiNote(score, 0, 0, TEST_MEASURE, TEST_QUARTER, 67));
 
+        //! ④ 🆕 把第 2 个音（62，在 TEST_QUARTER 上）从中间切开 —— 这条把**连音线**也带进
+        //! "存得住 + 打得开"这一关（连音线是结构对象，写盘/读盘都可能出问题）。
+        ASSERT_TRUE(splitMidiNote(score, noteAtTick(score, TEST_QUARTER, 62), TEST_QUARTER + TEST_QUARTER / 2));
+
         EXPECT_TRUE(score->sanityCheck()) << "the score must stay loadable before it is even saved";
 
         ASSERT_TRUE(ScoreRW::saveScore(score, savedPath)) << "could not save the score";
@@ -1990,15 +2090,19 @@ TEST_F(MidiEditorNotesTests, StructuralEditsSurviveSaveAndReload)
     EXPECT_TRUE(reloaded->sanityCheck());
 
     const std::vector<MidiNoteItem> again = collectMidiNotes(reloaded);
-    ASSERT_EQ(again.size(), 4u) << "the structural edits did not survive the round trip";
+    ASSERT_EQ(again.size(), 5u) << "the structural edits did not survive the round trip";
 
-    //! 四个音应当正好是"短了的 60 / 62 / 插进去的 67"，而 64 已经不在了。
+    //! 五个音应当正好是"短了的 60 / 被切开的 62 两半 / 插进去的 67"，而 64 已经不在了。
     int atEightNote = 0;
     int atSecondMeasure = 0;
+    int atSplitPoint = 0;
     bool sawDeleted = false;
     for (const MidiNoteItem& item : again) {
         if (item.pitch == 60 && item.tick == 0) {
             atEightNote = item.durationTicks;
+        }
+        if (item.pitch == 62 && item.tick == TEST_QUARTER + TEST_QUARTER / 2) {
+            atSplitPoint = item.durationTicks;
         }
         if (item.pitch == 67 && item.tick == TEST_MEASURE) {
             atSecondMeasure = item.durationTicks;
@@ -2009,8 +2113,17 @@ TEST_F(MidiEditorNotesTests, StructuralEditsSurviveSaveAndReload)
     }
 
     EXPECT_EQ(atEightNote, TEST_QUARTER / 2) << "the notated length was lost on save/reload";
+    EXPECT_EQ(atSplitPoint, TEST_QUARTER / 2) << "the split half was lost on save/reload";
     EXPECT_EQ(atSecondMeasure, TEST_QUARTER) << "the inserted note was lost on save/reload";
     EXPECT_FALSE(sawDeleted) << "the deleted note came back";
+
+    //! 🆕 连音线也要活过存盘：切开的两半之间必须还连着（不然重新打开就变成"重新起音"了）。
+    Note* left = noteAtTick(reloaded, TEST_QUARTER, 62);
+    Note* right = noteAtTick(reloaded, TEST_QUARTER + TEST_QUARTER / 2, 62);
+    ASSERT_TRUE(left);
+    ASSERT_TRUE(right);
+    ASSERT_TRUE(left->tieFor()) << "the tie was lost on save/reload";
+    EXPECT_EQ(left->tieFor(), right->tieBack());
 
     delete reloaded;
 }

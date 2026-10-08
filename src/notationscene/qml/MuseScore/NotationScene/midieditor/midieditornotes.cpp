@@ -43,6 +43,7 @@
 #include "engraving/dom/score.h"
 #include "engraving/dom/segment.h"
 #include "engraving/dom/staff.h"
+#include "engraving/dom/tie.h"
 #include "engraving/editing/editnote.h"
 #include "engraving/editing/noteinput.h"
 #include "engraving/editing/transaction/transaction.h"
@@ -1025,6 +1026,8 @@ int moveMidiNotes(Score* score, const std::vector<MidiNoteMove>& moves, bool ope
         int voice = 0;
         int tick = 0;               //!< 目标 tick
         int durationTicks = 0;
+        int pitch = 0;              //!< 目标音高（`MidiNoteMove::pitch < 0` 时 = 原音高）
+        bool changesPitch = false;
         MidiNoteData data;
     };
 
@@ -1044,6 +1047,9 @@ int moveMidiNotes(Score* score, const std::vector<MidiNoteMove>& moves, bool ope
         plan.voice = int(move.note->voice());
         plan.tick = std::max(0, move.tick);
         plan.durationTicks = move.durationTicks > 0 ? move.durationTicks : plan.data.durationTicks;
+        //! ⚠️ `pitch < 0` 才是"不改音高"：0（C-1）是合法音高，不能用它当哨兵。
+        plan.pitch = move.pitch >= 0 ? std::clamp(move.pitch, 0, 127) : plan.data.pitch;
+        plan.changesPitch = plan.pitch != plan.data.pitch;
 
         if (Fraction::fromTicks(plan.tick) >= scoreEnd) {
             continue;   // 谱面之外不写
@@ -1086,6 +1092,14 @@ int moveMidiNotes(Score* score, const std::vector<MidiNoteMove>& moves, bool ope
         for (Note* note : written) {
             if (note->pitch() != data.pitch) {
                 continue;
+            }
+
+            //! 🆕 音高：写在这一步（同一个事务里），而**不是**在 tones 里换个音高重建 ——
+            //! 那样"匹配回哪个音"就没有依据了（写进去的列表和目标音高不一样）。
+            //! `ChangePitch` 是**原地改对象**的（`EditNote::undoChangePitch` → `note->setPitch()`），
+            //! 所以下面拿到的仍然是同一个 `Note*`，视图的选中可以直接用它。
+            if (plan.changesPitch) {
+                writeNotePitch(score, note, plan.pitch);
             }
 
             if (data.hasPlayOverride) {
@@ -1297,6 +1311,150 @@ int pasteMidiNotes(Score* score, int staffIndex, int voice, int atTick, const st
     return written;
 }
 
+// ── 剪刀：在某个 tick 处把一个音（整个和弦）切开，两半之间加连音线 ─────────────────────────────
+//!
+//! 与"移动/插入/删除"那几条的差别：**它不删原音**，而是把原和弦**截短**（`changeCRlen()`），
+//! 于是原有的连音线、记号、附点在左半段上原样留着 —— 这是"切一刀"该有的行为
+//! （删了重建会把它们丢掉，见 `moveMidiNotes()` 的边界说明）。
+bool splitMidiNote(Score* score, Note* note, int atTick, bool openCommand, std::vector<Note*>* rightHalf)
+{
+    if (!score || !note || !note->chord()) {
+        return false;
+    }
+
+    MidiNoteData data;
+    if (!readNoteData(note, data)) {
+        return false;
+    }
+
+    const Chord* source = note->chord();
+    if (source->isGrace() || source->notes().empty()) {
+        return false;
+    }
+
+    const int startTick = data.tick;
+    const int endTick = startTick + data.durationTicks;
+
+    //! ⚠️ 切点必须**严格落在音的内部**：切在起点/终点上是无操作，而不是"把音弄坏"。
+    if (atTick <= startTick || atTick >= endTick) {
+        return false;
+    }
+
+    const int staffIndex = int(note->staffIdx());
+    const int voice = int(note->voice());
+    const Fraction atFraction = Fraction::fromTicks(atTick);
+    const Fraction startFraction = Fraction::fromTicks(startTick);
+
+    //! 谱面之外不写（与别的结构编辑同一条边界）。
+    if (atFraction >= score->endTick()) {
+        return false;
+    }
+
+    //! **整个和弦**一起切：同一 tick 上的音本来就是一个 `ChordRest`，只切一个音会让两半对不上。
+    //! 力度与演奏层一并抄出来（后半段要照原样重建）。
+    std::vector<MidiChordTone> tones;
+    std::vector<MidiNoteData> toneData;
+    for (const Note* chordNote : source->notes()) {
+        MidiNoteData tone;
+        if (!readNoteData(chordNote, tone)) {
+            continue;
+        }
+        tones.push_back({ tone.pitch, tone.velocity });
+        toneData.push_back(tone);
+    }
+
+    if (tones.empty()) {
+        return false;
+    }
+
+    if (openCommand) {
+        score->startCmd(TranslatableString("midieditor", "Split note"));
+    }
+
+    //! ① 左半段：把和弦**截短**到切点。`changeCRlen()` 会自己把余下的时值铺成休止符，
+    //! 所以小节永远是满的；连音线/记号/附点留在这一半上。
+    //!
+    //! ⚠️ 每一步都要**重新找对象**：`changeCRlen()` / `writeChordAt()` 都会删掉并重建段与和弦
+    //! （§4.8.4 第 1 条），手里原来的 `note` 与段指针都不能再用。
+    score->changeCRlen(note->chord(), Fraction::fromTicks(atTick - startTick));
+
+    //! 左半段的**最后一个**和弦（时值跨小节时 `changeCRlen` 会生出连音线链，连音线要接在链尾）。
+    Measure* measure = score->tick2measure(startFraction);
+    Segment* leftSegment = measure ? measure->findSegment(SegmentType::ChordRest, startFraction) : nullptr;
+    const track_idx_t track = staff2track(staff_idx_t(staffIndex)) + track_idx_t(voice);
+
+    std::vector<Chord*> leftChain;
+    if (leftSegment) {
+        leftChain = chordChainAt(leftSegment, track);
+    }
+
+    if (leftChain.empty()) {
+        //! 左半段没了（不该发生）= 什么都没做成：正常收尾并如实返回 false。
+        if (openCommand) {
+            score->endCmd();
+        }
+        return false;
+    }
+
+    Chord* leftChord = leftChain.back();
+
+    //! ② 右半段：在切点重建（`writeChordAt()` 会按 tick 重新找段、必要时切开前面的休止符）。
+    InputState scratch;
+    const std::vector<Note*> written = writeChordAt(score, staffIndex, voice, atTick,
+                                                    endTick - atTick, tones, scratch);
+
+    //! ③ 逐音高补连音线 —— 与上游 `Score::createCRSequence()` 同一个 recipe：
+    //! `Factory::createTie()` + `setStartNote/setEndNote` + `setTick/setTick2` + `undoAddElement()`。
+    for (Note* right : written) {
+        Note* left = nullptr;
+        for (Note* candidate : leftChord->notes()) {
+            if (candidate->pitch() == right->pitch()) {
+                left = candidate;
+                break;
+            }
+        }
+
+        if (!left || left->tieFor()) {
+            continue;   //! 没有对应的左音（理论上不会）或已经有连音线：跳过，不重复建
+        }
+
+        Tie* tie = Factory::createTie(score->dummy());
+        tie->setStartNote(left);
+        tie->setEndNote(right);
+        tie->setTick(left->tick());
+        tie->setTick2(right->tick());
+        tie->setTrack(track);
+        left->setTieFor(tie);
+        right->setTieBack(tie);
+        score->undoAddElement(tie);
+
+        //! 演奏层：整条连音线按**原音**的覆盖写一遍（连音线的每一段是不同的音符对象）。
+        for (const MidiNoteData& tone : toneData) {
+            if (tone.pitch != right->pitch() || !tone.hasPlayOverride) {
+                continue;
+            }
+
+            applyNotePlayOverride(score, right, right->tick().ticks() + (tone.playTick - tone.tick),
+                                  tone.playDurationTicks, tone.playVelocityPercent, /*openCommand*/ false);
+            break;
+        }
+
+        if (rightHalf) {
+            rightHalf->push_back(right);
+        }
+    }
+
+    if (openCommand) {
+        score->endCmd();
+    }
+
+    return !written.empty();
+}
+
+
+//! (NotationAutomationController::curveKeyFor -> ScoreAutomationController::resolveKeys), so that the
+//! two pages address ONE curve. A staff index outside the score yields an invalid key, and every entry
+//! point below treats that as "do nothing".
 //! The Dynamics curve key of one staff, built the way the notation page builds it
 //! (NotationAutomationController::curveKeyFor -> ScoreAutomationController::resolveKeys), so that the
 //! two pages address ONE curve. A staff index outside the score yields an invalid key, and every entry

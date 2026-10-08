@@ -379,8 +379,18 @@ public:
     //! 删掉当前选中的音（Delete / Backspace）。删完选中自然空掉。
     Q_INVOKABLE void deleteSelectedNotes();
 
-    //! 把选中的音整体左右移动 `deltaTicks`（记谱层）。整批一个命令、一次撤销。
-    Q_INVOKABLE void moveSelectedNotes(int deltaTicks);
+    //! 把选中的音整体移动：`deltaTicks`（记谱时间）+ `deltaPitch`（半音）——这就是 **Cubase 式
+    //! "移动工具"**：一次拖动既改时间又改音高，而**整件事只花一个命令**
+    //! （分两次写 = 两次 Ctrl+Z，用户会以为撤销坏了）。
+    //!
+    //! ⚠️ `deltaTicks == 0` 时**不要**走这条路（它是"删了重建"，会把连音线/记号丢掉）：
+    //! 只改音高请用 `setNotePitches()` —— 只改属性、不换对象的便宜路。
+    Q_INVOKABLE void moveSelectedNotes(int deltaTicks, int deltaPitch = 0);
+
+    //! 🆕 **剪刀**：在 `atTick` 处切开 `row` 上的那个音（**整个和弦**一起切，两半之间加连音线，
+    //! **声音不变**）。切点必须严格落在音的内部 —— 切在边上就是无操作。
+    //! 切完把**后半段**选中（用户接下来多半要搬它或删它）。
+    Q_INVOKABLE void splitNoteAt(int row, int atTick);
 
     //! 把选中的音的**记谱时值**整体加减 `deltaTicks`（下限一拍网格，见 QML 里的夹取）。
     Q_INVOKABLE void resizeSelectedNotes(int deltaTicks);
