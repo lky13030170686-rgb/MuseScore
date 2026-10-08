@@ -1972,7 +1972,157 @@ TEST_F(MidiEditorNotesTests, SplittingANoteGivesTwoTiedHalves)
     EXPECT_FALSE(noteAtTick(m_score, TEST_QUARTER / 2, 60));
 }
 
-//! 切在音**外面**（起点上、终点上、更远）一律无操作：用户手一抖切在边上，不该把音弄坏。
+//! ⛔⛔ **剪刀在【任何】位置切都不许留缝**（用户 2026-10-08 报的「剪后时值中间会缺一块」）。
+//!
+//! 为什么会缺：记谱里一个音的时值只能是"可写时值"（二分时值 + 附点，最小 128 分 = 15 tick）。
+//! 切点若落在**不可写**的位置（三连音网格 80/160、或任意奇数 tick），上游写时值时会取**最接近的
+//! 可写值**，剩下的那一小截就变成**休止符** ⇒ 谱面上这个音中间空了一块（听感也真的少一截）。
+//! 所以切点必须**吸附到"两半都写得出来"的位置**，然后两半按**精确时值**重建。
+//!
+//! 这条测试把切点从 60 一路扫到 420（含三连音的 80/160、不可写的 100/250），逐个检查：
+//! **这个音高上的片段必须首尾相接地铺满 [0, 480)** —— 不重、不漏、中间没有休止符。
+TEST_F(MidiEditorNotesTests, SplittingAnywhereLeavesNoHole)
+{
+    const std::vector<int> cuts { 60, 80, 100, 120, 160, 180, 240, 250, 300, 360, 420 };
+
+    for (int at : cuts) {
+        MasterScore* score = ScoreRW::readScore(TEST_SCORE_PATH);
+        ASSERT_TRUE(score) << "at=" << at;
+
+        Note* note = noteAtTick(score, 0, 60);
+        ASSERT_TRUE(note) << "at=" << at;
+
+        EXPECT_TRUE(splitMidiNote(score, note, at)) << "at=" << at << " - 这一刀应当切得下去";
+
+        int cursor = 0;
+        int pieces = 0;
+        for (const MidiNoteItem& item : collectMidiNotes(score)) {
+            if (item.pitch != 60 || item.tick >= TEST_QUARTER) {
+                continue;
+            }
+
+            EXPECT_EQ(item.tick, cursor) << "at=" << at << " - 第 " << pieces << " 段没有接上前一段（缺一块或重叠）";
+            cursor = item.tick + item.durationTicks;
+            ++pieces;
+        }
+
+        EXPECT_EQ(cursor, TEST_QUARTER) << "at=" << at << " - 切完这个音没有铺满原来的时值";
+        EXPECT_GE(pieces, 2) << "at=" << at << " - 切开之后至少该有两段";
+        EXPECT_TRUE(score->sanityCheck()) << "at=" << at;
+
+        delete score;
+    }
+}
+
+//! 同一个坑在**更长的音**上更容易撞上（用户报的「切成 3 块」多半就是长音）：二分音符里从 160
+//! （1/8T 网格上的位置）下刀，第一版既会切出一个洞、也可能干脆切不动。
+//! 这里在第 2 小节的休止符上插一个**二分音符**，再把刀口从 60 扫到 840 逐个检查同一件事：
+//! **这个音高上的片段必须首尾相接地铺满 [1920, 2880)**。
+TEST_F(MidiEditorNotesTests, CuttingALongNoteAnywhereLeavesNoHoleToo)
+{
+    const std::vector<int> cuts { 60, 80, 100, 120, 160, 180, 240, 320, 360, 480, 600, 720, 840 };
+
+    for (int at : cuts) {
+        MasterScore* score = ScoreRW::readScore(TEST_SCORE_PATH);
+        ASSERT_TRUE(score) << "at=" << at;
+
+        //! 第 2 小节起头是休止符：在那里放一个二分音符（960），第 1 小节的音一个都不动。
+        ASSERT_TRUE(insertMidiNote(score, 0, 0, TEST_MEASURE, 960, 60)) << "at=" << at;
+
+        Note* note = noteAtTick(score, TEST_MEASURE, 60);
+        ASSERT_TRUE(note) << "at=" << at;
+        ASSERT_EQ(note->chord()->actualTicks().ticks(), 960) << "at=" << at;
+
+        EXPECT_TRUE(splitMidiNote(score, note, TEST_MEASURE + at)) << "at=" << at << " - 这一刀应当切得下去";
+
+        int cursor = TEST_MEASURE;
+        int pieces = 0;
+        for (const MidiNoteItem& item : collectMidiNotes(score)) {
+            if (item.pitch != 60 || item.tick < TEST_MEASURE || item.tick >= TEST_MEASURE + 960) {
+                continue;
+            }
+
+            EXPECT_EQ(item.tick, cursor) << "at=" << at << " - 第 " << pieces << " 段没有接上前一段（缺一块或重叠）";
+            cursor = item.tick + item.durationTicks;
+            ++pieces;
+        }
+
+        EXPECT_EQ(cursor, TEST_MEASURE + 960) << "at=" << at << " - 切完这个音没有铺满原来的时值";
+        EXPECT_GE(pieces, 2) << "at=" << at << " - 切开之后至少该有两段";
+        EXPECT_TRUE(score->sanityCheck()) << "at=" << at;
+
+        delete score;
+    }
+}
+
+//! 切点落在**不可写**的位置时（三连音网格、奇数 tick），剪刀要**吸附到最近的可写位置**，
+//! 而不是切在那儿再补一个休止符。判据：切出来的两半各自都落在"能写成音符"的时值上。
+TEST_F(MidiEditorNotesTests, AnUnwritableCutSnapsToTheNearestWritableOne)
+{
+    //! 480 的音从 80（1/16 三连音）切：80 与 400 都写不出来 ⇒ 应当吸到 60 或 120。
+    Note* first = noteAtTick(m_score, 0, 60);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(splitMidiNote(m_score, first, 80));
+
+    Chord* left = chordAt(m_score, 0);
+    ASSERT_TRUE(left);
+    const int leftTicks = left->actualTicks().ticks();
+    EXPECT_TRUE(leftTicks == 60 || leftTicks == 120)
+        << "切点应当吸到可写时值（60 或 120），实际 " << leftTicks;
+
+    //! 右半段接着左半段，一路铺到 480。
+    Note* right = noteAtTick(m_score, leftTicks, 60);
+    ASSERT_TRUE(right) << "右半段没有落在左半段的末尾";
+    EXPECT_EQ(right->tick().ticks() + right->chord()->actualTicks().ticks(), TEST_QUARTER);
+
+    EXPECT_TRUE(m_score->sanityCheck());
+}
+
+
+//! 🧭 **吸附规则本身**（纯函数，不碰乐谱）—— 剪刀"切在哪"的全部判断都在这里，所以在这里钉死。
+//!
+//! 可写时值 = 二分时值（1920/960/…/15）+ 0~4 个附点；写不出来的（三连音网格 80/160、100/250 这种）
+//! 正是"剪完中间缺一块"的元凶。测试直接把这条规则和"最近优先 + 同样近取靠前"钉住。
+TEST_F(MidiEditorNotesTests, TheCutSnapsToWhereBothHalvesAreWritable)
+{
+    //! 可写：四分 480、十六分 120、附点四分 360、双附点八分 420、128 分 15（最小）。
+    EXPECT_TRUE(isWritableMidiLength(TEST_QUARTER));
+    EXPECT_TRUE(isWritableMidiLength(TEST_QUARTER / 4));
+    EXPECT_TRUE(isWritableMidiLength(360));
+    EXPECT_TRUE(isWritableMidiLength(420));
+    EXPECT_TRUE(isWritableMidiLength(15));
+
+    //! 写不出来：1/16 三连音 80、100、250，以及非正数。
+    EXPECT_FALSE(isWritableMidiLength(80));
+    EXPECT_FALSE(isWritableMidiLength(100));
+    EXPECT_FALSE(isWritableMidiLength(250));
+    EXPECT_FALSE(isWritableMidiLength(0));
+    EXPECT_FALSE(isWritableMidiLength(-15));
+
+    //! 480 的音：候选是"两半都写得出来"的那些位置（15/30/60/120/240/360/420/450/465）。
+    EXPECT_EQ(midiSplitTick(0, 480, 240), 240) << "正好落在可写位置上：一动不动";
+    EXPECT_EQ(midiSplitTick(0, 480, 80), 60) << "80 写不出来，最近的可写对是 60+420";
+    EXPECT_EQ(midiSplitTick(0, 480, 100), 120) << "100 写不出来，120+360 更近";
+    EXPECT_EQ(midiSplitTick(0, 480, 250), 240);
+    EXPECT_EQ(midiSplitTick(0, 480, 360), 360);
+    EXPECT_EQ(midiSplitTick(0, 480, 420), 420);
+    EXPECT_EQ(midiSplitTick(0, 480, 300), 240) << "240 与 360 一样近时取靠前的，结果才确定";
+
+    //! 起点之后的偏移照样算：音从 240 开始、切在 400 → 相对切点 160，吸到 120（即绝对 360）。
+    EXPECT_EQ(midiSplitTick(240, 720, 400), 360);
+
+    //! 一刀都不该切的：时值本身不是 15 的整数倍（连音符那种 160/80），以及空时值。
+    EXPECT_EQ(midiSplitTick(0, 160, 80), -1);
+    EXPECT_EQ(midiSplitTick(0, 0, 0), -1);
+
+    //! 兜底那一档：实在没有"两半都是单个音符"的位置时，只要求左半段可写（右半段用连音线拼满）。
+    //! 615 = 41/128，写不出来，所以这里必须走兜底 —— 但**不许**返回 -1 把刀收回去。
+    const int fallback = midiSplitTick(0, 615, 300);
+    EXPECT_GE(fallback, 15);
+    EXPECT_TRUE(isWritableMidiLength(fallback)) << "左半段必须写得出来，否则 changeCRlen 会留休止符";
+    EXPECT_EQ(fallback % 15, 0) << "右半段必须是 15 的整数倍，否则拼不满";
+}
+
 TEST_F(MidiEditorNotesTests, SplittingOutsideTheNoteIsANoOp)
 {
     Note* first = noteAtTick(m_score, 0, 60);
@@ -2073,9 +2223,12 @@ TEST_F(MidiEditorNotesTests, StructuralEditsSurviveSaveAndReload)
         //! ③ 在第 2 小节的休止符上插一个音
         ASSERT_TRUE(insertMidiNote(score, 0, 0, TEST_MEASURE, TEST_QUARTER, 67));
 
-        //! ④ 🆕 把第 2 个音（62，在 TEST_QUARTER 上）从中间切开 —— 这条把**连音线**也带进
-        //! "存得住 + 打得开"这一关（连音线是结构对象，写盘/读盘都可能出问题）。
-        ASSERT_TRUE(splitMidiNote(score, noteAtTick(score, TEST_QUARTER, 62), TEST_QUARTER + TEST_QUARTER / 2));
+        //! ④ 🆕 把第 2 个音（62，在 TEST_QUARTER 上）切开 —— 这条把**连音线**也带进"存得住 +
+        //! 打得开"这一关（连音线是结构对象，写盘/读盘都可能出问题）。
+        //! ⚠️ 切点**故意选一个写不出来的位置**（+100 = 5/24 个四分，记谱写不出这个时值）：
+        //! 这一刀会被吸附到 +120，于是这条 E2E 关卡连"吸附之后的两半存得住、真实程序打得开"
+        //! 一起管住了（用户报的"剪完中间缺一块"就是写不出来的时值造成的）。
+        ASSERT_TRUE(splitMidiNote(score, noteAtTick(score, TEST_QUARTER, 62), TEST_QUARTER + 100));
 
         EXPECT_TRUE(score->sanityCheck()) << "the score must stay loadable before it is even saved";
 
@@ -2101,7 +2254,7 @@ TEST_F(MidiEditorNotesTests, StructuralEditsSurviveSaveAndReload)
         if (item.pitch == 60 && item.tick == 0) {
             atEightNote = item.durationTicks;
         }
-        if (item.pitch == 62 && item.tick == TEST_QUARTER + TEST_QUARTER / 2) {
+        if (item.pitch == 62 && item.tick == TEST_QUARTER + 120) {
             atSplitPoint = item.durationTicks;
         }
         if (item.pitch == 67 && item.tick == TEST_MEASURE) {
@@ -2113,17 +2266,19 @@ TEST_F(MidiEditorNotesTests, StructuralEditsSurviveSaveAndReload)
     }
 
     EXPECT_EQ(atEightNote, TEST_QUARTER / 2) << "the notated length was lost on save/reload";
-    EXPECT_EQ(atSplitPoint, TEST_QUARTER / 2) << "the split half was lost on save/reload";
+    EXPECT_EQ(atSplitPoint, TEST_QUARTER - 120) << "the split half was lost on save/reload";
     EXPECT_EQ(atSecondMeasure, TEST_QUARTER) << "the inserted note was lost on save/reload";
     EXPECT_FALSE(sawDeleted) << "the deleted note came back";
 
     //! 🆕 连音线也要活过存盘：切开的两半之间必须还连着（不然重新打开就变成"重新起音"了）。
+    //! 左半段被吸附到 120 tick（`TEST_QUARTER + 100` 那个位置写不出时值），所以右半段从 +120 开始。
     Note* left = noteAtTick(reloaded, TEST_QUARTER, 62);
-    Note* right = noteAtTick(reloaded, TEST_QUARTER + TEST_QUARTER / 2, 62);
+    Note* right = noteAtTick(reloaded, TEST_QUARTER + 120, 62);
     ASSERT_TRUE(left);
     ASSERT_TRUE(right);
-    ASSERT_TRUE(left->tieFor()) << "the tie was lost on save/reload";
-    EXPECT_EQ(left->tieFor(), right->tieBack());
+    ASSERT_EQ(left->chord()->actualTicks().ticks(), 120) << "the snapped cut did not survive save/reload";
+    EXPECT_EQ(left->tieFor(), right->tieBack()) << "the tie was lost on save/reload";
+    ASSERT_TRUE(left->tieFor());
 
     delete reloaded;
 }

@@ -1043,20 +1043,25 @@ void MidiEditorModel::moveSelectedNotes(int deltaTicks, int deltaPitch)
 }
 
 //! 🆕 剪刀。与"移动/插入"一样是**结构编辑**（会换掉音符对象），所以身后要把选中搬到后半段上。
-void MidiEditorModel::splitNoteAt(int row, int atTick)
+//!
+//! 返回**实际**切在哪（吸附之后的位置；什么都没切 = -1）。调用方拿它写日志 —— 剪刀的切点是会吸附的
+//! （记谱只写得出"二分时值 + 附点"，见 `midiSplitTick()`），所以"我点的地方"和"切的地方"可能差几个
+//! tick，看不到这个差就会觉得剪刀"不听话"。
+int MidiEditorModel::splitNoteAt(int row, int atTick)
 {
     Note* note = noteAt(row);
     if (!note) {
-        return;
+        return -1;
     }
 
     std::vector<Note*> rightHalf;
+    int cutTick = -1;
 
-    mutateOnce([this, note, atTick, &rightHalf]() {
+    mutateOnce([this, note, atTick, &rightHalf, &cutTick]() {
         if (INotationPtr notation = context()->currentNotation()) {
             notation->undoStack()->transaction(TranslatableString("midieditor", "Split note"),
-                                               [this, note, atTick, &rightHalf](engraving::Transaction&) {
-                splitMidiNote(currentScore(), note, atTick, /*openCommand*/ false, &rightHalf);
+                                               [this, note, atTick, &rightHalf, &cutTick](engraving::Transaction&) {
+                splitMidiNote(currentScore(), note, atTick, /*openCommand*/ false, &rightHalf, &cutTick);
             });
         }
     });
@@ -1066,6 +1071,8 @@ void MidiEditorModel::splitNoteAt(int row, int atTick)
     if (!rightHalf.empty()) {
         setSelection(rightHalf);
     }
+
+    return cutTick;
 }
 
 void MidiEditorModel::resizeSelectedNotes(int deltaTicks)

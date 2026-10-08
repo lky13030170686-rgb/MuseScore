@@ -33,6 +33,7 @@
 #include "engraving/automation/automationtypes.h"
 #include "engraving/dom/chord.h"
 #include "engraving/dom/chordrest.h"
+#include "engraving/dom/durationtype.h"
 #include "engraving/dom/factory.h"
 #include "engraving/dom/input.h"
 #include "engraving/dom/measure.h"
@@ -1311,13 +1312,99 @@ int pasteMidiNotes(Score* score, int staffIndex, int voice, int atTick, const st
     return written;
 }
 
-// ── 剪刀：在某个 tick 处把一个音（整个和弦）切开，两半之间加连音线 ─────────────────────────────
+// ── 剪刀：切点先吸到"写得出来"的位置，再把两半按精确时值写出来 ─────────────────────────────────
 //!
-//! 与"移动/插入/删除"那几条的差别：**它不删原音**，而是把原和弦**截短**（`changeCRlen()`），
-//! 于是原有的连音线、记号、附点在左半段上原样留着 —— 这是"切一刀"该有的行为
-//! （删了重建会把它们丢掉，见 `moveMidiNotes()` 的边界说明）。
-bool splitMidiNote(Score* score, Note* note, int atTick, bool openCommand, std::vector<Note*>* rightHalf)
+//! ⛔ 这一节存在的唯一理由是一条**记谱硬约束**：时值只有"二分时值 + 附点"（最小 128 分 = 15 tick）
+//! 写得出来。切在**写不出来**的位置，上游只能取最接近的可写值，剩下的那一小截就变成休止符 ——
+//! 谱面上这个音中间空一块、听感也真的少一截（用户 2026-10-08 报的「剪后时值中间会缺一块」；
+//! 第一版就是这么写的：左半段直接 `changeCRlen(atTick - startTick)`，
+//! `SplittingAnywhereLeavesNoHole` 一跑就红）。
+//!
+//! 现在的四步：
+//!  ① `midiSplitTick()` 把切点吸到**左半段能写成单个音符**的位置（首选两半都能 —— 那样卷帘窗里
+//!     就是干净的两块，用户报的「切成 3 块」正是这里没做到的样子；退一步只要求左半段可写，
+//!     右半段只要是 15 的整数倍就**一定**拼得满，代价是写成几个连音线）；
+//!  ② 左半段用 `changeCRlen()` **截短** —— 上游自己的"改短"路径，ChordRest 对象不换，所以
+//!     **进来的连音线、记号、附点全都留着**；出去的连音线由它自己摘掉（正好，那条线该改接到新右半段）；
+//!  ③ 右半段用 `writeChordAt()` 在切点**按精确时值重建**；
+//!  ④ 逐音高补连音线（`Factory::createTie()` + `undoAddElement()`，与 `Score::createCRSequence()`
+//!     同一个 recipe）。
+//! ②③ 拿到的两个时值都是"写得出来的"，所以两半**恰好**那么长：不重、不漏、小节始终是满的。
+
+bool isWritableMidiLength(int ticks)
 {
+    if (ticks <= 0) {
+        return false;
+    }
+
+    const Fraction wanted = Fraction::fromTicks(ticks);
+    const std::vector<TDuration> list = toDurationList(wanted, /*useDots*/ true, /*maxDots*/ 4,
+                                                      /*printRestRemains*/ false);
+
+    //! 恰好**一个**音符、而且分数一模一样 = 写得出来。写不出来的长度，上游要么拆成几段（靠连音线
+    //! 拼满，还能用），要么剩下一小截写不进去 —— **那一小截就是"缺的那一块"**。
+    return list.size() == 1 && list.front().fraction() == wanted;
+}
+
+int midiSplitTick(int startTick, int endTick, int desiredTick)
+{
+    const int span = endTick - startTick;
+    if (span <= 0) {
+        return -1;
+    }
+
+    //! 兜底前提：整个音是 15 的整数倍，才谈得上"两半都不缺"。不是的话（连音符、rubato 拉伸）
+    //! 宁可拒绝，也不切出一个洞 —— 调用方拿到 -1 会**一刀都不切**。
+    if (span % 15 != 0) {
+        return -1;
+    }
+
+    const int wanted = std::clamp(desiredTick - startTick, 1, span - 1);
+
+    //! 候选只在 15 的倍数上找，而且这层扫描是**完备**的：能在整数 tick 上写出来的时值一定是 15 的
+    //! 倍数（最小 15；附点只是乘 3/2、7/4…，分母必须整除底数才是整数 tick，而成不了整数的那些
+    //! 组合同时也不是 15 的倍数）。
+    //!
+    //! 同样近时取**靠前**的（先遇到的赢），所以"切在哪"对一个给定的输入是确定的。
+    auto nearestLeft = [&](bool bothHalvesWritable) {
+        int best = -1;
+        int bestDistance = 0;
+        for (int left = 15; left < span; left += 15) {
+            if (!isWritableMidiLength(left)) {
+                continue;
+            }
+            if (bothHalvesWritable && !isWritableMidiLength(span - left)) {
+                continue;
+            }
+
+            const int distance = std::abs(left - wanted);
+            if (best < 0 || distance < bestDistance) {
+                best = left;
+                bestDistance = distance;
+            }
+        }
+        return best;
+    };
+
+    //! ① 首选：两半都写得成**单个**音符。
+    int left = nearestLeft(/*bothHalvesWritable*/ true);
+
+    //! ② 退一步：只要求左半段是单个音符。右半段写成一串连音线（`toDurationList()` 能把它精确拼满，
+    //! 见 `setNoteRest()`）—— 跨小节线的音本来就是这个样子。**宁可是连音线，也不许缺一块**。
+    if (left < 0) {
+        left = nearestLeft(/*bothHalvesWritable*/ false);
+    }
+
+    return left < 0 ? -1 : startTick + left;
+}
+
+bool splitMidiNote(Score* score, Note* note, int atTick, bool openCommand, std::vector<Note*>* rightHalf,
+                   int* cutTick)
+{
+    if (cutTick) {
+        *cutTick = -1;
+    }
+
     if (!score || !note || !note->chord()) {
         return false;
     }
@@ -1332,6 +1419,13 @@ bool splitMidiNote(Score* score, Note* note, int atTick, bool openCommand, std::
         return false;
     }
 
+    //! ⚠️ **连音符里的音不切**：重建走 `setNoteRest()`，它按"局部（拉伸后）时值"写，而我们手里是
+    //! 绝对 tick —— 三连音八分是 160 tick，既不是 15 的倍数，也不是任何"可写时值"。与其切出一个洞，
+    //! 不如老实说"这个音切不动"（返回 false，视图那边什么都不改）。
+    if (source->tuplet()) {
+        return false;
+    }
+
     const int startTick = data.tick;
     const int endTick = startTick + data.durationTicks;
 
@@ -1340,13 +1434,20 @@ bool splitMidiNote(Score* score, Note* note, int atTick, bool openCommand, std::
         return false;
     }
 
+    //! ⭐ **吸附切点**：只在"两半都写得出来"的位置下刀（`midiSplitTick()`）。
+    const int at = midiSplitTick(startTick, endTick, atTick);
+    if (at < 0) {
+        return false;
+    }
+
     const int staffIndex = int(note->staffIdx());
     const int voice = int(note->voice());
-    const Fraction atFraction = Fraction::fromTicks(atTick);
+    const Fraction atFraction = Fraction::fromTicks(at);
     const Fraction startFraction = Fraction::fromTicks(startTick);
 
-    //! 谱面之外不写（与别的结构编辑同一条边界）。
-    if (atFraction >= score->endTick()) {
+    //! 谱面之外不写（与别的结构编辑同一条边界）。切点也在这里一并挡掉：`at` 永远 < endTick，
+    //! 但一个音可能正好在谱面末尾。
+    if (atFraction >= score->endTick() || !score->tick2measure(atFraction)) {
         return false;
     }
 
@@ -1372,13 +1473,16 @@ bool splitMidiNote(Score* score, Note* note, int atTick, bool openCommand, std::
     }
 
     //! ① 左半段：把和弦**截短**到切点。`changeCRlen()` 会自己把余下的时值铺成休止符，
-    //! 所以小节永远是满的；连音线/记号/附点留在这一半上。
+    //! 所以小节永远是满的；ChordRest 对象不换 ⇒ 进来的连音线、记号、附点都留在这一半上，
+    //! 出去的连音线由它自己摘掉（那条线接下来要改接到新的右半段）。
     //!
+    //! ⚠️ 传进去的 `at - startTick` **必须是可写时值**：`changeCRlen()` 写不出目标时值时会取最接近
+    //! 的可写值，再把余下的铺成休止符 —— 那就是"中间缺一块"。`midiSplitTick()` 保证它可写。
     //! ⚠️ 每一步都要**重新找对象**：`changeCRlen()` / `writeChordAt()` 都会删掉并重建段与和弦
     //! （§4.8.4 第 1 条），手里原来的 `note` 与段指针都不能再用。
-    score->changeCRlen(note->chord(), Fraction::fromTicks(atTick - startTick));
+    score->changeCRlen(note->chord(), Fraction::fromTicks(at - startTick));
 
-    //! 左半段的**最后一个**和弦（时值跨小节时 `changeCRlen` 会生出连音线链，连音线要接在链尾）。
+    //! 左半段的**最后一个**和弦（连音线要接在链尾）。
     Measure* measure = score->tick2measure(startFraction);
     Segment* leftSegment = measure ? measure->findSegment(SegmentType::ChordRest, startFraction) : nullptr;
     const track_idx_t track = staff2track(staff_idx_t(staffIndex)) + track_idx_t(voice);
@@ -1399,12 +1503,16 @@ bool splitMidiNote(Score* score, Note* note, int atTick, bool openCommand, std::
     Chord* leftChord = leftChain.back();
 
     //! ② 右半段：在切点重建（`writeChordAt()` 会按 tick 重新找段、必要时切开前面的休止符）。
+    //! 位置上是 `changeCRlen()` 刚铺出来的那段休止符，长度正好 = 原来的时值 - 左半段，
+    //! 所以写进去就是**精确**的右半段（写不出单个音符时 `setNoteRest()` 会用连音线拼满）。
     InputState scratch;
-    const std::vector<Note*> written = writeChordAt(score, staffIndex, voice, atTick,
-                                                    endTick - atTick, tones, scratch);
+    const std::vector<Note*> written = writeChordAt(score, staffIndex, voice, at,
+                                                    endTick - at, tones, scratch);
 
     //! ③ 逐音高补连音线 —— 与上游 `Score::createCRSequence()` 同一个 recipe：
     //! `Factory::createTie()` + `setStartNote/setEndNote` + `setTick/setTick2` + `undoAddElement()`。
+    //! ⚠️ 右半段跨小节时 `writeChordAt()` 交回的只是**第一段**（其余各段由 `setNoteRest()` 自己连好），
+    //! 所以这里补的是"左半段 → 右半段第一段"那一条 —— 整条链因此是连着的。
     for (Note* right : written) {
         Note* left = nullptr;
         for (Note* candidate : leftChord->notes()) {
@@ -1448,7 +1556,16 @@ bool splitMidiNote(Score* score, Note* note, int atTick, bool openCommand, std::
         score->endCmd();
     }
 
-    return !written.empty();
+    if (written.empty()) {
+        //! 右半段没写出来（理论上不会：位置刚被 `changeCRlen()` 铺成等长休止符）= 这一刀算没切。
+        return false;
+    }
+
+    if (cutTick) {
+        *cutTick = at;   //! 实际切在哪（吸附之后）—— 视图拿它写日志/提示
+    }
+
+    return true;
 }
 
 

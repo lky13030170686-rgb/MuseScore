@@ -3430,12 +3430,17 @@ Item {
 
                         //! 🆕 **剪刀**：点一下（没拖动）就在**按下的位置**切开。切点吸附到网格 ——
                         //! 与别的手势同一套吸附，用户不用记第二个精度。
+                        //!
+                        //! ⚠️ 模型那边还会**再吸一次**：记谱只写得出"二分时值 + 附点"（最小 128 分），
+                        //! 切在别处会先吸到最近的可写位置，否则上游会把余下那一小截变成休止符
+                        //! （用户报的"剪完中间缺一块"）。返回值是**真正切在哪**，不是我们请求的位置。
                         if (root.editTool === root.toolSplit) {
                             if (!root.dragMoved) {
                                 var splitTick = root.clamp(root.snapTick(Math.round(root.tickForX(mouse.x))),
                                                            0, root.totalTicks)
-                                console.warn("[midi-tool] split row", entry.row, "at tick", splitTick)
-                                root.model.splitNoteAt(entry.row, splitTick)
+                                var cut = root.model.splitNoteAt(entry.row, splitTick)
+                                console.warn("[midi-tool] split row", entry.row, "asked", splitTick,
+                                             "cut at", cut)
                             }
                             root.dragNoteIndex = -1
                             root.dragMoved = false

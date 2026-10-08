@@ -390,7 +390,11 @@ public:
     //! 🆕 **剪刀**：在 `atTick` 处切开 `row` 上的那个音（**整个和弦**一起切，两半之间加连音线，
     //! **声音不变**）。切点必须严格落在音的内部 —— 切在边上就是无操作。
     //! 切完把**后半段**选中（用户接下来多半要搬它或删它）。
-    Q_INVOKABLE void splitNoteAt(int row, int atTick);
+    //!
+    //! ⚠️ 切点是会**吸附**的：记谱只写得出"二分时值 + 附点"（最小 128 分），落在别处的刀口会先吸到
+    //! 最近的可写位置，否则上游会取最接近的可写值、把余下那一小截变成休止符（"剪完中间缺一块"）。
+    //! **返回值就是吸附之后真正切在哪**（一个都没切 = `-1`），视图据此写日志。
+    Q_INVOKABLE int splitNoteAt(int row, int atTick);
 
     //! 把选中的音的**记谱时值**整体加减 `deltaTicks`（下限一拍网格，见 QML 里的夹取）。
     Q_INVOKABLE void resizeSelectedNotes(int deltaTicks);

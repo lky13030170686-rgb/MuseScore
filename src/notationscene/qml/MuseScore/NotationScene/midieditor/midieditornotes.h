@@ -297,14 +297,36 @@ int changeMidiNoteDurations(engraving::Score* score, const std::vector<std::pair
 //! 新生成的两半之间自动加**连音线** ⇒ **声音完全不变**（这正是"切一刀"该有的语义，也是记谱页表示
 //! "一个音写成多个音符"的唯一办法）。要"重新起音"的切法（Cubase 那种两个独立音）本函数**不做**。
 //!
-//! 做法：① 先把和弦**截短**成前半（`changeCRlen()` —— 原有的连音线/记号/附点因此全都留着）；
-//! ② 在切点重建后半（`writeChordAt()`）；③ 逐音高补连音线（`Factory::createTie()` +
-//! `undoAddElement()`，与 `Score::createCRSequence()` 同一个recipe）。
+//! ⚠️⚠️ **切点会吸附到"可写时值"**（`midiSplitTick()`）：记谱里时值不是任意的 —— 只有"二分时值 +
+//! 附点"（最小 128 分 = 15 tick）写得出来。切在**写不出来**的位置（三连音网格 80/160、任意非 15
+//! 倍数的 tick）会出事：上游取最接近的可写值，**剩下的那一小截变成休止符**（谱面上这个音中间空一块、
+//! 听感也真的少一截），严重时**小节变不完整、工程直接打不开**（用户报的「剪后时值中间会缺一块」，
+//! 单测 `SplittingAnywhereLeavesNoHole` 当场复现）。
+//! 所以切点先吸到「**两半都能写成单个音符**」的位置 —— 这同时保证卷帘窗里是**干净的两块**
+//! （「切成 3 块」是某一半写不成单个音符、被上游用连音线拆开的样子）。实在没有这种位置时
+//! （例如这个音跨小节线）退到「两半都是 15 的整数倍」，此时用连音线表示。
+//!
+//! 做法：删掉原和弦（含所有音高）→ 用 `writeChordAt()` 在两侧**按精确时值重建**
+//! → 逐音高补连音线（`Factory::createTie()` + `undoAddElement()`，与 `Score::createCRSequence()`
+//! 同一个 recipe）。⚠️ **不要用 `changeCRlen()` 截短来当左半段** —— 目标时值写不出来时它会留一个
+//! 休止符空档，正是上面那条坑（第一版就是那么写的）。
 //!
 //! `atTick` 必须**严格落在音的内部**（<= 起点或 >= 终点都是无操作，返回 false）——
-//! 用户切在边上的那一下不该把音弄坏。`rightHalf`（可选）拿回后半段的音，视图要选中它们。
+//! 用户切在边上的那一下不该把音弄坏。`rightHalf`（可选）拿回后半段的音，视图要选中它们；
+//! `cutTick`（可选）拿回**实际**切在哪（吸附之后的位置，调用方用来写日志/提示）。
 bool splitMidiNote(engraving::Score* score, engraving::Note* note, int atTick, bool openCommand = true,
-                   std::vector<engraving::Note*>* rightHalf = nullptr);
+                   std::vector<engraving::Note*>* rightHalf = nullptr, int* cutTick = nullptr);
+
+//! 这个时值能不能**写成一个音符**（二分时值 1920/960/…/15，各自可带 0–3 个附点）？
+//! 例：480（四分）✓、360（附点八分）✓、420（双附点八分）✓、**80（1/16 三连音）✗**、100 ✗。
+//! 记谱里"能不能写"是硬约束：写不出来的时值只能靠连音线拼，或者干脆写不成（见 `splitMidiNote`）。
+bool isWritableMidiLength(int ticks);
+
+//! 剪刀该切在哪：在 (startTick, endTick) 里找一个**两半都写得出来**的位置，取离 `desiredTick`
+//! 最近的那个（同样近时取靠前的，结果确定）。首选「两半都是**单个**音符」；找不到才退一步，
+//! 允许两半是「15 的整数倍」（那种会写成连音线）；再没有就返回 -1（这个音切不动）。
+//! ⚠️ 纯函数（不碰乐谱），所以"吸到哪、为什么不吸"能用单测钉住。
+int midiSplitTick(int startTick, int endTick, int desiredTick);
 
 //! 读出这些音的完整数据（复制的内容）。**纯读**：不改乐谱、不开命令。
 //! 位置已换算成相对**最早那个音**的偏移，顺序按 tick 排好。
