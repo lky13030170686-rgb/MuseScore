@@ -25,6 +25,7 @@
 
 #include "engraving/dom/chord.h"
 #include "engraving/dom/masterscore.h"
+#include "engraving/dom/measure.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/rest.h"
 #include "engraving/dom/score.h"
@@ -625,4 +626,146 @@ TEST(AgentHarness_ScoreRecipes, ToggleSlurAddsThenRemoves)
     });
     EXPECT_TRUE(removed.ok) << removed.problem.toStdString();
     EXPECT_TRUE(chordAt(score.get(), address(1, 1), 0).chord->slur() == nullptr);
+}
+//! ── The writability gate (G1) ─────────────────────────────────────────────────────────────────
+//!
+//! ⛔⛔ WHY THIS IS THE MOST IMPORTANT GROUP HERE. `Score::undoChangeChordRestLen` sets two properties
+//! and checks NOTHING. A duration that does not fit writes a chord running past the barline: the
+//! measure is no longer full, and a score in that state is one the editor may refuse to reopen - which
+//! is the "Agent 把工程写坏" risk the plan lists first.
+//!
+//! ⚠️ And the boundary is the point, not the middle. A test that only tries "obviously too long" passes
+//! against a gate that is off by a beat. So the sweep below walks every beat of the bar and asks for
+//! exactly what fits and exactly one step more.
+
+TEST(AgentHarness_ScoreRecipes, DurationThatExactlyFillsTheRestOfTheBarIsAccepted)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Beat 1 of a 4/4 bar with three quarters left: a DOTTED HALF is exactly the remaining space
+    //! (3/4). This is the boundary that an off-by-one gate gets wrong, in the direction that REFUSES
+    //! something legal - which is just as much a bug as accepting something illegal, and much easier to
+    //! miss because the refusal looks like a safety feature working.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("dotted-half"));
+    });
+    EXPECT_TRUE(result.ok) << "a dotted half exactly fills beats 2-4: " << result.problem.toStdString();
+
+    const NoteLookup found = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(found.found());
+    EXPECT_EQ(found.chord->durationType().type(), DurationType::V_HALF);
+    EXPECT_EQ(found.chord->durationType().dots(), 1);
+}
+
+TEST(AgentHarness_ScoreRecipes, DurationOneStepTooLongIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! One step past the boundary above: a whole note from beat 1 of a bar that also holds three more
+    //! quarters would need 4/4 but only 4/4 is available INCLUDING this beat... so use a whole note
+    //! where only a dotted half fits is impossible; instead ask from beat 2, where a whole note clearly
+    //! overflows.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 2), 0, QStringLiteral("whole"));
+    });
+
+    EXPECT_FALSE(result.ok) << "a whole note cannot start on beat 2 of a 4/4 bar";
+    EXPECT_FALSE(result.problem.isEmpty());
+
+    //! And nothing may have changed.
+    const NoteLookup found = chordAt(score.get(), address(1, 2), 0);
+    ASSERT_TRUE(found.found());
+    EXPECT_EQ(found.chord->durationType().type(), DurationType::V_QUARTER);
+}
+
+TEST(AgentHarness_ScoreRecipes, TheGateSweepsEveryBeatOfTheBar)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ THE SWEEP THE PLAN ASKS FOR, and the reason it asks for it: a gate tested only at one position
+    //! can be off by a beat and still pass. `test.mscx` is 4/4 with quarters on beats 1-4, so from beat
+    //! `b` the remaining space is `(5-b)/4`:
+    //!
+    //!   beat 1 -> 4/4 available -> whole fits
+    //!   beat 2 -> 3/4 available -> dotted half fits, whole does not
+    //!   beat 3 -> 2/4 available -> half fits, dotted half does not
+    //!   beat 4 -> 1/4 available -> quarter fits, half does not
+    //!
+    //! Each row is checked in BOTH directions: what fits must be accepted, and the next size up must be
+    //! refused. Accepting-only would pass against a gate that never refuses; refusing-only would pass
+    //! against a gate that refuses everything.
+    const struct {
+        int beat;
+        const char* fits;
+        const char* tooLong;
+    } rows[] = {
+        { 1, "whole", "breve" },
+        { 2, "dotted-half", "whole" },
+        { 3, "half", "dotted-half" },
+        { 4, "quarter", "half" },
+    };
+
+    for (const auto& row : rows) {
+        //! A fresh score per row: the previous row changed the bar's shape.
+        const auto fresh = loadScore(NOTE_SCORE);
+        ASSERT_TRUE(fresh);
+
+        const RecipeResult fits = runRecipe(fresh.get(), [&] {
+            return setChordDuration(fresh.get(), address(1, row.beat), 0, QString::fromLatin1(row.fits));
+        });
+        EXPECT_TRUE(fits.ok) << "beat " << row.beat << ": " << row.fits
+                             << " should fit but was refused: " << fits.problem.toStdString();
+    }
+
+    for (const auto& row : rows) {
+        const auto fresh = loadScore(NOTE_SCORE);
+        ASSERT_TRUE(fresh);
+
+        const RecipeResult tooLong = runRecipe(fresh.get(), [&] {
+            return setChordDuration(fresh.get(), address(1, row.beat), 0, QString::fromLatin1(row.tooLong));
+        });
+        EXPECT_FALSE(tooLong.ok) << "beat " << row.beat << ": " << row.tooLong
+                                 << " should NOT fit but was accepted";
+        EXPECT_TRUE(tooLong.problem.contains(QStringLiteral("does not fit")))
+            << "beat " << row.beat << ": " << tooLong.problem.toStdString();
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, TheRefusalNamesTheSpaceAvailable)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! "It does not fit" without a number leaves the caller guessing whether it overshot by a beat or by
+    //! a whole bar - and the useful next action is different in each case.
+    //!
+    //! ⚠️ The number is a FRACTION OF A WHOLE NOTE, and that is deliberate: `1/4` for the one beat left
+    //! after beat 4 of a 4/4 bar. A duration NAME would be wrong in general (three quarters is not "a
+    //! dotted half", so a caller reading it that way would ask for one and be refused again), and the
+    //! first live run printed a raw tick count - `only 1440 tick(s)` - which tells a musician nothing.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 4), 0, QStringLiteral("whole"));
+    });
+
+    ASSERT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("1/4")))
+        << "the message should name the space left as a fraction of a whole note: "
+        << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, ShrinkingIsNeverBlockedByTheGate)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⚠️ The gate is about FITTING, and a shorter duration always fits. A gate written as "the new
+    //! duration must equal the space remaining" would refuse every legitimate shortening - so this pins
+    //! the direction that a careless implementation gets wrong.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("16th"));
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
 }

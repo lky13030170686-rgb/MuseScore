@@ -29,6 +29,7 @@
 #include "engraving/dom/note.h"
 #include "engraving/dom/pitchspelling.h"
 #include "engraving/dom/chordrest.h"
+#include "engraving/dom/measure.h"
 #include "engraving/dom/score.h"
 #include "engraving/editing/navigation.h"
 #include "engraving/dom/slur.h"
@@ -263,6 +264,41 @@ RecipeResult muse::agentharness::setNotePitch(mu::engraving::Score* score, const
                                  .arg(formatAddress(address), pitchName(oldPitch), pitchName(midiPitch)));
 }
 
+//! Whether `duration` fits in the space from `chord` to the end of its measure.
+//!
+//! ⛔⛔ WHY THIS GATE EXISTS, and it is the M5 "G1" gate in the plan: `Score::undoChangeChordRestLen`
+//! sets `DURATION_TYPE_WITH_DOTS` and `DURATION` and NOTHING ELSE. It does not check that the result
+//! fits, and it does not make room. So asking for a longer duration than the space remaining writes a
+//! chord whose `ticks()` run past the barline - the measure is no longer full, `sanityCheck()` has
+//! something to complain about, and the score can end up in a state the editor will not reopen.
+//!
+//! ⚠️ The interactive path does not have this problem because it goes through `Score::changeCRlen`,
+//! which SPLITS measures to make room. That is right for a user dragging a note longer - it is the
+//! behaviour they expect - and wrong for an addressed write, where "make this note a half note" must
+//! either succeed in place or say it cannot. Silently splitting the bar is an edit nobody asked for.
+//!
+//! ⚠️ Ties and tuplets are deliberately NOT special-cased: a tie means the note's SOUND continues, but
+//! its WRITTEN duration still has to fit the measure, and a tuplet's written duration is already scaled
+//! by `ticks()`. Special-casing either would be inventing a rule.
+bool durationFits(mu::engraving::ChordRest* chord, const mu::engraving::TDuration& duration)
+{
+    if (!chord) {
+        return false;
+    }
+
+    const mu::engraving::Measure* measure = chord->findMeasure();
+    if (!measure) {
+        return false;
+    }
+
+    const mu::engraving::Fraction wanted = duration.type() == mu::engraving::DurationType::V_MEASURE
+                                           ? measure->ticks()
+                                           : duration.fraction();
+    const mu::engraving::Fraction available = measure->endTick() - chord->tick();
+
+    return wanted <= available;
+}
+
 RecipeResult muse::agentharness::setChordDuration(mu::engraving::Score* score, const ScoreAddress& address,
                                                  int voice, const QString& duration)
 {
@@ -292,6 +328,30 @@ RecipeResult muse::agentharness::setChordDuration(mu::engraving::Score* score, c
         //! for another way to do what it already did.
         return RecipeResult::success(QStringLiteral("%1 is already %2")
                                      .arg(formatAddress(address), parsed.name));
+    }
+
+    //! ⛔ THE GATE, before anything is written. See the note on `durationFits` for why this cannot be
+    //! left to the write itself: `undoChangeChordRestLen` does not check, and the interactive
+    //! alternative (`changeCRlen`) would SPLIT the bar - an edit nobody asked for.
+    //!
+    //! The message names the space available, because "it does not fit" without a number leaves the
+    //! caller guessing whether it overshot by a beat or by a whole bar.
+    if (!durationFits(chord, parsed.value)) {
+        const mu::engraving::Measure* measure = chord->findMeasure();
+        const mu::engraving::Fraction available = measure ? measure->endTick() - chord->tick()
+                                                          : mu::engraving::Fraction(0, 1);
+        return RecipeResult::failure(
+            //! ⚠️ The space left is reported as a FRACTION OF A WHOLE NOTE (`3/4`), not as a duration
+            //! name and not as a tick count. A duration name is wrong for anything that is not a single
+            //! note - three quarters is not "a dotted half", and a caller who reads it that way will ask
+            //! for one and be refused again. A tick count is worse: "only 1440 tick(s)" tells a musician
+            //! nothing. (Both were tried; the first live run printed the tick count.)
+            QStringLiteral("a %1 does not fit at %2 - only %3 of a whole note is left in the measure "
+                           "after this beat. A shorter duration, or moving the note earlier, would fit. "
+                           "(The bar is NOT split to make room: that would be an edit you did not ask "
+                           "for.)")
+            .arg(parsed.name, formatAddress(address),
+                 QStringLiteral("%1/%2").arg(available.numerator()).arg(available.denominator())));
     }
 
     //! ⛔ `Score::undoChangeChordRestLen`, not `chord->setDurationType()`. The latter changes the chord
