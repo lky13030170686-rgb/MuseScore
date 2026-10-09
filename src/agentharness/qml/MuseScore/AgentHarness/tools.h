@@ -171,6 +171,14 @@ ToolResult toolNoteRemove(const QJsonObject& args, const ToolContext& ctx);
 //! Write: add a note to the chord at an address.
 ToolResult toolNoteAdd(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: tie / untie / toggle the tie on the note at an address.
+//!
+//! WHY ONE TOOL WITH A MODE RATHER THAN THREE: the three are the same question asked three ways
+//! ("make it tied", "make it untied", "flip it"), and a model that has to pick between three tool names
+//! for one keystroke's worth of editing will sometimes pick the wrong one and then have to undo. The
+//! mode is explicit and validated, so a wrong mode is a sentence rather than a wrong edit.
+ToolResult toolNoteTie(const QJsonObject& args, const ToolContext& ctx);
+
 //! Read: list the operations that address a NOTE directly, rather than a command URI.
 //!
 //! WHY THIS TOOL HAS TO EXIST: the command tools are discoverable - `command_list` enumerates them, and

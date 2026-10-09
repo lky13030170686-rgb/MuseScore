@@ -546,6 +546,64 @@ ToolResult muse::agentharness::toolNoteAdd(const QJsonObject& args, const ToolCo
     return ToolResult::success(result.detail, meta);
 }
 
+ToolResult muse::agentharness::toolNoteTie(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    //! The mode is validated HERE rather than defaulted, so a typo is a sentence about the argument
+    //! instead of an edit the caller did not intend.
+    const QString mode = args.value(QStringLiteral("mode")).toString();
+    if (mode != QLatin1String("add") && mode != QLatin1String("remove")
+        && mode != QLatin1String("toggle")) {
+        return ToolResult::failure(QStringLiteral("`mode` must be `add`, `remove` or `toggle` (got `%1`)")
+                                   .arg(mode));
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Tie"), [&](mu::engraving::Score* score) {
+        if (mode == QLatin1String("add")) {
+            return addTie(score, address, voice, noteIndex);
+        }
+        if (mode == QLatin1String("remove")) {
+            return removeTie(score, address, voice, noteIndex);
+        }
+        return toggleTie(score, address, voice, noteIndex);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! Written as prose with the argument names in it, because that is what the model needs in order to
@@ -860,6 +918,28 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("pitch") }),
             toolNoteAdd,
+        },
+        ToolSpec{
+            QStringLiteral("note_tie"),
+            QStringLiteral("Tie the note at an address to the next note of the same pitch, remove that "
+                           "tie, or toggle it. A tie joins the same pitch; a slur joins different ones. "
+                           "Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                QJsonObject modeProp;
+                modeProp.insert(QStringLiteral("type"), QStringLiteral("string"));
+                modeProp.insert(QStringLiteral("enum"), QJsonArray{ QStringLiteral("add"),
+                                                                    QStringLiteral("remove"),
+                                                                    QStringLiteral("toggle") });
+                modeProp.insert(QStringLiteral("description"), QStringLiteral(
+                                                                   "`add` ties the note to the next one of the same pitch; `remove` takes that tie "
+                                                                   "away; `toggle` does whichever is not already the case."));
+                props.insert(QStringLiteral("mode"), modeProp);
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("mode") }),
+            toolNoteTie,
         },
         ToolSpec{
             QStringLiteral("note_capabilities"),

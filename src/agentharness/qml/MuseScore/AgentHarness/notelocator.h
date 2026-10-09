@@ -80,4 +80,16 @@ NoteLookup noteAt(mu::engraving::Score* score, const ScoreAddress& address, int 
 //! The chord at an address, without needing a note to be present. Used by recipes that create notes.
 NoteLookup chordAt(mu::engraving::Score* score, const ScoreAddress& address, int voice);
 
+//! The first note at or after `from`, on the same track, or null.
+//!
+//! WHY THIS IS HERE AND NOT "ask for the next address and look it up": a tie goes to the next NOTE, and
+//! the next note is not necessarily on the next beat - it may be several beats away (the rest of the
+//! bar is rests), in the next measure, or several measures away. Computing that address in the caller
+//! would mean every caller re-deriving "where is the next thing that sounds", and getting it wrong
+//! would tie to a rest or to nothing.
+//!
+//! @param includeSelf when true, `from` itself is a candidate. Used by tie recipes that want to know
+//!                    whether a note is already the last one.
+NoteLookup nextNote(mu::engraving::Score* score, mu::engraving::Note* from, bool includeSelf = false);
+
 } // namespace muse::agentharness

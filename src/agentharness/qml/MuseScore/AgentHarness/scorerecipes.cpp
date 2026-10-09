@@ -24,6 +24,8 @@
 #include <QHash>
 
 #include "engraving/dom/chord.h"
+#include "engraving/dom/factory.h"
+#include "engraving/dom/tie.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/pitchspelling.h"
 #include "engraving/dom/score.h"
@@ -405,6 +407,143 @@ RecipeResult muse::agentharness::addNoteToChord(mu::engraving::Score* score, con
 
     return RecipeResult::success(QStringLiteral("%1: added %2 (the chord now has %3 note(s))")
                                  .arg(formatAddress(address), pitchName(midiPitch)).arg(after));
+}
+namespace {
+//! Create a tie between two notes and put it on the undo stack.
+//!
+//! ⛔ THIS MIRRORS `createAndAddTie` in `src/engraving/editing/edittie.cpp`, deliberately. That function
+//! is file-static, and the public `EditTie::cmdAddTie` is not a substitute: it reads the current
+//! SELECTION, mutates the global input state, and will even append a measure when the note is at the
+//! end of the score. None of that is acceptable for an addressed write - the caller named a note, not
+//! "whatever is selected", and an edit that silently appends a measure is an edit nobody asked for.
+//!
+//! The alternative was making the upstream helper public, which means touching a header under
+//! `src/engraving/` and paying an 8-16 minute rebuild for every downstream target (维护手册.md §9.3).
+//! A local copy of eleven lines is the cheaper and more honest trade; if upstream's version changes,
+//! this is the place that has to be compared against it.
+mu::engraving::Tie* createAndAddTie(mu::engraving::Score* score, mu::engraving::Note* startNote,
+                                    mu::engraving::Note* endNote)
+{
+    mu::engraving::Tie* tie = mu::engraving::Factory::createTie(startNote);
+    tie->setStartNote(startNote);
+    tie->setTrack(startNote->track());
+    tie->setTick(startNote->chord()->segment()->tick());
+
+    if (endNote->tieBack()) {
+        //! The end note may already be tied from something else. Removing that first is what upstream
+        //! does, and it is what keeps a note from having two ties arriving at it.
+        score->undoRemoveElement(endNote->tieBack());
+    }
+
+    tie->setEndNote(endNote);
+    tie->setTicks(endNote->chord()->segment()->tick() - startNote->chord()->segment()->tick());
+
+    score->undoAddElement(tie);
+
+    //! Jump points are the partial-tie bookkeeping (a tie split across a system break). Upstream calls
+    //! this immediately after adding; skipping it leaves a tie that draws but does not survive a
+    //! relayout.
+    tie->addTiesToJumpPoints();
+
+    return tie;
+}
+} // namespace
+
+RecipeResult muse::agentharness::addTie(mu::engraving::Score* score, const ScoreAddress& address,
+                                        int voice, int noteIndex)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const NoteLookup found = noteAt(score, address, voice, noteIndex);
+    if (!found.ok()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the note lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    mu::engraving::Note* note = found.note;
+
+    //! ⛔ Already tied forward: refused, not replaced. Silently redirecting an existing tie is an edit
+    //! the caller cannot see in the result, and the caller may well be asking precisely because it
+    //! wants to know whether the earlier call worked.
+    if (note->tieFor()) {
+        return RecipeResult::failure(
+            QStringLiteral("%1 is already tied to the next note. To tie it somewhere else, remove the "
+                           "existing tie first.").arg(formatAddress(address)));
+    }
+
+    const NoteLookup target = nextNote(score, note);
+    if (!target.ok()) {
+        return RecipeResult::failure(target.problem.isEmpty()
+                                     ? QStringLiteral("no later note to tie to")
+                                     : target.problem);
+    }
+
+    createAndAddTie(score, note, target.note);
+
+    return RecipeResult::success(QStringLiteral("%1: tied %2 to the next %2")
+                                 .arg(formatAddress(address), pitchName(note->pitch())));
+}
+
+RecipeResult muse::agentharness::removeTie(mu::engraving::Score* score, const ScoreAddress& address,
+                                           int voice, int noteIndex)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const NoteLookup found = noteAt(score, address, voice, noteIndex);
+    if (!found.ok()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the note lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    mu::engraving::Note* note = found.note;
+
+    if (!note->tieFor()) {
+        //! Refused rather than reported as done: "there was nothing to remove" and "I removed it" are
+        //! different answers, and a caller that gets the second when the first is true will believe it
+        //! changed something.
+        return RecipeResult::failure(QStringLiteral("%1 is not tied to the next note, so there is "
+                                                    "nothing to remove").arg(formatAddress(address)));
+    }
+
+    //! ⛔ `Score::undoRemoveElement`, which is what upstream's own tie removal uses. A bare
+    //! `note->setTieFor(nullptr)` would leave the tie in the score pointing at a note that no longer
+    //! references it.
+    score->undoRemoveElement(note->tieFor());
+
+    return RecipeResult::success(QStringLiteral("%1: removed the tie from %2")
+                                 .arg(formatAddress(address), pitchName(note->pitch())));
+}
+
+RecipeResult muse::agentharness::toggleTie(mu::engraving::Score* score, const ScoreAddress& address,
+                                           int voice, int noteIndex)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    //! One lookup, then dispatch: `addTie`/`removeTie` do their own lookups, and doing it here as well
+    //! would be three walks of the score for one keystroke's worth of work.
+    const NoteLookup found = noteAt(score, address, voice, noteIndex);
+    if (!found.ok()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the note lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    if (found.note->tieFor()) {
+        return removeTie(score, address, voice, noteIndex);
+    }
+
+    return addTie(score, address, voice, noteIndex);
 }
 QStringList muse::agentharness::durationNames(){
     return {

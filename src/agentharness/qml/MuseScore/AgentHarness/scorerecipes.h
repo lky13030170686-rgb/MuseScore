@@ -113,6 +113,27 @@ RecipeResult removeNote(mu::engraving::Score* score, const ScoreAddress& address
 RecipeResult addNoteToChord(mu::engraving::Score* score, const ScoreAddress& address, int voice,
                             int midiPitch);
 
+//! ── Tie recipes ───────────────────────────────────────────────────────────────────────────────
+//! A tie joins a note to the next note OF THE SAME PITCH, which is what makes it different from a slur
+//! (a slur joins different pitches). Both of these act on the note at an address; the second note is
+//! found by walking forward, not by asking the caller for another address.
+
+//! Tie the note at an address to the next note of the same pitch.
+//!
+//! ⛔ REFUSED when the note is already tied forward. Tying an already-tied note would either replace the
+//! existing tie (silently redirecting it) or create a second one, and both are wrong in ways the caller
+//! cannot see from the result. The message says the note is already tied, which is also the honest
+//! answer to "did my earlier call work".
+RecipeResult addTie(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex);
+
+//! Remove the tie starting at the note at an address. Refused when there is none, rather than reported
+//! as a success - "nothing to do" and "done" are different answers.
+RecipeResult removeTie(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex);
+
+//! Add a tie if there is none, remove it if there is. The one operation that always leaves the score in
+//! the state the caller asked for, whichever it was.
+RecipeResult toggleTie(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex);
+
 //! The duration names `setChordDuration` accepts, for the tool's error message and its schema.
 QStringList durationNames();
 

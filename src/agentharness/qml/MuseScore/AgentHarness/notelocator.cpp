@@ -28,6 +28,7 @@
 #include "engraving/dom/segment.h"
 
 #include "addressing.h"
+#include "scoredigest.h"
 
 #include "log.h"
 
@@ -215,5 +216,68 @@ NoteLookup muse::agentharness::noteAt(mu::engraving::Score* score, const ScoreAd
     }
 
     result.note = notes[size_t(index)];
+    return result;
+}
+
+NoteLookup muse::agentharness::nextNote(mu::engraving::Score* score, mu::engraving::Note* from, bool includeSelf)
+{
+    NoteLookup result;
+
+    if (!score || !from || !from->chord()) {
+        result.problem = QStringLiteral("no note to search from");
+        return result;
+    }
+
+    const mu::engraving::track_idx_t track = from->track();
+    const int startMeasure = from->chord()->measure()->index();
+    const mu::engraving::Fraction startTick = from->chord()->tick();
+
+    //! ⛔ WALK FORWARD FROM THE GIVEN POSITION, do not re-derive an address. The next note may be
+    //! several beats or several measures away, and asking "the note at the next beat" would find a
+    //! rest - or nothing - and tie to that.
+    //!
+    //! ⚠️ The scan is bounded by the score's measure count, so a note in the last measure simply has
+    //! no next note. That is the honest answer: there is nothing to tie to, and the caller is told so
+    //! rather than being handed the last note again.
+    for (int m = startMeasure; m < score->nmeasures(); ++m) {
+        mu::engraving::Measure* measure = mu::engraving::toMeasure(score->measure(m));
+        if (!measure) {
+            continue;
+        }
+
+        for (mu::engraving::Segment* seg = measure->first(mu::engraving::SegmentType::ChordRest); seg;
+             seg = seg->next(mu::engraving::SegmentType::ChordRest)) {
+            if (seg->tick() < startTick || (!includeSelf && seg->tick() == startTick)) {
+                continue;
+            }
+
+            mu::engraving::EngravingItem* item = seg->element(track);
+            if (!item || !item->isChord()) {
+                continue;
+            }
+
+            mu::engraving::Chord* chord = mu::engraving::toChord(item);
+            if (chord->notes().empty()) {
+                continue;
+            }
+
+            result.chord = chord;
+            //! The same pitch, so a tie connects the same note rather than an arbitrary member of the
+            //! next chord. A chord whose notes all differ from `from` is NOT a tie target - tying two
+            //! different pitches together is not a tie, it is a slur, and upstream would draw it as
+            //! one while every later read of the score saw an impossible pair.
+            result.note = chord->findNote(from->pitch());
+            if (!result.note) {
+                result.chord = nullptr;
+                continue;
+            }
+
+            return result;
+        }
+    }
+
+    result.problem = QStringLiteral("there is no later %1 to tie to - the note is in the last measure "
+                                    "that has one, or every later note on this staff differs in pitch")
+                     .arg(pitchName(from->pitch()));
     return result;
 }
