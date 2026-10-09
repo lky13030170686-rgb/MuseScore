@@ -121,6 +121,18 @@ add_to_link_if_exists(muse::rcommand)
 add_to_link_if_exists(muse::rcontrol)
 add_to_link_if_exists(muse::audio)
 add_to_link_if_exists(muse::audiotrack)
+add_to_link_if_exists(muse::agentharness)
+# NOTE the explicit `_qml` line: `add_to_link_if_exists` looks for `<lib>_qml`, i.e.
+# `muse::agentharness_qml` - but this module's CMake target is the alias `muse::agentharness`, so
+# that lookup misses and the QML half never reaches the link line. The symptom is precise and
+# misleading: the app builds fine and then dies at startup with
+#   Failed to load main qml file ... module "MuseScore.AgentHarness" is not installed
+# because the module's `*_resources_*` and `*_qmlplugin_init` object libraries (the ones that
+# carry the qmldir and the Q_IMPORT_PLUGIN) are simply absent from the executable. Adding the
+# target by its real name is the fix.
+if (TARGET agentharness_qml)
+    list(APPEND LINK_LIB agentharness_qml)
+endif()
 add_to_link_if_exists(muse::audioplugins)
 add_to_link_if_exists(muse::testflow)
 add_to_link_if_exists(muse::automation)

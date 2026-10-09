@@ -1,0 +1,213 @@
+/*
+ * SPDX-License-Identifier: GPL-3.0-only
+ * MuseScore-Studio-CLA-applies
+ *
+ * MuseScore Studio
+ * Music Composition & Notation
+ *
+ * Copyright (C) 2026 MuseScore Limited and others
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 3 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <QObject>
+#include <QString>
+#include <QVariantList>
+#include <QVariantMap>
+#include <qqmlintegration.h>
+
+#include <deque>
+
+#include "async/asyncable.h"
+#include "modularity/ioc.h"
+#include "context/iglobalcontext.h"
+#include "interactive/iinteractive.h"
+
+namespace mu::engraving {
+class Score;
+struct ScoreChanges;
+}
+
+namespace muse::agentharness {
+//! One recorded change to the score, exactly as the engraving layer reported it.
+//!
+//! This is the **raw layer** of the information field (see `Agent Harness/技术设计.md` §3.2).
+//! It is deliberately faithful rather than readable: `changedObjects` is a map of live
+//! `EngravingObject*`, so it can never be written to disk. The point of keeping this layer is
+//! that the readable layer above it is *derived* - when a derivation rule turns out to be wrong,
+//! the raw facts are still here to re-derive from. Storing only the readable layer would mean the
+//! field silently lies whenever a rule is incomplete.
+//!
+//! SIZING: the raw layer is a bounded ring buffer. Once a record is written to the session log the
+//! in-memory copy is only needed for the recent past (the panel, and re-derivation after a rule
+//! change), so old records are dropped rather than growing without bound.
+struct RawFieldEvent
+{
+    //! Monotonic, never reused. Parallels the `seq` of a SessionEvent (DSH keeps `seq === index`).
+    quint64 seq = 0;
+    //! Wall clock, for display and for correlating with log lines.
+    QString wallClock;
+
+    //! What caused it. Currently only user edits are observable; the agent's own writes will be
+    //! tagged here too once the tool layer exists (that is the whole point of having provenance).
+    enum class Source {
+        User,
+        Agent,
+        Plugin,
+        Unknown,
+    };
+    Source source = Source::Unknown;
+
+    //! Undo-stack transaction name, e.g. "Insert note" / "Transpose harmony".
+    //! Empty for undo/redo and for re-layout notifications.
+    QString action;
+    //! True for a redo entry, false for a normal write; undo is reported as its own event.
+    bool isRedo = false;
+    //! Set for an explicit undo (see the `undoRedoNotification` wiring) - the transaction name
+    //! belongs to the command being *undone*, which is why it is carried separately from `action`.
+    bool isUndo = false;
+
+    //! The changed region, in ticks and staff indices. NOTE: these are the *only* parts of
+    //! `ScoreChanges` that are safe to persist - see the pointer warning above.
+    int tickFrom = -1;
+    int tickTo = -1;
+    int staffFrom = -1;
+    int staffTo = -1;
+    bool isTextEditing = false;
+    //! True when the payload carried a usable boundary (tick+staff range).
+    bool hasBoundary = false;
+
+    //! How many distinct engraving objects the transaction touched.
+    int objectCount = 0;
+    //! Bucket -> how many changed objects were of that kind. A histogram rather than the objects
+    //! themselves: it is what the readable layer summarizes, and it is stable.
+    //! Command types use their own value; element types are offset by TYPE_BUCKET_OFFSET.
+    QMap<int, int> typeCounts;
+    //! PropertyId -> count, for property-only changes.
+    QMap<int, int> propertyCounts;
+
+    //! True when this event carried neither objects nor types - i.e. a pure re-layout ping.
+    //! Emitted by playback control (`playbackcontroller.cpp`), NOT by a user edit. The field must
+    //! skip these or it will record phantom operations (see 技术设计 §3.4).
+    bool isLayoutOnly = false;
+};
+
+//! The information field: a time-ordered record of what happened to the score.
+//!
+//! This is the "read" half of the harness. It owns no score data - every field is a projection of
+//! a signal the engraving and notation layers already emit. Two rules keep it honest:
+//!
+//!   1. **Subscribe to `Score::changesChannel()`, never to `notationChanged()`.** The latter is a
+//!      repaint request for the notation view and would miss edits coming from anywhere else
+//!      (`维护手册.md` §4.6 - this exact mistake was made once already on the MIDI page).
+//!   2. **Never hold an `EngravingObject*` past the callback.** `Score` is owned and deleted by
+//!      `EngravingProject`; a stale pointer here is a crash, and a pointer in the log is
+//!      unreplayable.
+//!
+//! WHY THIS IS A `QML_ELEMENT` RATHER THAN A MODULE SERVICE: the only thing it needs is
+//! `IGlobalContext::currentNotation()`, and `IGlobalContext` is a *context* interface - so the
+//! field needs a context, which means it has to be created where a context is resolvable. The
+//! project already answers this question for every per-window view model: declare it a
+//! `QML_ELEMENT` with `ContextInject<IGlobalContext> = { this }` and let QML's own context resolve
+//! it (see `UndoRedoToolbarModel`, `MidiEditorModel`). A `qmlRegisterSingletonInstance` would
+//! *not* work here: a singleton has no QML parent, so `iocCtxForQmlObject` asserts and hands back
+//! a null context.
+class FieldController : public QObject, public muse::Contextable, public muse::async::Asyncable
+{
+    Q_OBJECT
+    QML_ELEMENT;
+
+    //! How many raw events have been recorded since the field was created. Never decreases.
+    Q_PROPERTY(int eventCount READ eventCount NOTIFY fieldChanged)
+    //! Bumped whenever the score's contents change. Used as the optimistic-concurrency fence:
+    //! a tool call that carries an older revision is refused rather than applied to stale data.
+    Q_PROPERTY(int revision READ revision NOTIFY fieldChanged)
+    Q_PROPERTY(QString scoreName READ scoreName NOTIFY fieldChanged)
+    Q_PROPERTY(int measureCount READ measureCount NOTIFY fieldChanged)
+    Q_PROPERTY(int staffCount READ staffCount NOTIFY fieldChanged)
+    Q_PROPERTY(bool hasScore READ hasScore NOTIFY fieldChanged)
+    //! The most recent events, newest first, as plain maps for QML.
+    Q_PROPERTY(QVariantList recentEvents READ recentEvents NOTIFY fieldChanged)
+    //! Human-readable one-line status, for the panel header.
+    Q_PROPERTY(QString statusText READ statusText NOTIFY fieldChanged)
+
+    //! NOTE the interface is `mu::context::IGlobalContext`, NOT `muse::context::...`: this class
+    //! lives in `muse::agentharness`, where a bare `context::` would resolve to the (nonexistent)
+    //! `muse::context`. The models this pattern is copied from sit in `mu::notation`, so there the
+    //! short form happens to work - copying it verbatim here is a compile error, not a subtle bug.
+    muse::ContextInject<mu::context::IGlobalContext> context = { this };
+    //! Used for two things, both of them observation rather than behaviour: asking whether the
+    //! notation page is open, and (under MUSE_AGENT_DEMO_NOTATION) opening it so the field can be
+    //! exercised without a human at the keyboard.
+    //! NOTE the interface is `muse::IInteractive`, NOT `muse::interactive::IInteractive` - the
+    //! header lives in the `interactive/` directory but declares into namespace `muse`.
+    muse::ContextInject<muse::IInteractive> interactive = { this };
+
+public:
+    explicit FieldController(QObject* parent = nullptr);
+    ~FieldController() override;
+
+    //! Start observing the current notation, and keep following it across score changes.
+    //! Called from QML's Component.onCompleted. Safe to call twice; the second call only rebinds.
+    Q_INVOKABLE void init();
+
+    int eventCount() const { return int(m_events.size() + m_droppedEvents); }
+    int revision() const { return m_revision; }
+    QString scoreName() const { return m_scoreName; }
+    int measureCount() const { return m_measureCount; }
+    int staffCount() const { return m_staffCount; }
+    bool hasScore() const { return m_score != nullptr; }
+    QVariantList recentEvents() const;
+    QString statusText() const;
+
+    //! Test/diagnostic seam: the raw events themselves, oldest first.
+    const std::deque<RawFieldEvent>& events() const { return m_events; }
+
+signals:
+    void fieldChanged();
+
+private:
+    void bindToCurrentNotation();
+    void unbind();
+    void onScoreChanges(const mu::engraving::ScoreChanges& changes);
+    void onStackChanged();
+    void onUndoRedo();
+    void refreshScoreFacts();
+
+    void record(RawFieldEvent event);
+    void noteActionFromUndoStack(RawFieldEvent& event) const;
+
+    //! The field this many raw events deep is plenty; older ones are dropped (and counted).
+    static constexpr size_t MAX_EVENTS = 512;
+    //! How many events the QML panel is shown at once.
+    static constexpr int PANEL_EVENT_LIMIT = 30;
+
+    mu::engraving::Score* m_score = nullptr;
+
+    std::deque<RawFieldEvent> m_events;
+    quint64 m_nextSeq = 1;
+    quint64 m_droppedEvents = 0;
+
+    int m_revision = 0;
+    QString m_scoreName;
+    int m_measureCount = 0;
+    int m_staffCount = 0;
+
+    bool m_inited = false;
+    //! The undo stack's state index as of the last recorded event. Undo/redo is derived by
+    //! comparing it, NOT from `undoRedoNotification` - see the note in onScoreChanges.
+    int m_lastStateIndex = -1;
+};
+} // namespace muse::agentharness

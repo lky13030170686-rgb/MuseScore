@@ -134,6 +134,13 @@ option(MUE_BUILD_MUSESOUNDS_QML "Build musesounds QML" ${MUE_BUILD_MUSESOUNDS_MO
 option(MUE_BUILD_AUDIOTRACK_MODULE "Build audio track module" ON)
 option(MUE_BUILD_AUDIOTRACK_TESTS "Build audio track tests" ${MUE_BUILD_AUDIOTRACK_MODULE})
 
+# agentharness: the built-in agent harness - the score information field, and the tools that let
+# an agent perform score writes. Additive module; the only upstream touch points are the module
+# registration in src/app/appfactory.cpp and one DockPanel in the notation page.
+option(MUE_BUILD_AGENTHARNESS_MODULE "Build agent harness module" ON)
+option(MUE_BUILD_AGENTHARNESS_QML "Build agent harness QML" ${MUE_BUILD_AGENTHARNESS_MODULE})
+option(MUE_BUILD_AGENTHARNESS_TESTS "Build agent harness tests" ${MUE_BUILD_AGENTHARNESS_MODULE})
+
 option(MUE_BUILD_NOTATION_MODULE "Build notation module" ON)
 option(MUE_BUILD_NOTATION_TESTS "Build notation tests" ${MUE_BUILD_NOTATION_MODULE})
 

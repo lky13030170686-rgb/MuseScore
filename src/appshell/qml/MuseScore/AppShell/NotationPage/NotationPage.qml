@@ -35,6 +35,7 @@ import MuseScore.Palette
 import MuseScore.PropertiesPanel
 import MuseScore.InstrumentsScene
 import MuseScore.Playback
+import MuseScore.AgentHarness
 
 DockPage {
     id: root
@@ -43,6 +44,12 @@ DockPage {
     uri: "musescore://notation"
 
     required property NavigationSection topToolbarKeyNavSec
+
+    //! The agent harness's information field, created at window level (see WindowContent.qml) and
+    //! handed down to the Agent panel. It is a property rather than something the panel creates,
+    //! because `DockPanel` only builds its content while visible - the field has to be recording
+    //! before anyone opens the panel.
+    property var agentField
 
     property NotationPageModel pageModel: NotationPageModel {}
 
@@ -483,6 +490,48 @@ DockPage {
                 Component.onCompleted: {
                     pianoKeyboardPanel.contextMenuModel = contextMenuModel
                 }
+            }
+        },
+
+        DockPanel {
+            id: agentPanel
+
+            //! A plain name, not `pageModel.xxxPanelName()`: the dock name only has to be unique
+            //! (the MIDI page's mixer panel is `Midi_mixerPanel` for the same reason). Nothing in
+            //! the page model needs to know about this panel yet.
+            objectName: "AgentHarnessPanel"
+            title: qsTrc("appshell", "Agent")
+
+            width: root.verticalPanelDefaultWidth
+            minimumWidth: root.verticalPanelDefaultWidth
+            maximumWidth: root.verticalPanelDefaultWidth
+
+            minimumHeight: root.panelMinDimension
+            maximumHeight: root.panelMaxDimension
+
+            groupName: root.verticalPanelsGroup
+
+            //! NOTE: hidden by default, like the piano keyboard and timeline panels. The agent is
+            //! opt-in; a panel that is always there would take score width away from every user
+            //! who never opens it.
+            //!
+            //! MUSE_AGENT_PANEL=1 forces it open (read in C++ by `PanelConfig`).
+            //! That is the verification hook, and it exists for the same reason the MIDI page has
+            //! its MUSE_MIDIEDITOR_DEMO_* family: the panel is invisible by default, and a
+            //! screenshot of an invisible panel proves nothing. One environment lookup, no rebuild
+            //! needed to toggle it.
+            visible: PanelConfig.forceOpen
+
+            location: Location.Right
+
+            dropDestinations: root.verticalPanelDropDestinations
+
+            navigationSection: root.navigationPanelSec(agentPanel.location)
+
+            AgentPanel {
+                field: root.agentField
+                navigationSection: agentPanel.navigationSection
+                contentNavigationPanelOrderStart: agentPanel.contentNavigationPanelOrderStart
             }
         },
 

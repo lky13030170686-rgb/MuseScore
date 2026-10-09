@@ -110,6 +110,7 @@ qt_add_qml_module(appshell_qml
         TARGET playback_qml
         TARGET preferences_qml
         TARGET project_qml
+        TARGET agentharness_qml
 )
 
 if (OS_IS_MAC)

@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# MuseScore-Studio-CLA-applies
+#
+# MuseScore Studio
+# Music Composition & Notation
+#
+# Copyright (C) 2026 MuseScore Limited and others
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 3 as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+muse_create_qml_module(agentharness_qml FOR agentharness)
+
+qt_add_qml_module(agentharness_qml
+    URI MuseScore.AgentHarness
+    VERSION 1.0
+    SOURCES
+        # The field lives here, not in the plain `agentharness` library, because it is a
+        # QML_ELEMENT: Qt's QML type registration only sees types compiled into the QML module
+        # itself. It also needs a *context* (IGlobalContext is a context interface), and being a
+        # QML element is what gets it one - QML resolves it from the object's own QQmlContext.
+        fieldcontroller.cpp
+        fieldcontroller.h
+        panelconfig.cpp
+        panelconfig.h
+    QML_FILES
+        AgentPanel.qml
+
+    IMPORTS
+        TARGET muse_ui_qml
+        TARGET muse_uicomponents_qml
+)
+
+fixup_qml_module_dependencies(agentharness_qml)
+
+# engraving: the field reads `Score::changesChannel()` and the `ScoreChanges` payload.
+# notation:  it reaches the score and the undo stack through `INotation`, never through a
+#            cached `Score*` - see the ownership note in fieldcontroller.h.
+target_link_libraries(agentharness_qml PRIVATE
+    muse::uicomponents_qml
+    engraving
+    notation
+)
+
+# Necessary for the auto-generated sources (moc output includes the header by bare name).
+target_include_directories(agentharness_qml PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)

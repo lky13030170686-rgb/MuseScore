@@ -38,6 +38,11 @@ if (MUE_BUILD_AUDIOTRACK_MODULE)
     add_subdirectory(audiotrack)
 endif()
 
+# agentharness reads the score through `engraving`/`notation`, so it sits next to audiotrack.
+if (MUE_BUILD_AGENTHARNESS_MODULE)
+    add_subdirectory(agentharness)
+endif()
+
 add_subdirectory(importexport)
 
 if (MUE_BUILD_PROPERTIESPANEL_MODULE)

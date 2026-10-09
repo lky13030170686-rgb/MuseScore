@@ -29,6 +29,7 @@ import Muse.Interactive
 import Muse.Ui
 import Muse.UiComponents
 import MuseScore.AppShell
+import MuseScore.AgentHarness
 
 import "./HomePage"
 import "./NotationPage"
@@ -97,6 +98,23 @@ DockWindow {
         }
     ]
 
+    //! ── The agent harness's information field ──────────────────────────────────────────────
+    //! It lives here, at window level, for two reasons that both matter:
+    //!
+    //!   1. **It must outlive any one panel.** `DockPanel` only instantiates its content while it
+    //!      is visible (`DockPanel.qml`: `contentLoader.active: root.visible && root.inited`), so
+    //!      a field declared inside the Agent panel would record nothing until the user opened
+    //!      that panel - and a time-ordered record that only starts when you look at it is
+    //!      worthless.
+    //!   2. **It needs a context.** `IGlobalContext` is a context interface, so the field must be
+    //!      created where one resolves; a QML-declared element resolves it from its own
+    //!      QQmlContext (`iocCtxForQmlObject`), and this file is instantiated inside the window.
+    FieldController {
+        id: agentField
+
+        Component.onCompleted: init()
+    }
+
     pages: [
         HomePage {
             window: root.window
@@ -104,6 +122,7 @@ DockWindow {
 
         NotationPage {
             topToolbarKeyNavSec: topToolbarKeyNavSec
+            agentField: agentField
         },
 
         MidiEditorPage {
