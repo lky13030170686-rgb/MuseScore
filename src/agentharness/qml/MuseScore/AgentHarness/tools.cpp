@@ -1092,6 +1092,60 @@ ToolResult muse::agentharness::toolMeasureRemove(const QJsonObject& args, const 
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolNoteMove(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress from;
+    QString problem;
+    if (!readAddress(args, from, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    //! The target is read from `toMeasure`/`toBeat`/`toStaff` rather than a nested object, because the
+    //! schema language used here has no clean way to describe one - and a flat pair of names is what a
+    //! caller writes without thinking.
+    ScoreAddress to;
+    to.staff = from.staff;
+    if (!readInt(args, QStringLiteral("toMeasure"), to.measure)) {
+        return ToolResult::failure(QStringLiteral("`toMeasure` is required: the 1-based measure to move the "
+                                                  "note to"));
+    }
+    if (!readInt(args, QStringLiteral("toBeat"), to.beat)) {
+        return ToolResult::failure(QStringLiteral("`toBeat` is required: the 1-based beat to move the note "
+                                                  "to"));
+    }
+    if (args.contains(QStringLiteral("toStaff")) && !readInt(args, QStringLiteral("toStaff"), to.staff)) {
+        return ToolResult::failure(QStringLiteral("`toStaff` must be an integer"));
+    }
+    if (args.contains(QStringLiteral("toStaff"))) {
+        --to.staff;   //!< 1-based at the boundary, 0-based inside - the same rule as `staff`
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Move note"), [&](mu::engraving::Score* score) {
+        return moveNote(score, from, noteIndex, to);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1598,6 +1652,27 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("firstMeasure") }),
             toolMeasureRemove,
+        },
+        ToolSpec{
+            QStringLiteral("note_move"),
+            QStringLiteral("Move one note's pitch from one beat to another - e.g. take the C4 on beat 1 and "
+                           "put it on beat 3. Refused if the destination already has that pitch, if it is "
+                           "a rest, or if the source holds only that one note (use note_to_rest then add "
+                           "it). Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                props.insert(QStringLiteral("toMeasure"), intProperty(QStringLiteral(
+                                                                  "1-based measure to move the note to.")));
+                props.insert(QStringLiteral("toBeat"), intProperty(QStringLiteral(
+                                                               "1-based beat to move the note to.")));
+                props.insert(QStringLiteral("toStaff"), intProperty(QStringLiteral(
+                                                               "Optional. 1-based staff to move the note to. Defaults to the same staff.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("toMeasure"),
+                             QStringLiteral("toBeat") }),
+            toolNoteMove,
         },
         ToolSpec{
             QStringLiteral("note_tie"),

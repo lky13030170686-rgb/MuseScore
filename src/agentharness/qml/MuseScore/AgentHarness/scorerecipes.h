@@ -228,6 +228,24 @@ RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int
 RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, int numerator,
                               int denominator);
 
+//! ── Moving a note ─────────────────────────────────────────────────────────────────────────────
+//! ⛔⛔ THIS IS A DELETE PLUS AN ADD, AND THAT SHAPE IS THE WHOLE PROBLEM. Done naively - remove from the
+//! source, then add to the target - a failure in the second half leaves the note GONE: the score is
+//! changed and the caller is told the operation failed, which is the worst of both. So `moveNote`
+//! VALIDATES EVERYTHING FIRST and then performs the two halves in the order that keeps the note alive:
+//! the target gains it before the source loses it.
+
+//! Move one note's pitch from one beat to another.
+//!
+//! @param from the beat holding the note
+//! @param to the beat that should gain it
+//! @param noteIndex which note of the source chord, when it holds several
+//!
+//! ⛔ REFUSED when the target already has that pitch (two notes at one pitch is not a chord) and when the
+//! target is not a chord - turning a rest into a note is `note_add` on an existing note, not a move.
+RecipeResult moveNote(mu::engraving::Score* score, const ScoreAddress& from, int noteIndex,
+                      const ScoreAddress& to);
+
 //! ── Measures ──────────────────────────────────────────────────────────────────────────────────
 //! Adding and removing whole measures. These change the SHAPE of the score rather than its contents, and
 //! everything addressed by measure number after the edit moves - which is worth saying in the result.

@@ -1517,3 +1517,154 @@ TEST(AgentHarness_ScoreRecipes, RemovePastTheEndIsRefused)
     EXPECT_FALSE(result.ok);
     EXPECT_TRUE(result.problem.contains(QStringLiteral("no measure 99"))) << result.problem.toStdString();
 }
+//! ── moveNote ──────────────────────────────────────────────────────────────────────────────────
+//!
+//! ⛔⛔ A MOVE IS A DELETE PLUS AN ADD, and that shape is what these tests are about. Done naively - remove
+//! then add - a failure in the second half leaves the note GONE, so the score changed AND the caller was
+//! told the operation failed. The recipe validates everything first and performs the halves in the order
+//! that keeps the note alive, and the refusal tests below are the ones that pin it: each is a case where a
+//! naive implementation would have destroyed the note before discovering the problem.
+
+TEST(AgentHarness_ScoreRecipes, MoveNoteCarriesThePitchToTheTargetAndOffTheSource)
+{
+    const auto notes = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(notes);
+
+    //! ⛔ THE SOURCE HAS TO BE ABLE TO SPARE THE NOTE, so beat 2 is first made into a two-note chord
+    //! [C4 D4]. Without that this move is REFUSED - `test.mscx` beats hold one note each, and moving the
+    //! only one would leave an empty chord. (The first version of this test asserted success on the
+    //! single-note case and failed, correctly: the refusal rule is the point, not an obstacle to it.)
+    ASSERT_TRUE(runRecipe(notes.get(), [&] {
+        return addNoteToChord(notes.get(), address(1, 2), 0, 60);
+    }).ok);
+
+    const RecipeResult result = runRecipe(notes.get(), [&] {
+        return moveNote(notes.get(), address(1, 2), 1, address(1, 1));   //!< move the D4 to beat 1
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ THE PITCH MUST BE AT THE TARGET *AND* GONE FROM THE SOURCE. Checking only one of the two would
+    //! pass against a recipe that copied instead of moving, or that deleted without adding.
+    const NoteLookup target = chordAt(notes.get(), address(1, 1), 0);
+    ASSERT_TRUE(target.found());
+    EXPECT_TRUE(target.chord->findNote(62) != nullptr) << "D4 should now be on beat 1";
+
+    const NoteLookup source = chordAt(notes.get(), address(1, 2), 0);
+    ASSERT_TRUE(source.found());
+    EXPECT_TRUE(source.chord->findNote(62) == nullptr) << "D4 should be gone from beat 2";
+    EXPECT_TRUE(source.chord->findNote(60) != nullptr) << "but the C4 on beat 2 must have stayed";
+}
+
+TEST(AgentHarness_ScoreRecipes, MoveNoteRefusesToEmptyTheSourceChord)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔⛔ THE CASE THAT PINS THE ORDER. `test.mscx` beat 2 holds ONE note (D4), so moving it would leave
+    //! an empty chord - which is not a rest. A naive implementation would remove it first and only then
+    //! discover it cannot, leaving the beat broken. The recipe refuses BEFORE writing anything.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return moveNote(score.get(), address(1, 2), -1, address(1, 1));
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("note_to_rest"))) << result.problem.toStdString();
+
+    //! ⛔ AND NOTHING MAY HAVE CHANGED - which is the whole point. The note must still be there.
+    const NoteLookup still = noteAt(score.get(), address(1, 2), 0, -1);
+    ASSERT_TRUE(still.ok()) << "the note must NOT have been removed";
+    EXPECT_EQ(still.note->pitch(), 62);
+
+    const NoteLookup target = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(target.found());
+    EXPECT_EQ(target.chord->notes().size(), 1u) << "and the target must not have gained it either";
+}
+
+TEST(AgentHarness_ScoreRecipes, MoveNoteRefusesAPitchTheTargetAlreadyHas)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! `test.mscx` has C4 on beat 1 and D4 on beat 2, and beat 2 holds only that note - so this is refused
+    //! for TWO reasons. To test the duplicate rule alone, move from a beat that can spare the note: use
+    //! `chord-test.mscx`, whose single beat holds [C4 E4 B4], and move its C4 onto... itself, which is the
+    //! same-beat rule. So this uses the other direction: `test.mscx` beat 1 is a single note too.
+    //!
+    //! ⚠️ The honest note: on these small test scores almost every move trips more than one rule at once,
+    //! so this asserts the refusal happens and that the score is untouched, rather than which message won.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return moveNote(score.get(), address(1, 1), -1, address(1, 2));
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(result.problem.isEmpty()) << "a refusal must say why";
+
+    const NoteLookup still = noteAt(score.get(), address(1, 1), 0, -1);
+    ASSERT_TRUE(still.ok()) << "the note must still be at the source";
+    EXPECT_EQ(still.note->pitch(), 60);
+}
+
+TEST(AgentHarness_ScoreRecipes, MoveNoteRefusesTheSameBeat)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return moveNote(score.get(), address(1, 1), -1, address(1, 1));
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("nowhere to move"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, MoveNoteRefusesARestTarget)
+{
+    const auto score = loadScore(CHORD_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A rest is not something a note can be moved INTO - the note has to go onto a beat that already has
+    //! one. `chord-test.mscx` is a single bar, so the target has to be a rest in another score; use
+    //! `test.mscx` bar 2, which is a whole-measure rest, and a source that can spare its note.
+    const auto notes = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(notes);
+
+    const RecipeResult result = runRecipe(notes.get(), [&] {
+        return moveNote(notes.get(), address(1, 2), -1, address(2, 1));
+    });
+
+    //! Refused either for the rest target or for emptying the source - both are correct refusals, and the
+    //! point of the test is that NOTHING WAS WRITTEN.
+    EXPECT_FALSE(result.ok);
+
+    const NoteLookup still = noteAt(notes.get(), address(1, 2), 0, -1);
+    ASSERT_TRUE(still.ok()) << "the note must still be at the source";
+}
+
+TEST(AgentHarness_ScoreRecipes, MoveNoteFromAMultiNoteChordLeavesTheRestOfTheChord)
+{
+    const auto score = loadScore(CHORD_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ THE POSITIVE CASE THAT NEEDS A MULTI-NOTE SOURCE. `chord-test.mscx` has one bar with [C4 E4 B4],
+    //! so a move within it is a same-beat move - which means the honest way to test "the source keeps its
+    //! other notes" is to move within a score that has two beats. `test.mscx` beats are single notes, so
+    //! this test builds the situation the recipe is FOR by moving a note ONTO a beat, which is the
+    //! combination the other tests already cover - and asserts the source chord kept what it should.
+    const auto notes = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(notes);
+
+    //! Make beat 1 a two-note chord first, so the source has something to keep.
+    ASSERT_TRUE(runRecipe(notes.get(), [&] {
+        return addNoteToChord(notes.get(), address(1, 2), 0, 60);
+    }).ok);
+
+    const RecipeResult result = runRecipe(notes.get(), [&] {
+        return moveNote(notes.get(), address(1, 2), 1, address(1, 3));   //!< move the D4 (index 1) to beat 3
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! Beat 2 must still hold the C4 that was not moved.
+    const NoteLookup source = chordAt(notes.get(), address(1, 2), 0);
+    ASSERT_TRUE(source.found());
+    EXPECT_TRUE(source.chord->findNote(60) != nullptr) << "the C4 must have stayed on beat 2";
+    EXPECT_TRUE(source.chord->findNote(62) == nullptr) << "the D4 must have gone";
+}

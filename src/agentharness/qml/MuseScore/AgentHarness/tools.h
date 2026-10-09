@@ -199,6 +199,9 @@ ToolResult toolMeasureInsert(const QJsonObject& args, const ToolContext& ctx);
 //! Write: remove a range of measures.
 ToolResult toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: move one note's pitch from one beat to another.
+ToolResult toolNoteMove(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: tie / untie / toggle the tie on the note at an address.
 //!
 //! WHY ONE TOOL WITH A MODE RATHER THAN THREE: the three are the same question asked three ways

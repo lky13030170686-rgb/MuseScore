@@ -778,6 +778,96 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
     }
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
 }
+RecipeResult muse::agentharness::moveNote(mu::engraving::Score* score, const ScoreAddress& from,
+                                          int noteIndex, const ScoreAddress& to)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (from.measure == to.measure && from.beat == to.beat && from.staff == to.staff) {
+        return RecipeResult::failure(QStringLiteral("%1 and %2 are the same beat, so there is nowhere to "
+                                                    "move the note to")
+                                     .arg(formatAddress(from), formatAddress(to)));
+    }
+
+    //! ── VALIDATE EVERYTHING BEFORE WRITING ANYTHING ───────────────────────────────────────────────
+    //!
+    //! ⛔ A move is a delete plus an add, so every reason the ADD could fail has to be found while the
+    //! note is still in place. Finding it afterwards means the note is already gone and the caller is
+    //! told the move failed - the score changed AND the operation reported as not having happened.
+
+    const NoteLookup source = noteAt(score, from, 0, noteIndex);
+    if (!source.ok()) {
+        return RecipeResult::failure(source.problem.isEmpty()
+                                     ? QStringLiteral("the source lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : source.problem);
+    }
+
+    const int pitch = source.note->pitch();
+    const bool sourceChordWouldEmpty = source.chord->notes().size() <= 1;
+
+    const NoteLookup target = chordAt(score, to, 0);
+    if (!target.found()) {
+        return RecipeResult::failure(target.problem.isEmpty()
+                                     ? QStringLiteral("the target lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : target.problem);
+    }
+
+    //! ⛔ THE TARGET MUST BE A CHORD. A rest is not something a note can be moved into - the note has to
+    //! go ONTO something, and "make this rest a note" is `note_add` on a beat that already has one.
+    if (!target.chord) {
+        return RecipeResult::failure(
+            QStringLiteral("%1 is a rest. A note can only be moved onto a beat that already has one; to put "
+                           "a note on a silent beat, add it there instead.").arg(formatAddress(to)));
+    }
+
+    //! ⛔ THE TARGET MUST NOT ALREADY HAVE THIS PITCH. Two notes at one pitch is not a chord - it draws as
+    //! one notehead while every later read sees two, which reads as "the chord has a note I cannot see".
+    if (target.chord->findNote(pitch)) {
+        return RecipeResult::failure(QStringLiteral("%1 already has a %2, so moving the note there would "
+                                                    "put two notes at the same pitch")
+                                     .arg(formatAddress(to), pitchName(pitch)));
+    }
+
+    //! ⛔ AND IF THE SOURCE WOULD BE EMPTIED, THE TARGET HAS TO BE ABLE TO TAKE IT. `removeNote` refuses
+    //! to leave an empty chord - correctly, since that is not a rest - so a move that would empty the
+    //! source has to be refused HERE, while nothing has been written, rather than half-done.
+    if (sourceChordWouldEmpty) {
+        return RecipeResult::failure(
+            QStringLiteral("%1 holds only this note, so moving it would leave an empty chord - which is "
+                           "not a rest. To silence %1 use note_to_rest, then add the note at %2.")
+            .arg(formatAddress(from), formatAddress(to)));
+    }
+
+    //! ── THE TWO HALVES, IN THE ORDER THAT KEEPS THE NOTE ALIVE ────────────────────────────────────
+    //!
+    //! The target gains the pitch BEFORE the source loses it. If the add somehow fails anyway, the score
+    //! holds the note twice - wrong, but recoverable with one undo, and nothing has been LOST. The other
+    //! order would lose the note.
+
+    const RecipeResult added = addNoteToChord(score, to, 0, pitch);
+    if (!added.ok) {
+        return RecipeResult::failure(QStringLiteral("could not add the note at %1: %2")
+                                     .arg(formatAddress(to), added.problem));
+    }
+
+    const RecipeResult removed = removeNote(score, from, 0, noteIndex);
+    if (!removed.ok) {
+        //! ⚠️ Reported as a failure WITH the state spelled out, because the score now holds the note
+        //! twice. Saying only "failed" would leave the caller believing nothing happened.
+        return RecipeResult::failure(
+            QStringLiteral("the note was added at %1 but could not be removed from %2: %3. The score now "
+                           "has the note in BOTH places - one undo will take back the addition.")
+            .arg(formatAddress(to), formatAddress(from), removed.problem));
+    }
+
+    return RecipeResult::success(QStringLiteral("moved %1 from %2 to %3")
+                                 .arg(pitchName(pitch), formatAddress(from), formatAddress(to)));
+}
+
 namespace {
 //! The measure at a 1-based number, or null. Also reports how many there are, for the message.
 mu::engraving::Measure* measureAt(mu::engraving::Score* score, int number, int* total)
