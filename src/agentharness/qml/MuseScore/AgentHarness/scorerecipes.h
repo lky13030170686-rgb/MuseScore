@@ -134,8 +134,30 @@ RecipeResult removeTie(mu::engraving::Score* score, const ScoreAddress& address,
 //! the state the caller asked for, whichever it was.
 RecipeResult toggleTie(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex);
 
-//! ── Rest recipes ──────────────────────────────────────────────────────────────────────────────
+//! ── Slur recipes ──────────────────────────────────────────────────────────────────────────────
+//! A SLUR IS NOT A TIE, and the difference is the whole reason both exist:
+//!   - a tie joins two notes OF THE SAME PITCH and changes how they SOUND (one longer note);
+//!   - a slur joins any two notes and changes how they are PLAYED (legato).
+//! So a slur may connect different pitches - which is exactly the case `addTie` refuses - and the two
+//! operations must not be confused. `note_tie` says so in its own description, and the slur tool says
+//! it again from the other side, because a model that conflates them will produce a score that reads
+//! correctly and sounds wrong.
 
+//! Slur the note at an address to the next note.
+//!
+//! ⛔ REFUSED when a slur already starts there. Adding a second slur over the same pair is not a
+//! thicker slur - it is two slurs drawn on top of each other, and the caller cannot see that from the
+//! result.
+RecipeResult addSlur(mu::engraving::Score* score, const ScoreAddress& address, int voice);
+
+//! Remove the slur starting at the note at an address. Refused when there is none, rather than
+//! reported as a success - "nothing to do" and "done" are different answers.
+RecipeResult removeSlur(mu::engraving::Score* score, const ScoreAddress& address, int voice);
+
+//! Add a slur if there is none, remove it if there is.
+RecipeResult toggleSlur(mu::engraving::Score* score, const ScoreAddress& address, int voice);
+
+//! ── Rest recipes ──────────────────────────────────────────────────────────────────────────────
 //! Replace the chord at an address with a rest of the SAME duration.
 //!
 //! ⛔ WHY THIS IS THE ANSWER TO "silence this beat" AND `note_remove` IS NOT: removing the last note of

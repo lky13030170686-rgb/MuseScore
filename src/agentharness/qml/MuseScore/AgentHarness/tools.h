@@ -182,6 +182,13 @@ ToolResult toolNoteTie(const QJsonObject& args, const ToolContext& ctx);
 //! Write: replace the chord at an address with a rest of the same duration - i.e. silence this beat.
 ToolResult toolNoteToRest(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: slur / unslur / toggle the slur starting at the note at an address.
+//!
+//! ⛔ A SLUR IS NOT A TIE, and the two tools have to say so from both sides. A tie joins two notes of
+//! the SAME PITCH and changes how they sound; a slur joins ANY two notes and changes how they are
+//! played. A model that conflates them produces a score that reads correctly and sounds wrong.
+ToolResult toolNoteSlur(const QJsonObject& args, const ToolContext& ctx);
+
 //! Read: list the operations that address a NOTE directly, rather than a command URI.
 //!
 //! WHY THIS TOOL HAS TO EXIST: the command tools are discoverable - `command_list` enumerates them, and

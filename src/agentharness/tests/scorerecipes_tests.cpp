@@ -28,6 +28,7 @@
 #include "engraving/dom/note.h"
 #include "engraving/dom/rest.h"
 #include "engraving/dom/score.h"
+#include "engraving/dom/slur.h"
 #include "engraving/dom/tie.h"
 #include "engraving/editing/transaction/transaction.h"
 #include "engraving/tests/utils/scorerw.h"
@@ -499,4 +500,129 @@ TEST(AgentHarness_ScoreRecipes, ToggleTieAddsThenRemoves)
     });
     EXPECT_TRUE(removed.ok) << removed.problem.toStdString();
     EXPECT_TRUE(noteAt(score.get(), address(1, 1), 0, -1).note->tieFor() == nullptr);
+}
+
+//! ── Slurs ─────────────────────────────────────────────────────────────────────────────────────
+//!
+//! ⛔ A SLUR IS NOT A TIE, and these tests are where that stops being a comment. A tie joins two notes
+//! of the SAME PITCH; a slur joins any two. So the case `AddTieWithNoSamePitchLaterIsRefused` REJECTS is
+//! the case a slur must ACCEPT - if both operations behaved the same way on it, one of them would be
+//! wrong.
+
+TEST(AgentHarness_ScoreRecipes, AddSlurConnectsTwoNotesOfDifferentPitch)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! test.mscx is C4 D4 E4 F4 - every neighbouring pair differs in pitch, which is exactly what a tie
+    //! cannot do and a slur must.
+    const NoteLookup before = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(before.found());
+    EXPECT_TRUE(before.chord->slur() == nullptr) << "the test data starts unslurred";
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addSlur(score.get(), address(1, 1), 0);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    const NoteLookup after = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(after.found());
+    ASSERT_TRUE(after.chord->slur() != nullptr) << "the slur must exist";
+
+    //! ⛔ AND IT MUST REACH THE RIGHT NOTE. A slur that exists but points at the wrong note draws as a
+    //! slur and reads as one, so the destination is the part worth asserting.
+    const NoteLookup second = chordAt(score.get(), address(1, 2), 0);
+    ASSERT_TRUE(second.found());
+    EXPECT_EQ(after.chord->slur()->endElement(), static_cast<EngravingItem*>(second.chord));
+}
+
+TEST(AgentHarness_ScoreRecipes, AddSlurRefusesANoteThatIsAlreadySlurred)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return addSlur(score.get(), address(1, 1), 0);
+    }).ok);
+
+    //! ⛔ Refused, not stacked: two slurs over the same pair are not a thicker slur - they are two slurs
+    //! drawn on top of each other, and the caller cannot see that from the result.
+    const RecipeResult again = runRecipe(score.get(), [&] {
+        return addSlur(score.get(), address(1, 1), 0);
+    });
+    EXPECT_FALSE(again.ok);
+    EXPECT_TRUE(again.problem.contains(QStringLiteral("already slurred"))) << again.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, AddSlurOnARestIsRefusedWithoutCrashing)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A slur needs something to start on. "Slur the silence" is not a thing, and the refusal must say
+    //! that rather than reaching for a chord that is not there.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addSlur(score.get(), address(2, 1), 0);
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("rest"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, AddSlurFromTheLastNoteIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! The last note of the score has nothing after it. `Score::addSlur` returns null in that case, and
+    //! a success the caller cannot reconcile with the score would be worse than the refusal.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addSlur(score.get(), address(1, 4), 0);   //!< F4, the last note of bar 1... of the score
+    });
+
+    //! NOTE bar 2 is a rest, so there IS no later chord: this must be refused, not slur to the rest.
+    EXPECT_FALSE(result.ok) << "there is no later note to slur to";
+    EXPECT_FALSE(result.problem.isEmpty());
+}
+
+TEST(AgentHarness_ScoreRecipes, RemoveSlurTakesItAwayAndRefusesWhenThereIsNone)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult nothing = runRecipe(score.get(), [&] {
+        return removeSlur(score.get(), address(1, 1), 0);
+    });
+    EXPECT_FALSE(nothing.ok);
+    EXPECT_FALSE(nothing.problem.isEmpty());
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return addSlur(score.get(), address(1, 1), 0);
+    }).ok);
+
+    const RecipeResult removed = runRecipe(score.get(), [&] {
+        return removeSlur(score.get(), address(1, 1), 0);
+    });
+    EXPECT_TRUE(removed.ok) << removed.problem.toStdString();
+
+    const NoteLookup after = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(after.found());
+    EXPECT_TRUE(after.chord->slur() == nullptr) << "the slur must be gone";
+}
+
+TEST(AgentHarness_ScoreRecipes, ToggleSlurAddsThenRemoves)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult added = runRecipe(score.get(), [&] {
+        return toggleSlur(score.get(), address(1, 1), 0);
+    });
+    EXPECT_TRUE(added.ok) << added.problem.toStdString();
+    EXPECT_TRUE(chordAt(score.get(), address(1, 1), 0).chord->slur() != nullptr);
+
+    const RecipeResult removed = runRecipe(score.get(), [&] {
+        return toggleSlur(score.get(), address(1, 1), 0);
+    });
+    EXPECT_TRUE(removed.ok) << removed.problem.toStdString();
+    EXPECT_TRUE(chordAt(score.get(), address(1, 1), 0).chord->slur() == nullptr);
 }

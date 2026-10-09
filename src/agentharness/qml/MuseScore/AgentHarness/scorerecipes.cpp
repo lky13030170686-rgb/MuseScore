@@ -28,7 +28,10 @@
 #include "engraving/dom/tie.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/pitchspelling.h"
+#include "engraving/dom/chordrest.h"
 #include "engraving/dom/score.h"
+#include "engraving/editing/navigation.h"
+#include "engraving/dom/slur.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/noteval.h"
 #include "engraving/dom/rest.h"
@@ -607,6 +610,135 @@ RecipeResult muse::agentharness::changeToRest(mu::engraving::Score* score, const
 
     return RecipeResult::success(QStringLiteral("%1: replaced the chord with a %2 rest")
                                  .arg(formatAddress(address), was));
+}
+RecipeResult muse::agentharness::addSlur(mu::engraving::Score* score, const ScoreAddress& address, int voice)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const NoteLookup found = chordAt(score, address, voice);
+    if (!found.found()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    //! ⚠️ A slur attaches to the CHORD REST, not to a note inside it - which is why this takes the
+    //! chord and does not need a note index. A caller on a rest is refused: a slur needs something to
+    //! start on, and "slur the silence" is not a thing.
+    mu::engraving::ChordRest* start = found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
+                                                  : found.rest;
+    if (!start || start->isRest()) {
+        return RecipeResult::failure(QStringLiteral("%1 is a rest, so there is nothing to slur from")
+                                     .arg(formatAddress(address)));
+    }
+
+    //! ⛔ ALREADY SLURRED: refused, not stacked. Two slurs over the same pair are not a thicker slur -
+    //! they are two slurs drawn on top of each other, and the caller cannot see that from the result.
+    if (start->slur()) {
+        return RecipeResult::failure(
+            QStringLiteral("%1 is already slurred to the next note. To slur it somewhere else, remove "
+                           "the existing slur first.").arg(formatAddress(address)));
+    }
+
+    //! ⛔ CHECK THAT THERE IS SOMETHING TO SLUR TO, BEFORE calling `addSlur`.
+    //!
+    //! `Score::addSlur` does not fail when the note is the last one - it falls back to slurring the note
+    //! TO ITSELF (`secondChordRest = firstChordRest`), which is the let-ring notation. That is a
+    //! legitimate mark and upstream is right to produce it when asked, but it is NOT what "slur this
+    //! note to the next note" means, and producing it silently would change the meaning of the request
+    //! without saying so.
+    //!
+    //! ⚠️ The unit suite caught this: the test asserting "the last note cannot be slurred" failed
+    //! because the call SUCCEEDED and made a self-slur. The check is here rather than after the call
+    //! because a self-slur is indistinguishable from a real one by its return value alone.
+    mu::engraving::ChordRestNavigateOptions options;
+    options.disableOverRepeats = true;
+    mu::engraving::ChordRest* target = mu::engraving::Navigation::nextChordRest(start, options);
+    if (!target || !target->isChord()) {
+        return RecipeResult::failure(
+            QStringLiteral("there is no later note to slur %1 to - the next thing after it is a rest or "
+                           "the end of the score. (A slur from a note to itself is the let-ring mark, "
+                           "which is a different notation and is not made by this operation.)")
+            .arg(formatAddress(address)));
+    }
+
+    //! ⛔ `Score::addSlur`, NOT a hand-built `Slur`. It does the wiring this would otherwise have to
+    //! repeat - tick2, track2, the staff/part test that decides whether the slur crosses staves, and
+    //! the slur segment without which the slur exists but is never drawn.
+    mu::engraving::Slur* slur = score->addSlur(start, target, nullptr);
+    if (!slur) {
+        return RecipeResult::failure(QStringLiteral("the slur from %1 could not be created")
+                                     .arg(formatAddress(address)));
+    }
+
+    return RecipeResult::success(QStringLiteral("%1: slurred to the next note").arg(formatAddress(address)));
+}
+
+RecipeResult muse::agentharness::removeSlur(mu::engraving::Score* score, const ScoreAddress& address, int voice)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const NoteLookup found = chordAt(score, address, voice);
+    if (!found.found()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    mu::engraving::ChordRest* start = found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
+                                                  : found.rest;
+    if (!start) {
+        return RecipeResult::failure(QStringLiteral("%1 holds nothing to slur")
+                                     .arg(formatAddress(address)));
+    }
+
+    //! `ChordRest::slur()` with no argument uses the same "next chord rest" navigation `addSlur` does,
+    //! so the slur this finds is the slur that was added - rather than a different one that happens to
+    //! overlap.
+    mu::engraving::Slur* slur = start->slur();
+    if (!slur) {
+        //! Refused rather than reported as done: "there was nothing to remove" and "I removed it" are
+        //! different answers, and a caller that gets the second when the first is true believes it
+        //! changed something.
+        return RecipeResult::failure(QStringLiteral("%1 has no slur to the next note, so there is "
+                                                    "nothing to remove").arg(formatAddress(address)));
+    }
+
+    //! ⛔ `Score::undoRemoveElement`, which is what upstream uses for spanners. A bare `delete` would
+    //! take the slur out of the score without telling the undo stack - it would vanish and Ctrl+Z
+    //! would not bring it back.
+    score->undoRemoveElement(slur);
+
+    return RecipeResult::success(QStringLiteral("%1: removed the slur").arg(formatAddress(address)));
+}
+
+RecipeResult muse::agentharness::toggleSlur(mu::engraving::Score* score, const ScoreAddress& address, int voice)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const NoteLookup found = chordAt(score, address, voice);
+    if (!found.found()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    mu::engraving::ChordRest* start = found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
+                                                  : found.rest;
+    if (start && start->slur()) {
+        return removeSlur(score, address, voice);
+    }
+
+    return addSlur(score, address, voice);
 }
 QStringList muse::agentharness::durationNames(){
     return {
