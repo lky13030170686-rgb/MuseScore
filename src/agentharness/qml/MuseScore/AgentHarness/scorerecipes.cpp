@@ -102,15 +102,30 @@ DurationParse parseDuration(const QString& raw)
 
     //! Dots, in the three spellings seen in practice: a prefix (`dotted-quarter`), a suffix word
     //! (`quarter dotted`), and the musical shorthand (`quarter.`).
+    //!
+    //! ⛔⛔ STRIP THE WHOLE PREFIX, not "everything up to the first dash". The first version did the
+    //! latter, which is correct for `dotted-half` and WRONG for `double-dotted-half`: the first dash is
+    //! the one inside `double-dotted`, so the name came out as `dotted-half` and the caller was told
+    //! "`double-dotted-half` is not a duration I know" - about a spelling this function documents as
+    //! accepted. The unit suite caught it; nothing in the running program had tried the double form.
     int dots = 0;
-    if (name.startsWith(QLatin1String("double-dotted-")) || name.startsWith(QLatin1String("double dotted "))) {
-        dots = 2;
-        name = name.mid(name.indexOf(QLatin1Char('-')) >= 0 ? name.indexOf(QLatin1Char('-')) + 1
-                                                            : int(qstrlen("double dotted ")));
-    } else if (name.startsWith(QLatin1String("dotted-")) || name.startsWith(QLatin1String("dotted "))) {
-        dots = 1;
-        name = name.mid(name.indexOf(QLatin1Char('-')) >= 0 ? name.indexOf(QLatin1Char('-')) + 1
-                                                            : int(qstrlen("dotted ")));
+    const struct {
+        const char* prefix;
+        int dots;
+    } prefixes[] = {
+        { "double-dotted-", 2 },
+        { "double dotted ", 2 },
+        { "dotted-", 1 },
+        { "dotted ", 1 },
+    };
+
+    for (const auto& p : prefixes) {
+        const QString prefix = QString::fromLatin1(p.prefix);
+        if (name.startsWith(prefix)) {
+            dots = p.dots;
+            name = name.mid(prefix.size());
+            break;
+        }
     }
 
     while (name.endsWith(QLatin1Char('.'))) {

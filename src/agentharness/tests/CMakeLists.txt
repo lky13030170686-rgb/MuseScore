@@ -32,6 +32,7 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/semanticderive_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/scoredigest_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/notelocator_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/scorerecipes_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/sessionlog_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/llmclient_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/systemprompt_tests.cpp
