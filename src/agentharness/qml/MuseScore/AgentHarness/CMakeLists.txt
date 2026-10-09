@@ -44,6 +44,16 @@ qt_add_qml_module(agentharness_qml
         scoredigest.h
         tools.cpp
         tools.h
+        # The agent loop's verifiable core. `sessionlog` is the single source of truth (the model's
+        # history is DERIVED from it); `llmclient`'s wire handling is pure so it can be tested without
+        # a network - the parts of an SSE client that actually break are the reassembly rules, and
+        # those need no socket.
+        sessionlog.cpp
+        sessionlog.h
+        llmclient.cpp
+        llmclient.h
+        systemprompt.cpp
+        systemprompt.h
     QML_FILES
         AgentPanel.qml
 

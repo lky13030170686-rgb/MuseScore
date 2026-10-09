@@ -41,6 +41,7 @@
 #include "addressing.h"
 #include "semanticderive.h"
 #include "scoredigest.h"
+#include "systemprompt.h"
 #include "tools.h"
 
 using namespace muse;
@@ -137,6 +138,17 @@ void FieldController::applyDemoToolCallIfPending()
            << "revision=" << revision()
            << "canUndo=" << (undoStackCanUndo())
            << "result=" << text.left(300);
+
+    //! ── The session log, exercised from the running program ───────────────────────────────────
+    //! Appending a real turn and printing the projection is what verifies the claim that matters:
+    //! **the model's history is derived from the log**, so "what the model saw" is answerable from
+    //! what was recorded. Doing it here (rather than only in unit tests) also checks the JSONL form
+    //! survives the real QString/QJson round trip.
+    seedSystemPrompt();
+    appendUserMessage(QStringLiteral("what is in this score?"));
+
+    LOGW() << "[agent-session] jsonl:\n" << sessionJsonLines();
+    LOGW() << "[agent-session] projection:\n" << sessionPreview();
 }
 
 bool FieldController::undoStackCanUndo() const
@@ -651,6 +663,80 @@ QString FieldController::dispatchCommand(const QString& command, const QJsonObje
     });
 
     return error;
+}
+
+QString FieldController::sessionJsonLines() const
+{
+    return QString::fromUtf8(m_session.toJsonLines());
+}
+
+QString FieldController::sessionPreview() const
+{
+    const QVector<WireMessage> messages = m_session.deriveMessages();
+    if (messages.isEmpty()) {
+        return QStringLiteral("(the session log projects to no messages)");
+    }
+
+    QStringList lines;
+    lines.append(QStringLiteral("%1 event(s) in the log project to %2 model message(s):")
+                 .arg(m_session.size()).arg(messages.size()));
+
+    for (const WireMessage& m : messages) {
+        QString detail = m.content;
+        if (!m.toolCalls.isEmpty()) {
+            QStringList names;
+            for (const QJsonObject& call : m.toolCalls) {
+                names.append(call.value(QStringLiteral("function")).toObject()
+                             .value(QStringLiteral("name")).toString());
+            }
+            detail += QStringLiteral(" [tool_calls: %1]").arg(names.join(QStringLiteral(", ")));
+        }
+        if (!m.toolCallId.isEmpty()) {
+            detail = QStringLiteral("(answers %1) %2").arg(m.toolCallId, detail);
+        }
+
+        //! Truncated per message: the preview exists to show the SHAPE of the request (who said what,
+        //! in what order), and a long tool result would bury it.
+        if (detail.size() > 120) {
+            detail = detail.left(120) + QStringLiteral(" ...");
+        }
+        lines.append(QStringLiteral("  %1: %2").arg(m.role, detail));
+    }
+
+    return lines.join(QLatin1Char('\n'));
+}
+
+void FieldController::appendUserMessage(const QString& text)
+{
+    QJsonObject data;
+    data.insert(QStringLiteral("content"), text);
+    m_session.append(SessionEvent::USER_MESSAGE, data);
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-session] user/message seq=" << qulonglong(m_session.size() - 1)
+               << "content=" << text.left(120);
+    }
+
+    emit fieldChanged();
+}
+
+void FieldController::seedSystemPrompt()
+{
+    QJsonObject data;
+    data.insert(QStringLiteral("content"), buildSystemPrompt());
+    m_session.append(SessionEvent::SYSTEM_MESSAGE, data);
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-session] system/message recorded;"
+               << "tools=" << toolNames().join(QStringLiteral(","));
+    }
+
+    emit fieldChanged();
+}
+
+int FieldController::sessionEventCount() const
+{
+    return m_session.size();
 }
 
 QString FieldController::statusText() const

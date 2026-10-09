@@ -42,6 +42,7 @@
 #include "rcommand/icommandsregister.h"
 
 #include "addressing.h"
+#include "sessionlog.h"
 
 namespace mu::engraving {
 class Score;
@@ -203,6 +204,21 @@ public:
     //! Tool names, for diagnostics and (later) the prompt's tool list.
     Q_INVOKABLE QStringList availableTools() const;
 
+    //! ── The agent loop's log ──────────────────────────────────────────────────────────────────
+    //! The session log is the single source of truth for a conversation: the model's history is
+    //! *derived* from it (see sessionlog.h). Exposed here so the panel can show a transcript and so
+    //! the log can be inspected from the running program before the loop itself exists.
+    Q_INVOKABLE QString sessionJsonLines() const;
+    //! Replay the log through the projection and return what the model would be sent, one line per
+    //! message. This is the check that "the model sees only what was recorded" holds in practice.
+    Q_INVOKABLE QString sessionPreview() const;
+    //! Append a user message to the log (the loop will do this itself once it exists).
+    Q_INVOKABLE void appendUserMessage(const QString& text);
+    //! Seed the log with the system prompt. Idempotent per call, like the real loop's first step.
+    Q_INVOKABLE void seedSystemPrompt();
+    //! Number of events in the session log.
+    Q_INVOKABLE int sessionEventCount() const;
+
     //! ── The write path ───────────────────────────────────────────────────────────────────────
     //! ⛔ Ask before writing. A disabled notation command is *silently skipped* by the controller's
     //! outer wrapper, so dispatching one produces "the call succeeded and nothing happened"
@@ -287,5 +303,10 @@ private:
     int m_lastStateIndex = -1;
     //! Whether the last `runTool()` call succeeded. See the note on `runTool`.
     bool m_lastToolOk = true;
+
+    //! The conversation log. Owned here for now; the agent loop will drive it, but keeping it alive
+    //! from the field means the transcript and the derived history are inspectable before the loop
+    //! exists - which is how the projection gets verified against the running program.
+    SessionLog m_session;
 };
 } // namespace muse::agentharness
