@@ -193,6 +193,12 @@ ToolResult toolDynamicAdd(const QJsonObject& args, const ToolContext& ctx);
 //! Write: add a crescendo or diminuendo hairpin.
 ToolResult toolHairpinAdd(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: insert measures before a given measure (or append).
+ToolResult toolMeasureInsert(const QJsonObject& args, const ToolContext& ctx);
+
+//! Write: remove a range of measures.
+ToolResult toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: tie / untie / toggle the tie on the note at an address.
 //!
 //! WHY ONE TOOL WITH A MODE RATHER THAN THREE: the three are the same question asked three ways

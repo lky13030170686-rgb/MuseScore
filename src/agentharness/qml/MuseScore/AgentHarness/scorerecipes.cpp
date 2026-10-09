@@ -38,6 +38,7 @@
 #include "engraving/editing/edittimesig.h"
 #include "engraving/editing/transaction/transaction.h"
 #include "engraving/dom/measure.h"
+#include "engraving/dom/measurebase.h"
 #include "engraving/dom/timesig.h"
 #include "engraving/dom/segment.h"
 #include "engraving/dom/sig.h"
@@ -777,6 +778,114 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
     }
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
 }
+namespace {
+//! The measure at a 1-based number, or null. Also reports how many there are, for the message.
+mu::engraving::Measure* measureAt(mu::engraving::Score* score, int number, int* total)
+{
+    int index = 0;
+    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure(), ++index) {
+        if (index + 1 == number) {
+            if (total) {
+                *total = index + 1;
+            }
+            return m;
+        }
+    }
+    if (total) {
+        *total = index;
+    }
+    return nullptr;
+}
+
+int measureCount(mu::engraving::Score* score)
+{
+    int n = 0;
+    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure()) {
+        ++n;
+    }
+    return n;
+}
+} // namespace
+
+RecipeResult muse::agentharness::insertMeasures(mu::engraving::Score* score, int beforeMeasure, int count)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+    if (count < 1) {
+        return RecipeResult::failure(QStringLiteral("`count` must be at least 1 (got %1)").arg(count));
+    }
+
+    const int total = measureCount(score);
+
+    //! ⚠️ ONE PAST THE LAST MEASURE IS ALLOWED AND MEANS "APPEND". Refusing it would leave the caller no
+    //! way to add a bar at the end - the commonest case of all - and clamping it silently would put the
+    //! new bar somewhere the caller did not ask for.
+    if (beforeMeasure < 1 || beforeMeasure > total + 1) {
+        return RecipeResult::failure(
+            QStringLiteral("there is no measure %1 to insert before; the score has %2, so use 1 to %3 "
+                           "(where %3 appends at the end)").arg(beforeMeasure).arg(total).arg(total + 1));
+    }
+
+    mu::engraving::Measure* before = measureAt(score, beforeMeasure, nullptr);
+    for (int i = 0; i < count; ++i) {
+        //! ⛔ `Score::insertMeasure`, which wraps upstream's own `InsertMeasures` undo command. Building a
+        //! `Measure` by hand and linking it in - which is what `MasterScore` does internally - would put a
+        //! measure in the score WITHOUT telling the undo stack, so Ctrl+Z would not take it back.
+        if (!score->insertMeasure(mu::engraving::ElementType::MEASURE, before)) {
+            return RecipeResult::failure(QStringLiteral("the measure could not be inserted"));
+        }
+    }
+
+    const int now = measureCount(score);
+    return RecipeResult::success(
+        QStringLiteral("inserted %1 measure(s) before measure %2; the score now has %3 (measure numbers "
+                       "from %2 on have shifted by %1)").arg(count).arg(beforeMeasure).arg(now));
+}
+
+RecipeResult muse::agentharness::removeMeasures(mu::engraving::Score* score, int first, int last)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+    if (first < 1 || last < first) {
+        return RecipeResult::failure(QStringLiteral("give a range like `first` <= `last`, both at least 1 "
+                                                    "(got %1 to %2)").arg(first).arg(last));
+    }
+
+    const int total = measureCount(score);
+    if (last > total) {
+        return RecipeResult::failure(QStringLiteral("there is no measure %1; the score has %2")
+                                     .arg(last).arg(total));
+    }
+
+    //! ⛔ REFUSED WHEN IT WOULD EMPTY THE SCORE. A score with no measures is not a short score - the
+    //! notation layer has nowhere to put the cursor, and several upstream paths assume a first measure
+    //! exists. Deleting the last one is the caller getting the arithmetic wrong, and it should hear so.
+    if (last - first + 1 >= total) {
+        return RecipeResult::failure(
+            QStringLiteral("removing measures %1-%2 would leave the score with no measures at all. A score "
+                           "needs at least one measure; remove %3 of them at most.")
+            .arg(first).arg(last).arg(total - 1));
+    }
+
+    mu::engraving::Measure* startMeasure = measureAt(score, first, nullptr);
+    mu::engraving::Measure* endMeasure = measureAt(score, last, nullptr);
+    if (!startMeasure || !endMeasure) {
+        return RecipeResult::failure(QStringLiteral("the measures could not be found"));
+    }
+
+    //! ⛔ `Score::undoRemoveMeasures`, which wraps `RemoveMeasures` - the same reasoning as the insert
+    //! above. `preserveTies` is left at its default, because a tie running into a bar that no longer
+    //! exists is exactly the dangling state this project keeps guarding against.
+    score->undoRemoveMeasures(startMeasure, endMeasure);
+
+    const int now = measureCount(score);
+    return RecipeResult::success(
+        QStringLiteral("removed measures %1-%2; the score now has %3 (measure numbers after %1 have "
+                       "shifted back by %4)").arg(first).arg(last).arg(now).arg(last - first + 1));
+}
+
 namespace {
 //! The chord or rest at an address, as a `ChordRest*`, for elements that hang off a beat.
 //!

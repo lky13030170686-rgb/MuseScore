@@ -1386,3 +1386,134 @@ TEST(AgentHarness_ScoreRecipes, AddHairpinWithAnEndThatDoesNotExistIsRefused)
     EXPECT_FALSE(result.ok);
     EXPECT_TRUE(result.problem.contains(QStringLiteral("99"))) << result.problem.toStdString();
 }
+//! ── Measures ──────────────────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_ScoreRecipes, InsertMeasuresAddsThemAndShiftsWhatFollows)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+    ASSERT_EQ(score->firstMeasure()->nextMeasure()->nextMeasure(), nullptr) << "test.mscx has 2 bars";
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return insertMeasures(score.get(), 1, 2);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ COUNTED BY WALKING, not by trusting the call. `insertMeasure` returns a pointer, and "it
+    //! returned non-null" is not evidence that the score grew by the right amount.
+    int count = 0;
+    for (Measure* m = score->firstMeasure(); m; m = m->nextMeasure()) {
+        ++count;
+    }
+    EXPECT_EQ(count, 4);
+}
+
+TEST(AgentHarness_ScoreRecipes, InsertOnePastTheEndAppends)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⚠️ The commonest case: adding a bar at the end. Refusing "3" for a two-bar score would leave the
+    //! caller with no way to do it, and clamping would put the bar somewhere it did not ask for.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return insertMeasures(score.get(), 3, 1);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    int count = 0;
+    for (Measure* m = score->firstMeasure(); m; m = m->nextMeasure()) {
+        ++count;
+    }
+    EXPECT_EQ(count, 3);
+}
+
+TEST(AgentHarness_ScoreRecipes, InsertBeyondOnePastTheEndIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return insertMeasures(score.get(), 99, 1);
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("99"))) << result.problem.toStdString();
+    //! And the message must say what IS allowed, or the caller is left guessing at the range.
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("3"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, InsertWithACountBelowOneIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return insertMeasures(score.get(), 1, 0);
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(result.problem.isEmpty());
+}
+
+TEST(AgentHarness_ScoreRecipes, RemoveMeasuresTakesThemOut)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return removeMeasures(score.get(), 1, 1);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    int count = 0;
+    for (Measure* m = score->firstMeasure(); m; m = m->nextMeasure()) {
+        ++count;
+    }
+    EXPECT_EQ(count, 1);
+}
+
+TEST(AgentHarness_ScoreRecipes, RemoveRefusesToEmptyTheScore)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ A score with no measures is not a short score, it is a broken one. This is the caller getting the
+    //! arithmetic wrong, and the message has to say how many it MAY remove or it is not actionable.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return removeMeasures(score.get(), 1, 2);
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("at least one measure"))) << result.problem.toStdString();
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("1"))) << "it must say how many may go";
+
+    int count = 0;
+    for (Measure* m = score->firstMeasure(); m; m = m->nextMeasure()) {
+        ++count;
+    }
+    EXPECT_EQ(count, 2) << "nothing may have been removed";
+}
+
+TEST(AgentHarness_ScoreRecipes, RemoveWithABadRangeIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! `last` before `first` is an empty or backwards range, and both spellings are the caller's mistake.
+    for (const auto& pair : { std::pair<int, int> { 2, 1 }, { 0, 1 } }) {
+        const RecipeResult result = runRecipe(score.get(), [&] {
+            return removeMeasures(score.get(), pair.first, pair.second);
+        });
+        EXPECT_FALSE(result.ok) << pair.first << "-" << pair.second << " must be refused";
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, RemovePastTheEndIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return removeMeasures(score.get(), 99, 99);
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("no measure 99"))) << result.problem.toStdString();
+}

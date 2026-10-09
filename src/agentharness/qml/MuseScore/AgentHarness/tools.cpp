@@ -1019,6 +1019,79 @@ ToolResult muse::agentharness::toolHairpinAdd(const QJsonObject& args, const Too
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolMeasureInsert(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int beforeMeasure = 0;
+    if (!readInt(args, QStringLiteral("beforeMeasure"), beforeMeasure)) {
+        return ToolResult::failure(QStringLiteral("`beforeMeasure` is required: the 1-based number to "
+                                                  "insert before. Use one past the last measure to append."));
+    }
+
+    int count = 1;
+    if (args.contains(QStringLiteral("count")) && !readInt(args, QStringLiteral("count"), count)) {
+        return ToolResult::failure(QStringLiteral("`count` must be an integer"));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Insert measures"), [&](mu::engraving::Score* score) {
+        return insertMeasures(score, beforeMeasure, count);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
+
+ToolResult muse::agentharness::toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int first = 0;
+    if (!readInt(args, QStringLiteral("firstMeasure"), first)) {
+        return ToolResult::failure(QStringLiteral("`firstMeasure` is required: the 1-based number of the "
+                                                  "first measure to remove"));
+    }
+
+    //! `lastMeasure` defaults to `firstMeasure`, so removing one bar is one argument rather than two that
+    //! have to agree.
+    int last = first;
+    if (args.contains(QStringLiteral("lastMeasure")) && !readInt(args, QStringLiteral("lastMeasure"), last)) {
+        return ToolResult::failure(QStringLiteral("`lastMeasure` must be an integer"));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Remove measures"), [&](mu::engraving::Score* score) {
+        return removeMeasures(score, first, last);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1490,6 +1563,41 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("kind") }),
             toolHairpinAdd,
+        },
+        ToolSpec{
+            QStringLiteral("measure_insert"),
+            QStringLiteral("Insert one or more measures before a given measure. Use one past the last "
+                           "measure to append at the end. Measure numbers from there on shift, so re-read "
+                           "the score afterwards. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("beforeMeasure"), intProperty(QStringLiteral(
+                                                                     "1-based measure to insert before. One past the last measure appends at the end.")));
+                props.insert(QStringLiteral("count"), intProperty(QStringLiteral(
+                                                              "Optional. How many measures to insert. Defaults to 1.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("beforeMeasure") }),
+            toolMeasureInsert,
+        },
+        ToolSpec{
+            QStringLiteral("measure_remove"),
+            QStringLiteral("Remove a measure or a range of measures. Refused if it would leave the score "
+                           "with no measures. Measure numbers after the range shift back, so re-read the "
+                           "score afterwards. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("firstMeasure"), intProperty(QStringLiteral(
+                                                                    "1-based number of the first measure to remove.")));
+                props.insert(QStringLiteral("lastMeasure"), intProperty(QStringLiteral(
+                                                                   "Optional. 1-based number of the last measure to remove. Defaults to "
+                                                                   "`firstMeasure`, i.e. remove just that one.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("firstMeasure") }),
+            toolMeasureRemove,
         },
         ToolSpec{
             QStringLiteral("note_tie"),

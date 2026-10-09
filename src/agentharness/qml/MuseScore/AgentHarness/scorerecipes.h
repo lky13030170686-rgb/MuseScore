@@ -228,6 +228,21 @@ RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int
 RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, int numerator,
                               int denominator);
 
+//! ── Measures ──────────────────────────────────────────────────────────────────────────────────
+//! Adding and removing whole measures. These change the SHAPE of the score rather than its contents, and
+//! everything addressed by measure number after the edit moves - which is worth saying in the result.
+
+//! Insert `count` measures before measure `beforeMeasure` (1-based). `beforeMeasure` may be one past the
+//! last measure, which appends.
+RecipeResult insertMeasures(mu::engraving::Score* score, int beforeMeasure, int count);
+
+//! Remove measures `first` through `last` inclusive (1-based).
+//!
+//! ⛔ REFUSED WHEN IT WOULD EMPTY THE SCORE. A score with no measures is not a short score, it is a broken
+//! one - the notation layer has nowhere to put the cursor and several upstream paths assume a first
+//! measure exists.
+RecipeResult removeMeasures(mu::engraving::Score* score, int first, int last);
+
 //! ── Dynamics and hairpins ─────────────────────────────────────────────────────────────────────
 //! These are the first elements that are NOT notes and NOT text: they attach to a beat and belong to a
 //! staff, and they are what makes a score sound like something.
