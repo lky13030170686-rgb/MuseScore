@@ -61,6 +61,9 @@ qt_add_qml_module(agentharness_qml
         agentloop.h
         llmtransport.cpp
         llmtransport.h
+        # The write side's single entry point: enabled-gate + batch-as-one-undo-step.
+        scoreactiongateway.cpp
+        scoreactiongateway.h
     QML_FILES
         AgentPanel.qml
         AgentTranscriptRow.qml

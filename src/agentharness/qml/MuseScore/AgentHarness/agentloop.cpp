@@ -206,27 +206,45 @@ void AgentLoop::onStreamFinished(bool ok, const QString& error)
     if (m_step >= m_maxStepsPerTurn) {
         //! Bounded on purpose: a model that keeps asking for tools without converging would otherwise
         //! run until someone notices. Ending with a stated reason is better than an unbounded loop.
+        //! The calls still run - the model asked for them and refusing silently would be worse - but
+        //! no further step follows.
         executeToolCalls(calls);
         closeTurn(false, QStringLiteral("stopped after %1 steps without the model finishing")
                   .arg(m_maxStepsPerTurn));
         return;
     }
 
+    //! The tool calls run, and the NEXT STEP is started by the last one to finish - not from here.
+    //! A tool may complete later (`patch_apply` queues its work), so continuing here would send the
+    //! next request before the tool results existed - the model would be asked to reason about
+    //! results that are not in the history yet.
     executeToolCalls(calls);
-
-    //! ⛔ Back to the event loop before the next step, not straight into it. Calling `runNextStep()`
-    //! from here would recurse once per tool round and grow the stack with the conversation; it would
-    //! also mean the panel never gets a chance to paint what just happened.
-    QMetaObject::invokeMethod(this, [this]() { runNextStep(); }, Qt::QueuedConnection);
 }
 
 void AgentLoop::executeToolCalls(const QVector<QJsonObject>& calls)
 {
-    //! Serial, in model order. DSH allows execution to overlap but commits results strictly in the
-    //! order the model asked for them; here they are not even overlapped, because every tool in the
-    //! table touches the same `Score` and two writers on one score is not a concurrency problem worth
-    //! having.
-    for (const QJsonObject& call : calls) {
+    //! ⛔ Serial, in model order, and ASYNCHRONOUS. Every tool in the table touches the same `Score`,
+    //! so two writers at once is not a concurrency problem worth having; and a tool may finish later
+    //! (`patch_apply` queues its work - see scoreactiongateway.h), so the next one cannot start until
+    //! the previous one has reported.
+    //!
+    //! The recursion is bounded by `calls.size()` and does NOT grow with the conversation - the outer
+    //! step loop is what handles "the model asked for more tools", and that one goes back through the
+    //! event loop.
+    auto index = std::make_shared<int>(0);
+    auto runNext = std::make_shared<std::function<void()>>();
+
+    *runNext = [this, calls, index, runNext]() {
+        if (*index >= calls.size()) {
+            //! Every result is recorded. Back to the event loop before the next step - not straight
+            //! into it - so the panel can paint what just happened.
+            QMetaObject::invokeMethod(this, [this]() { runNextStep(); }, Qt::QueuedConnection);
+            return;
+        }
+
+        const QJsonObject call = calls[*index];
+        ++(*index);
+
         const QString id = call.value(QStringLiteral("id")).toString();
         const QJsonObject fn = call.value(QStringLiteral("function")).toObject();
         const QString name = fn.value(QStringLiteral("name")).toString();
@@ -240,25 +258,29 @@ void AgentLoop::executeToolCalls(const QVector<QJsonObject>& calls)
 
         emit toolStarted(name, args);
 
-        QString resultText;
-        bool ok = true;
+        auto finish = [this, id, name, runNext](const ToolResult& result) {
+            QJsonObject resultData = stepData(m_turn, m_step);
+            resultData.insert(QStringLiteral("callId"), id);
+            resultData.insert(QStringLiteral("content"), result.text);
+            resultData.insert(QStringLiteral("isError"), !result.ok);
+            m_session->append(SessionEvent::TOOL_RESULT, resultData);
+
+            emit toolFinished(name, result.ok, result.text);
+
+            //! The next call is started from HERE, after this one has reported - which is what makes
+            //! the sequence serial even when a tool finishes later.
+            (*runNext)();
+        };
 
         if (!m_field) {
-            ok = false;
-            resultText = QStringLiteral("no score context available");
-        } else {
-            resultText = m_field->runTool(name, args);
-            ok = m_field->lastToolOk();
+            finish(ToolResult::failure(QStringLiteral("no score context available")));
+            return;
         }
 
-        QJsonObject resultData = stepData(m_turn, m_step);
-        resultData.insert(QStringLiteral("callId"), id);
-        resultData.insert(QStringLiteral("content"), resultText);
-        resultData.insert(QStringLiteral("isError"), !ok);
-        m_session->append(SessionEvent::TOOL_RESULT, resultData);
+        m_field->runToolAsync(name, args, finish);
+    };
 
-        emit toolFinished(name, ok, resultText);
-    }
+    (*runNext)();
 }
 
 void AgentLoop::closeTurn(bool ok, const QString& reason)

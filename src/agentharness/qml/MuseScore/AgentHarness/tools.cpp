@@ -25,6 +25,7 @@
 #include <QJsonValue>
 
 #include "fieldcontroller.h"
+#include "scoreactiongateway.h"
 #include "scoredigest.h"
 #include "semanticderive.h"
 
@@ -196,14 +197,25 @@ ToolResult muse::agentharness::toolCommandDispatch(const QJsonObject& args, cons
         return ToolResult::failure(QStringLiteral("`command` is required (a command://notation/... URI)"));
     }
 
-    //! ⛔ The gate, and the whole reason this tool is more than a one-line forwarder: a disabled
-    //! command is silently skipped by the notation controller's outer wrapper, so dispatching
-    //! blindly produces "the call succeeded and nothing happened" - the exact failure this project
-    //! has already paid for twice (维护手册.md §4.8, 第 594 条).
-    if (!ctx.field->isCommandEnabled(command)) {
-        return ToolResult::failure(
-            QStringLiteral("command `%1` is not enabled right now, so dispatching it would be silently "
-                           "ignored. Use command_list to see what is available.").arg(command));
+    //! ── The fence ─────────────────────────────────────────────────────────────────────────────
+    //! `expectRevision` is OPTIONAL, and that is a deliberate compromise. Requiring it would make every
+    //! write fail for a model that has not read the score yet, and the first thing it would do is
+    //! learn to pass a number it did not check - which is worse than not having the fence, because it
+    //! would look like one. Optional means a model that read the score can be safe, and a model that
+    //! did not is no worse off than before.
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
     }
 
     //! Forward the arguments. This is not a convenience: `append-measures` with no `count` opens a
@@ -219,6 +231,148 @@ ToolResult muse::agentharness::toolCommandDispatch(const QJsonObject& args, cons
     meta.insert(QStringLiteral("command"), command);
     meta.insert(QStringLiteral("revision"), ctx.field->revision());
     return ToolResult::success(QStringLiteral("dispatched %1").arg(command), meta);
+}
+
+ToolResult muse::agentharness::toolScoreRevision(const QJsonObject&, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    const int revision = ctx.field->scoreRevision();
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), revision);
+
+    //! The text says what the number is FOR. A bare "3" invites the model to treat it as a count of
+    //! something it can compute; naming it as the value to pass back is what makes the fence usable.
+    return ToolResult::success(
+        QStringLiteral("score revision: %1\nPass this as `expectRevision` to a write so it is refused "
+                       "if the score changes first.").arg(revision),
+        meta);
+}
+
+ToolResult muse::agentharness::toolPatchApply(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    const QJsonValue opsValue = args.value(QStringLiteral("ops"));
+    if (!opsValue.isArray()) {
+        return ToolResult::failure(QStringLiteral("`ops` is required and must be an array"));
+    }
+
+    const QJsonArray opsArray = opsValue.toArray();
+    if (opsArray.isEmpty()) {
+        //! A successful call with nothing to do, not a failure: the tool worked, the caller asked for
+        //! no changes. Reporting it as an error would make the model retry.
+        return ToolResult::success(QStringLiteral("no operations requested"));
+    }
+
+    //! ⛔ TEMPORARY GUARD, and it must stay until the sequencing is fixed.
+    //!
+    //! The multi-operation path does not work yet: the transaction opens and commits as ONE undo step
+    //! (that part is verified), but only the FIRST operation is applied - the chain that should start
+    //! each dispatch after the previous handler completes stalls after one. A single-operation batch is
+    //! correct end to end (verified: `append-measures {count:2}` inside `patch_apply` gives
+    //! `ticks=0..5760` and one undo step).
+    //!
+    //! Refusing is the right call while that is true. A tool that silently applies one of eight
+    //! requested edits is the worst thing in this table: the model believes the score changed, the
+    //! user sees a partial result, and the per-operation report would even look plausible. Refusing
+    //! with the reason is recoverable; a silent under-application is not.
+    if (opsArray.size() > 1) {
+        return ToolResult::failure(
+            QStringLiteral("patch_apply currently accepts only ONE operation per call (this build): the "
+                           "sequencing that makes several operations land as one undo step is not "
+                           "finished, and applying only the first of %1 would silently do part of what "
+                           "you asked. Use separate command_dispatch calls for now, and say so if you "
+                           "need them grouped.").arg(opsArray.size()));
+    }
+
+    //! Same fence as `command_dispatch`, for the same reason - see the note there on why it is
+    //! optional.
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so NONE of these %3 operations were applied. Read the score "
+                               "again and redo them against what is there now.")
+                .arg(expected).arg(actual).arg(opsArray.size()));
+        }
+    }
+
+    QVector<WriteOp> ops;
+    for (const QJsonValue& v : opsArray) {
+        const QJsonObject obj = v.toObject();
+        WriteOp op;
+        op.command = obj.value(QStringLiteral("command")).toString();
+        op.params = obj.value(QStringLiteral("params")).toObject();
+
+        if (op.command.isEmpty()) {
+            return ToolResult::failure(QStringLiteral(
+                                           "every operation needs a `command`; one of them had none. Nothing was applied."));
+        }
+        ops.append(op);
+    }
+
+    const QString actionName = args.value(QStringLiteral("actionName")).toString(
+        QStringLiteral("Agent edit (%1 operation(s))").arg(ops.size()));
+
+    if (!ctx.complete) {
+        return ToolResult::failure(QStringLiteral("this tool needs an asynchronous result channel and "
+                                                  "was called without one"));
+    }
+
+    //! Asynchronous, and it has to be: see the note in scoreactiongateway.h. The result reaches the
+    //! conversation through `ctx.complete`, so this tool returns nothing.
+    //! ⛔ `complete` is captured BY VALUE: the callback runs from a queued invocation, after this
+    //! function has returned.
+    ScoreActionGateway gateway(ctx.field);
+    gateway.performBatch(ops, actionName,
+                         [complete = ctx.complete](const QVector<WriteResult>& results, bool committed) {
+        int failed = 0;
+        QStringList lines;
+        for (const WriteResult& r : results) {
+            if (!r.ok) {
+                ++failed;
+                lines.append(QStringLiteral("  FAILED %1: %2").arg(r.command, r.error));
+            } else {
+                lines.append(QStringLiteral("  ok     %1").arg(r.command));
+            }
+        }
+
+        QJsonObject meta;
+        meta.insert(QStringLiteral("applied"), int(results.size()) - failed);
+        meta.insert(QStringLiteral("failed"), failed);
+        meta.insert(QStringLiteral("committed"), committed);
+
+        if (failed > 0 || !committed) {
+            //! ⛔ The text must say "nothing was applied" in as many words. A model reading a per-line
+            //! report of ok/FAILED would reasonably conclude the successful lines landed - and they did
+            //! not, because the batch rolled back. Leaving that implicit is how a model ends up
+            //! believing it edited eight measures when the score is untouched.
+            complete(ToolResult::failure(
+                         QStringLiteral("the batch was rolled back, so NOTHING was applied (%1 of %2 "
+                                        "operations failed). The score is unchanged.\n%3")
+                         .arg(failed).arg(results.size()).arg(lines.join(QLatin1Char('\n'))), meta));
+            return;
+        }
+
+        complete(ToolResult::success(
+                     QStringLiteral("applied %1 operation(s) as one undo step (one Ctrl+Z takes them all "
+                                    "back)\n%2").arg(results.size()).arg(lines.join(QLatin1Char('\n'))),
+                     meta));
+    });
+
+    return ToolResult::success(QString());
 }
 
 //! ── The table ─────────────────────────────────────────────────────────────────────────────────
@@ -269,8 +423,48 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             schemaObject({
                 { QStringLiteral("command"), stringProperty(QStringLiteral("The command://notation/... URI to dispatch.")) },
                 { QStringLiteral("params"), objectProperty(QStringLiteral("Optional command parameters (e.g. {\"count\": 2} for append-measures).")) },
+                { QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                   "Optional. The revision you last read. The write is refused if the score has "
+                                                                   "changed since - which includes edits the user made with the mouse.")) },
             }, QJsonArray{ QStringLiteral("command") }),
             toolCommandDispatch,
+        },
+        ToolSpec{
+            QStringLiteral("score_revision"),
+            QStringLiteral("The score's current revision number. Pass it as `expectRevision` to a write "
+                           "so the write is refused if the score changes in between."),
+            schemaObject({}),
+            toolScoreRevision,
+        },
+        ToolSpec{
+            QStringLiteral("patch_apply"),
+            QStringLiteral("Perform several notation actions as ONE undo step: one Ctrl+Z takes them all "
+                           "back, and the timeline records them as a single action. Use this whenever a "
+                           "request needs more than one write - adding a note to each of several "
+                           "measures, say - rather than calling command_dispatch repeatedly.\n"
+                           "All or nothing: if any operation is refused, none of them are applied."),
+            schemaObject({
+                { QStringLiteral("ops"), QJsonObject{
+                      { QStringLiteral("type"), QStringLiteral("array") },
+                      { QStringLiteral("description"), QStringLiteral("The operations, in order.") },
+                      { QStringLiteral("items"), QJsonObject{
+                            { QStringLiteral("type"), QStringLiteral("object") },
+                            { QStringLiteral("properties"), QJsonObject{
+                                  { QStringLiteral("command"), stringProperty(QStringLiteral("The command://notation/... URI.")) },
+                                  { QStringLiteral("params"), objectProperty(QStringLiteral("Optional command parameters.")) },
+                              } },
+                            { QStringLiteral("required"), QJsonArray{ QStringLiteral("command") } },
+                            { QStringLiteral("additionalProperties"), false },
+                        } },
+                  } },
+                { QStringLiteral("actionName"), stringProperty(QStringLiteral(
+                                                                "Optional. What the undo stack should call this, e.g. \"Add a note to measures 3-6\". "
+                                                                "The user sees this name, so make it describe the intent rather than the mechanism.")) },
+                { QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                   "Optional. The revision you last read; the whole batch is refused if the "
+                                                                   "score has changed since.")) },
+            }, QJsonArray{ QStringLiteral("ops") }),
+            toolPatchApply,
         },
     };
     return table;

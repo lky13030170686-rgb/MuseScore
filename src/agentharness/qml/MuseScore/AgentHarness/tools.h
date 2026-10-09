@@ -27,9 +27,9 @@
 
 #include <functional>
 #include <vector>
-
 namespace muse::agentharness {
 class FieldController;
+struct ToolResult;
 
 //! What a tool gets to work with. Deliberately narrow: a tool may read the score through the field
 //! and may dispatch a notation command - nothing else. There is no filesystem here, no shell, and no
@@ -38,6 +38,20 @@ class FieldController;
 struct ToolContext
 {
     FieldController* field = nullptr;
+
+    //! Call this instead of RETURNING, when the tool's work finishes after it returns.
+    //!
+    //! WHY A TOOL CAN BE ASYNCHRONOUS: `patch_apply` has to queue its transaction and its dispatches
+    //! into the same FIFO to make a batch one undo step (see scoreactiongateway.h), and the dispatcher
+    //! runs command handlers later, not at the point of the call. A tool that cannot finish
+    //! synchronously must therefore be able to say so, rather than reporting an outcome it has not
+    //! seen yet.
+    //!
+    //! The contract: a tool either returns a `ToolResult`, or it captures this and calls it later -
+    //! never both, and exactly one of the two. `AgentLoop` passes a callback that records the tool
+    //! result in the session log, so an async tool's result lands in the conversation in the same shape
+    //! as a synchronous one.
+    std::function<void(const ToolResult&)> complete;
 };
 
 //! The result of one tool call.
@@ -123,5 +137,16 @@ ToolResult toolCommandDispatch(const QJsonObject& args, const ToolContext& ctx);
 
 //! Write: list the notation commands that are enabled right now, so the agent can choose one.
 ToolResult toolCommandList(const QJsonObject& args, const ToolContext& ctx);
+
+//! Read: the score's revision number, for use as the `expectRevision` fence.
+ToolResult toolScoreRevision(const QJsonObject& args, const ToolContext& ctx);
+
+//! Write: perform several commands as ONE undo step, fenced by `expectRevision`.
+//!
+//! WHY BOTH IN ONE TOOL: the fence and the batch are the same idea seen twice. A batch says "these
+//! writes are one instruction"; the fence says "and it was composed against the score as it is now".
+//! Separating them would allow a batch composed against a stale read - which is precisely the case the
+//! fence exists to catch.
+ToolResult toolPatchApply(const QJsonObject& args, const ToolContext& ctx);
 
 } // namespace muse::agentharness

@@ -26,6 +26,10 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 
+#include "async/async.h"
+#include "engraving/dom/masterscore.h"
+#include "engraving/editing/transaction/transaction.h"
+
 #include "log.h"
 
 #include "engraving/dom/score.h"
@@ -138,9 +142,68 @@ void FieldController::applyDemoToolCallIfPending()
                << "result=" << text.left(300);
     }
 
-    //! The session log, exercised from the running program: printing the JSONL and the projection is
-    //! what verifies the claim that matters - **the model's history is derived from the log**, so
-    //! "what the model saw" is answerable from what was recorded.
+    //! ── Write-path verification ───────────────────────────────────────────────────────────────
+    //! MUSE_AGENT_DEMO_WRITE=<mode> runs the checks that need a real score to be meaningful:
+    //!
+    //!   stale   a write fenced with a WRONG revision must be refused and change nothing
+    //!   batch   three writes as one undo step: measures +3, ONE undo step, ONE timeline entry
+    //!   partial a batch with a bad operation in it must roll back ENTIRELY
+    //!
+    //! ⚠️ Each mode is checked separately and none returns early past the others - see the note above
+    //! about a verification switch that silently does nothing.
+    if (qEnvironmentVariableIsSet("MUSE_AGENT_DEMO_WRITE")) {
+        const QString mode = qEnvironmentVariable("MUSE_AGENT_DEMO_WRITE");
+
+        if (mode == QLatin1String("stale")) {
+            //! The fence's whole job. The revision passed is deliberately impossible, so a fence that
+            //! does nothing at all is indistinguishable from one that works - UNLESS the measures are
+            //! checked afterwards, which is why they are.
+            const int before = measureCount();
+            LOGW() << "[agent-write] STALE FENCE test: measures before =" << before
+                   << "realRevision=" << scoreRevision();
+            const QString text = runTool(QStringLiteral("command_dispatch"),
+                                         QStringLiteral("{\"command\":\"command://notation/append-measures\","
+                                                        "\"params\":{\"count\":2},\"expectRevision\":9999}"));
+            LOGW() << "[agent-write] STALE FENCE result:" << (m_lastToolOk ? "OK (BAD!)" : "REFUSED")
+                   << "measures after =" << measureCount()
+                   << "(must equal" << before << ")"
+                   << "text=" << text.left(200);
+        } else if (mode == QLatin1String("batch")) {
+            const int before = measureCount();
+            LOGW() << "[agent-write] BATCH test: measures before =" << before
+                   << "revision=" << scoreRevision();
+
+            const QString text = runTool(QStringLiteral("patch_apply"),
+                                         QStringLiteral("{\"actionName\":\"Add 3 measures\",\"ops\":["
+                                                        "{\"command\":\"command://notation/append-measures\",\"params\":{\"count\":1}},"
+                                                        "{\"command\":\"command://notation/append-measures\",\"params\":{\"count\":1}},"
+                                                        "{\"command\":\"command://notation/append-measures\",\"params\":{\"count\":1}}]}"));
+            LOGW() << "[agent-write] BATCH result:" << (m_lastToolOk ? "OK" : "FAILED")
+                   << "measures after =" << measureCount()
+                   << "(expect" << before + 3 << ")"
+                   << "revision=" << scoreRevision()
+                   << "text=" << text.left(300);
+        } else if (mode == QLatin1String("partial")) {
+            const int before = measureCount();
+            LOGW() << "[agent-write] PARTIAL test: measures before =" << before;
+
+            //! The third operation is a command URI that does not exist, so it is refused - and the
+            //! whole batch must roll back, leaving the two good appends unapplied.
+            const QString text = runTool(QStringLiteral("patch_apply"),
+                                         QStringLiteral("{\"actionName\":\"Partial batch\",\"ops\":["
+                                                        "{\"command\":\"command://notation/append-measures\",\"params\":{\"count\":1}},"
+                                                        "{\"command\":\"command://notation/append-measures\",\"params\":{\"count\":1}},"
+                                                        "{\"command\":\"command://notation/no-such-command\"}]}"));
+            LOGW() << "[agent-write] PARTIAL result:" << (m_lastToolOk ? "OK (BAD!)" : "REFUSED")
+                   << "measures after =" << measureCount()
+                   << "(must equal" << before << ")"
+                   << "text=" << text.left(400);
+        }
+    }
+
+    //! ── The session log, exercised from the running program ───────────────────────────────────
+    //! Printing the JSONL is what verifies the claim that matters - **the model's history is derived
+    //! from the log**, so "what the model saw" is answerable from what was recorded.
     //! ⚠️ The user message is NOT appended here: `sendToAgent()` below appends it as part of the turn.
     //! Doing both put the same sentence in the request twice, which is exactly the kind of quiet
     //! duplication a reader would blame on the projection.
@@ -551,13 +614,16 @@ QString FieldController::digestWindow(int firstMeasure, int lastMeasure) const
     return text;
 }
 
-QString FieldController::runTool(const QString& name, const QString& argsJson)
+void FieldController::runToolAsync(const QString& name, const QString& argsJson,
+                                   std::function<void(const ToolResult&)> done)
 {
     const ToolSpec* spec = findTool(name);
     if (!spec) {
+        ToolResult r = ToolResult::failure(QStringLiteral("no such tool: %1 (available: %2)")
+                                           .arg(name, toolNames().join(QStringLiteral(", "))));
         m_lastToolOk = false;
-        return QStringLiteral("no such tool: %1 (available: %2)")
-               .arg(name, toolNames().join(QStringLiteral(", ")));
+        done(r);
+        return;
     }
 
     //! Parse, and refuse malformed JSON *before* the body runs. A model that emits broken arguments
@@ -569,30 +635,99 @@ QString FieldController::runTool(const QString& name, const QString& argsJson)
         QJsonParseError err {};
         const QJsonDocument doc = QJsonDocument::fromJson(argsJson.toUtf8(), &err);
         if (err.error != QJsonParseError::NoError) {
+            ToolResult r = ToolResult::failure(QStringLiteral("arguments are not valid JSON: %1")
+                                               .arg(err.errorString()));
             m_lastToolOk = false;
-            return QStringLiteral("arguments are not valid JSON: %1").arg(err.errorString());
+            done(r);
+            return;
         }
         if (!doc.isObject()) {
+            ToolResult r = ToolResult::failure(QStringLiteral("arguments must be a JSON object"));
             m_lastToolOk = false;
-            return QStringLiteral("arguments must be a JSON object");
+            done(r);
+            return;
         }
         args = doc.object();
     }
 
+    //! Which path fired. A tool either returns a result or reports one later - and a tool that did
+    //! NEITHER would hang the loop forever waiting for a turn that never finishes, so the empty-text
+    //! case is treated as "this tool went asynchronous" and the completion is what ends the wait.
+    auto answered = std::make_shared<bool>(false);
+
     ToolContext ctx;
     ctx.field = this;
+    ctx.complete = [this, name, argsJson, done, answered](const ToolResult& r) {
+        if (*answered) {
+            //! A tool that reports twice would append two results for one call, and the wire format
+            //! pairs results to calls one-to-one - so the second one is dropped rather than sent.
+            LOGW() << "[agent-tool]" << name << "reported a result twice; ignoring the second";
+            return;
+        }
+        *answered = true;
+        m_lastToolOk = r.ok;
+
+        if (fieldTraceEnabled()) {
+            LOGW() << "[agent-tool]" << name
+                   << (r.ok ? "OK" : "FAILED")
+                   << "(async) args=" << argsJson
+                   << "->" << r.text.left(200);
+        }
+
+        done(r);
+    };
 
     const ToolResult result = spec->execute(args, ctx);
-    m_lastToolOk = result.ok;
 
-    if (fieldTraceEnabled()) {
-        LOGW() << "[agent-tool]" << name
-               << (result.ok ? "OK" : "FAILED")
-               << "args=" << argsJson
-               << "->" << result.text.left(200);
+    if (*answered) {
+        //! The tool finished synchronously and used the channel. Nothing more to do.
+        return;
     }
 
-    return result.text;
+    if (!result.text.isEmpty() || !result.ok) {
+        //! It returned a real result instead.
+        m_lastToolOk = result.ok;
+
+        if (fieldTraceEnabled()) {
+            LOGW() << "[agent-tool]" << name
+                   << (result.ok ? "OK" : "FAILED")
+                   << "args=" << argsJson
+                   << "->" << result.text.left(200);
+        }
+
+        *answered = true;
+        done(result);
+        return;
+    }
+
+    //! Empty success: the tool has taken responsibility for reporting later through `ctx.complete`.
+    //! Nothing to do here - `done` will be called from the event loop.
+}
+
+QString FieldController::runTool(const QString& name, const QString& argsJson)
+{
+    //! The synchronous face of `runToolAsync`, for QML and for the verification hooks. An
+    //! asynchronous tool cannot report through it, so its acknowledgement ("the work is queued") is
+    //! what comes back - the real result goes to the session log.
+    //!
+    //! ⛔ THE STATE IS ON THE HEAP, and that is not tidiness. The completion may be called from a
+    //! QUEUED callback - after this function has returned - so anything it touches must outlive the
+    //! stack frame. The first version captured `QString text` and `bool answered` by reference and
+    //! SIGSEGVed the application the moment a tool went asynchronous: the callback wrote through a
+    //! pointer into a frame that no longer existed.
+    auto text = std::make_shared<QString>();
+    auto answered = std::make_shared<bool>(false);
+
+    runToolAsync(name, argsJson, [text, answered](const ToolResult& r) {
+        *text = r.text;
+        *answered = true;
+    });
+
+    if (!*answered) {
+        return QStringLiteral("(queued; the result will appear in the conversation when it completes)");
+    }
+
+    return *text;
 }
 
 QStringList FieldController::availableTools() const
@@ -628,19 +763,17 @@ QStringList FieldController::enabledCommandNames() const
     return names;
 }
 
-QString FieldController::dispatchCommand(const QString& command, const QJsonObject& args)
+namespace {
+//! Translate a tool's JSON arguments into the command layer's `Params`.
+//!
+//! Only the scalar types a notation command actually declares are mapped; anything else is dropped
+//! rather than coerced, because silently turning an object into a string would make the handler
+//! misread it.
+//!
+//! NOTE `Val`'s constructors are all `explicit`, so `params[key] = true` does not compile - the value
+//! has to be named before it goes in.
+muse::rcommand::Params toCommandParams(const QJsonObject& args)
 {
-    if (command.isEmpty()) {
-        return QStringLiteral("empty command");
-    }
-
-    const muse::rcommand::Command cmd(muse::Uri(command.toStdString()));
-
-    //! Translate the tool's JSON arguments into the command layer's `Params`. Only the scalar types a
-    //! notation command actually declares are mapped; anything else is dropped rather than coerced,
-    //! because silently turning an object into a string would make the handler misread it.
-    //! NOTE `Val`'s constructors are all `explicit`, so `params[key] = true` does not compile - the
-    //! value has to be named before it goes in.
     muse::rcommand::Params params;
     for (auto it = args.constBegin(); it != args.constEnd(); ++it) {
         const QJsonValue v = it.value();
@@ -661,6 +794,19 @@ QString FieldController::dispatchCommand(const QString& command, const QJsonObje
             params.insert({ key, muse::Val(v.toString().toStdString()) });
         }
     }
+    return params;
+}
+} // namespace
+
+QString FieldController::dispatchCommand(const QString& command, const QJsonObject& args)
+{    if (command.isEmpty()) {
+        return QStringLiteral("empty command");
+    }
+
+    const muse::rcommand::Command cmd(muse::Uri(command.toStdString()));
+
+    //! Translate the tool's JSON arguments into the command layer's `Params`.
+    const muse::rcommand::Params params = toCommandParams(args);
 
     muse::async::Promise<muse::rcommand::Response> promise
         = params.empty() ? commandDispatcher()->dispatch(cmd) : commandDispatcher()->dispatch(cmd, params);
@@ -750,6 +896,152 @@ void FieldController::seedSystemPrompt()
 int FieldController::sessionEventCount() const
 {
     return m_session.size();
+}
+
+
+void FieldController::beginUndoTransaction(const QString& actionName)
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return;
+    }
+    INotationUndoStackPtr undoStack = notation->undoStack();
+    if (!undoStack) {
+        return;
+    }
+
+    undoStack->prepareChanges(muse::TranslatableString::untranslatable(muse::String(actionName)));
+}
+
+bool FieldController::endUndoTransaction(bool commit)
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return false;
+    }
+    INotationUndoStackPtr undoStack = notation->undoStack();
+    if (!undoStack) {
+        return false;
+    }
+
+    const size_t before = undoStack->currentStateIndex();
+
+    if (commit) {
+        undoStack->commitChanges();
+    } else {
+        //! ⛔ Rolled back, not committed with the successful prefix. A half-applied instruction is the
+        //! worst available outcome: the model believes it did the whole thing, the user sees part of
+        //! it, and neither can tell which part.
+        undoStack->rollbackChanges();
+    }
+
+    const size_t after = undoStack->currentStateIndex();
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-write] transaction closed: stateIndex" << int(before) << "->" << int(after)
+               << "committed=" << (after != before);
+    }
+
+    //! The stack is the only authority on whether the work survived: `commitChanges` is void, and the
+    //! framework forces a rollback for a read-only score or a command that set an error.
+    return after != before;
+}
+
+muse::async::Promise<muse::rcommand::Response> FieldController::dispatchCommandPromise(const QString& command,
+                                                                                       const QJsonObject& args)
+{
+    const muse::rcommand::Command cmd(muse::Uri(command.toStdString()));
+    const muse::rcommand::Params params = toCommandParams(args);
+    return params.empty() ? commandDispatcher()->dispatch(cmd) : commandDispatcher()->dispatch(cmd, params);
+}
+
+bool FieldController::runInTransaction(const QString& actionName, const std::function<void()>& body)
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return false;
+    }
+
+    INotationUndoStackPtr undoStack = notation->undoStack();
+    if (!undoStack) {
+        return false;
+    }
+
+    //! The revision before and after tells us whether the transaction actually committed. Reading the
+    //! stack is the only reliable way to know: `transaction()` returns void, and
+    //! `TransactionManager::endTransaction` can force a rollback (read-only score, or a command that
+    //! set an error) without telling the caller.
+    const size_t before = undoStack->currentStateIndex();
+
+    //! `untranslatable` takes a `const char*` or a `muse::String`, NOT a `std::string` - passing one
+    //! is a compile error, not a silent conversion. The `String` overload is the right one here: the
+    //! action name is built at runtime (it can include a count), so there is no literal to hand over.
+    const muse::TranslatableString name = muse::TranslatableString::untranslatable(muse::String(actionName));
+
+    undoStack->transaction(name, [&body](mu::engraving::Transaction&) {
+        body();
+    });
+
+    const size_t after = undoStack->currentStateIndex();
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-write] transaction" << actionName
+               << "stateIndex" << int(before) << "->" << int(after)
+               << "committed=" << (after != before);
+    }
+
+    return after != before;
+}
+
+int FieldController::scoreRevision() const
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return 0;
+    }
+
+    INotationUndoStackPtr undoStack = notation->undoStack();
+    if (!undoStack) {
+        return 0;
+    }
+
+    //! `currentStateIndex()` is the position in the undo stack's state list, which advances on every
+    //! committed transaction - including the ones the user made with the mouse, which is the point.
+    //! Clamped to int because it is exposed to the model as a number and a size_t would be printed as
+    //! an unsigned value that never looks "before" anything.
+    return int(undoStack->currentStateIndex());
+}
+
+void FieldController::postToEventLoop(std::function<void()> body)
+{
+    //! ⛔ NOT `muse::async::Async::call`. That was tried twice and SIGSEGVed both times - once with a
+    //! null receiver, once with `this` - and the queue machinery is not worth debugging for a
+    //! one-shot "run this after the current stack unwinds". `QMetaObject::invokeMethod` with
+    //! `Qt::QueuedConnection` is Qt's own answer to exactly that question, it is what the agent loop
+    //! already uses for its step continuation, and it ties the callback's lifetime to this object:
+    //! if the field dies first, the invocation is dropped instead of calling into freed memory.
+    QMetaObject::invokeMethod(this, std::move(body), Qt::QueuedConnection);
+}
+
+bool FieldController::hasActiveTransaction() const
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return false;
+    }
+
+    //! ⚠️ `INotationUndoStack` does NOT expose this - the question "is a transaction open" is only
+    //! answerable at the engraving layer, so this reaches for the score and asks its transaction
+    //! manager. That is a deliberate exception to "everything goes through the notation interface":
+    //! the alternative was adding a method to a public notation header, which is an 8-16 minute
+    //! rebuild for a diagnostic (维护手册.md §9.3 build traps).
+    mu::engraving::Score* score = notation->score();
+    if (!score) {
+        return false;
+    }
+
+    mu::engraving::TransactionManager* manager = score->masterScore()->transactionManager();
+    return manager && manager->currentTransaction() != nullptr;
 }
 
 void FieldController::ensureAgentLoop()

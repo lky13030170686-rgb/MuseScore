@@ -32,9 +32,11 @@
 #include <qqmlintegration.h>
 
 #include <deque>
+#include <functional>
 #include <memory>
 
 #include "async/asyncable.h"
+#include "async/promise.h"
 #include "modularity/ioc.h"
 #include "context/iglobalcontext.h"
 #include "interactive/iinteractive.h"
@@ -44,6 +46,10 @@
 
 #include "addressing.h"
 #include "sessionlog.h"
+//! `ToolResult` is a parameter type on the tool entry points below, so it must be a COMPLETE type here
+//! - a forward declaration would satisfy the compiler for a pointer but not for a by-value callback
+//! argument.
+#include "tools.h"
 
 namespace muse::agentharness {
 class AgentLoop;
@@ -206,6 +212,13 @@ public:
     //! `ok` is reported through `lastToolOk()` (kept out of the return value because QML has no
     //! cheap way to return a pair).
     Q_INVOKABLE QString runTool(const QString& name, const QString& argsJson);
+    //! Run a tool that may finish LATER, reporting through `done`.
+    //!
+    //! ⛔ A tool CAN be asynchronous, and `patch_apply` is: it has to queue its transaction and its
+    //! dispatches into the same FIFO to make a batch one undo step (scoreactiongateway.h). `runTool`
+    //! cannot express that - it must return a string - so a tool that finishes later returns an empty
+    //! success and reports through this channel instead. Exactly one of the two paths fires.
+    void runToolAsync(const QString& name, const QString& argsJson, std::function<void(const ToolResult&)> done);
     Q_INVOKABLE bool lastToolOk() const { return m_lastToolOk; }
     //! Tool names, for diagnostics and (later) the prompt's tool list.
     Q_INVOKABLE QStringList availableTools() const;
@@ -283,6 +296,85 @@ public:
     //! appending anything, and a dialog in a scripted run never resolves. The command then reports
     //! success and nothing happens - the silent-no-op shape this project keeps running into.
     QString dispatchCommand(const QString& command, const QJsonObject& args = QJsonObject());
+
+    //! ── Transaction control, for callers that must span asynchronous work ────────────────────
+    //! ⛔ `dispatch()` only QUEUES the command handler, so a caller that wants several dispatches in
+    //! one undo step has to keep the transaction open across their completions. These are that
+    //! mechanism, split out because the promise chain that uses them lives in `ScoreActionGateway`.
+    //! Prefer `runInTransaction` when the body does its work inline.
+    void beginUndoTransaction(const QString& actionName);
+    //! Close the transaction. Returns whether it COMMITTED - a rollback forced by the framework (a
+    //! read-only score, or an error a command set) is reported as `false` rather than assumed.
+    bool endUndoTransaction(bool commit);
+
+    //! Dispatch and hand back the promise, so the caller can continue when the handler has run.
+    //! `dispatchCommand` is the synchronous-looking face of this; it cannot tell you when the work
+    //! actually happened.
+    muse::async::Promise<muse::rcommand::Response> dispatchCommandPromise(const QString& command,
+                                                                         const QJsonObject& args);
+
+    //! Run `body` inside ONE undo transaction, so everything it dispatches becomes a single undo step.
+    //!
+    //! ⛔⛔ **`dispatch()` IS ASYNCHRONOUS, SO THIS CANNOT BE A SYNCHRONOUS WRAPPER.** `make_promise`
+    //! goes through `Async::call`, which puts the command handler on the thread's queue - the handler
+    //! does not run at the point of the call. A version that opened the transaction, dispatched, and
+    //! committed synchronously therefore committed BEFORE any handler ran, and the handlers each
+    //! opened their own transaction afterwards. The measured symptom: three commands produced three
+    //! undo steps, and the transaction reported `stateIndex 1 -> 1, committed=0` while the dispatches
+    //! reported `txActive=1` - both true, because nothing had run yet.
+    //!
+    //! So the transaction has to be opened and closed around the *completion* of the dispatches, which
+    //! is what `runTransactionAsync` does. This synchronous form remains for callers whose body does
+    //! its own work inline.
+    //!
+    //! Returns false when the transaction was ROLLED BACK, which happens when the score went read-only
+    //! or a command set an error (`TransactionManager::endTransaction` forces a rollback in both
+    //! cases). Callers must treat `false` as "nothing in this block took effect" - not as "some of it
+    //! did".
+    bool runInTransaction(const QString& actionName, const std::function<void()>& body);
+
+    //! Open a transaction, run `body` (which may dispatch commands that complete later), and commit
+    //! when `done` says the work has finished.
+    //!
+    //! `done` is called while the transaction is still open and returns whether to keep the work:
+    //! `true` commits, `false` rolls back. The transaction stays open for the whole of it - including
+    //! the deferred command handlers - which is the only way a batch of dispatches becomes one undo
+    //! step. See the note above for why that is not the synchronous shape.
+    void runTransactionAsync(const QString& actionName, const std::function<void()>& body,
+                             const std::function<bool()>& done);
+
+    //! The score's revision: the number of committed transactions on its undo stack.
+    //!
+    //! ⛔ THIS IS THE FENCE, and it is read from the undo stack rather than counted here. A counter of
+    //! our own would be a second truth about "has the score changed", and the first thing it would
+    //! miss is a change made by the user with the mouse - which is exactly the change an optimistic
+    //! write needs to notice. `currentStateIndex()` moves on every commit, whoever made it.
+    int scoreRevision() const;
+
+    //! Whether an undo transaction is currently open on this score.
+    //!
+    //! Exposed for one reason: `ICommandDispatcher::dispatch` is ASYNCHRONOUS (`make_promise` uses
+    //! `Async::call`), so a command's handler - and therefore its `Score::undo()` - does not run at the
+    //! point of the call. Whether a batch of dispatches lands inside one transaction is a question
+    //! about WHEN the handlers run, and this is the only way to observe that from outside.
+    bool hasActiveTransaction() const;
+
+    //! Run `body` on this object's own event queue, i.e. after the current call stack unwinds.
+    //!
+    //! WHY THIS EXISTS: `ICommandDispatcher::dispatch` is asynchronous - `make_promise` goes through
+    //! `Async::call`, which puts the handler on the thread's queue rather than running it. A batch of
+    //! dispatches therefore has to be QUEUED AS A WHOLE for its transaction to still be open when the
+    //! handlers run (scoreactiongateway.h).
+    //!
+    //! ⛔ THE CALLER MUST BE A REAL `Asyncable`. `muse::async::Async::call(nullptr, ...)` looks like
+    //! "no receiver needed" and is not: the queued message carries the receiver, and dispatching it
+    //! with a null one SIGSEGVs the application the next time the queue is pumped. Measured, not
+    //! guessed - it crashed twice before this was written.
+    //!
+    //! \b Lifetime: passing `this` also means the queued work is DROPPED if the field is destroyed
+    //! first, which is the behaviour we want - a callback into a dead object is the other way this
+    //! could crash.
+    void postToEventLoop(std::function<void()> body);
 
     int eventCount() const { return int(m_events.size() + m_droppedEvents); }
     int revision() const { return m_revision; }
