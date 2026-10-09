@@ -177,6 +177,16 @@ ToolResult toolChordSetPitches(const QJsonObject& args, const ToolContext& ctx);
 //! Write: add text to the score - a title, a rehearsal mark, system text, and so on.
 ToolResult toolTextAdd(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: set the key signature at a measure.
+//!
+//! ⛔ THIS IS THE ONLY PATH. There is no `command://notation/...` command for key signatures - the plan
+//! says so and `command_list` confirms it - so a caller that only knows the command layer cannot change
+//! the key at all.
+ToolResult toolKeySignature(const QJsonObject& args, const ToolContext& ctx);
+
+//! Write: set the time signature at a measure.
+ToolResult toolTimeSignature(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: tie / untie / toggle the tie on the note at an address.
 //!
 //! WHY ONE TOOL WITH A MODE RATHER THAN THREE: the three are the same question asked three ways

@@ -26,6 +26,7 @@
 #include "engraving/dom/chord.h"
 #include "engraving/dom/masterscore.h"
 #include "engraving/dom/measure.h"
+#include "engraving/dom/staff.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/rest.h"
 #include "engraving/dom/score.h"
@@ -61,6 +62,7 @@ namespace {
 const muse::String NOTE_SCORE(u"data/test.mscx");        //!< 4/4, 2 bars: C4 D4 E4 F4 | whole rest
 const muse::String CHORD_SCORE(u"data/chord-test.mscx"); //!< 4/4, 1 bar: a three-note chord [C4 E4 B4]
 const muse::String TIE_SCORE(u"data/tie-test.mscx");     //!< 4/4, 2 bars: whole C4 | whole C4
+const muse::String EMPTY_SCORE(u"data/empty-test.mscx"); //!< 4/4, 2 bars: a whole-measure rest in each
 
 std::shared_ptr<MasterScore> loadScore(const muse::String& name)
 {
@@ -1016,4 +1018,184 @@ TEST(AgentHarness_ScoreRecipes, AddTextOutOfRangeIsRefusedNotCrashed)
     });
     EXPECT_FALSE(result.ok);
     EXPECT_FALSE(result.problem.isEmpty());
+}
+//! ── Key and time signature ────────────────────────────────────────────────────────────────────
+//!
+//! ⛔ THESE HAVE NO COMMAND. `command_list` enumerates every notation command that exists and there is no
+//! key-signature or time-signature one - so for a caller that only knows the command layer, changing the
+//! key is IMPOSSIBLE, not merely awkward. That is why the plan lists these as recipe-only, and why the
+//! tool descriptions say "use this tool, not command_dispatch".
+
+TEST(AgentHarness_ScoreRecipes, SetKeySignaturePutsTheRequestedAccidentalsOnTheStaff)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+    EXPECT_EQ(int(score->staff(0)->key(Fraction(0, 1))), 0) << "test.mscx starts with no accidentals";
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setKeySignature(score.get(), 1, -3);   //!< three flats
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ VERIFIED BY READING THE STAFF BACK, not by the call returning. `undoChangeKeySig` returns void
+    //! and skips staves it cannot handle, so "I called it" is not evidence that the key changed.
+    EXPECT_EQ(int(score->staff(0)->key(Fraction(0, 1))), -3);
+}
+
+TEST(AgentHarness_ScoreRecipes, SetKeySignatureAppliesFromTheNamedMeasureOn)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A key signature is not a property of one bar - it takes effect from there to the next signature.
+    //! Setting it at bar 2 must leave bar 1 alone, which is the difference between this and a per-measure
+    //! property and the thing a careless implementation gets wrong.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setKeySignature(score.get(), 2, 2);   //!< two sharps from bar 2
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    Measure* first = score->firstMeasure();
+    ASSERT_TRUE(first != nullptr);
+    Measure* second = first->nextMeasure();
+    ASSERT_TRUE(second != nullptr);
+
+    EXPECT_EQ(int(score->staff(0)->key(first->tick())), 0) << "bar 1 should be unchanged";
+    EXPECT_EQ(int(score->staff(0)->key(second->tick())), 2) << "bar 2 should carry the new key";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetKeySignatureRejectsAValueOutsideTheRange)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Eight sharps does not exist. The bounds come from the enum, so this test and the recipe agree on
+    //! where the edge is rather than both hard-coding 7.
+    for (int bad : { 8, -8, 99, -99 }) {
+        const RecipeResult result = runRecipe(score.get(), [&] {
+            return setKeySignature(score.get(), 1, bad);
+        });
+        EXPECT_FALSE(result.ok) << bad << " must be refused";
+        EXPECT_TRUE(result.problem.contains(QStringLiteral("7"))) << result.problem.toStdString();
+    }
+    EXPECT_EQ(int(score->staff(0)->key(Fraction(0, 1))), 0) << "nothing may have changed";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetKeySignatureOutOfRangeMeasureIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setKeySignature(score.get(), 99, 1);
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("no measure 99"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, SetKeySignatureToWhatIsAlreadyThereSucceedsAndSaysSo)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Not an error: the key already is what was asked for. A model told "failed" would go looking for
+    //! another way to do what is already done.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setKeySignature(score.get(), 1, 0);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("already"))) << result.detail.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, SetTimeSignatureChangesTheSignatureAndTheMeasureLength)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setTimeSignature(score.get(), 2, 3, 4);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔⛔ RE-LOOKED UP BY TICK, AND THAT IS NOT PEDANTRY. `addTimeSig` reflows by REMOVING AND RECREATING
+    //! the measures, so every `Measure*` taken before it is dangling afterwards. The first version of this
+    //! recipe verified through the pointer it already held and read freed memory - reporting "still 4/4"
+    //! for a signature that HAD been applied, which sent the debugging after the wrong thing entirely.
+    Measure* second = score->tick2measure(Fraction(4, 4));
+    ASSERT_TRUE(second != nullptr);
+    EXPECT_EQ(second->timesig(), Fraction(3, 4));
+
+    //! ⛔ THE BAR MUST ACTUALLY BE THREE BEATS LONG, not just labelled 3/4. If only the label changed, the
+    //! bar would still hold four beats while claiming to be 3/4 - a measure that does not match its own
+    //! signature.
+    EXPECT_EQ(second->ticks(), Fraction(3, 4)) << "the bar must be reflowed, not just relabelled";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetTimeSignatureLeavesTheBarsBeforeItAlone)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A signature takes effect FROM the named measure on. Bar 1 must be untouched - otherwise the tool
+    //! would be changing more than it was asked to.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setTimeSignature(score.get(), 2, 3, 4);
+    });
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+
+    Measure* first = score->tick2measure(Fraction(0, 1));
+    ASSERT_TRUE(first != nullptr);
+    EXPECT_EQ(first->timesig(), Fraction(4, 4)) << "bar 1 must be untouched";
+    EXPECT_EQ(first->ticks(), Fraction(4, 4));
+}
+
+TEST(AgentHarness_ScoreRecipes, SetTimeSignatureOutOfRangeMeasureIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setTimeSignature(score.get(), 99, 3, 4);
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("no measure 99"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, SetTimeSignatureRejectsANonPowerOfTwoDenominator)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! The notation layer stores the denominator as a power of two, so 6/3 would be accepted here and
+    //! then silently stored as something else - which is worse than a refusal.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setTimeSignature(score.get(), 1, 6, 3);
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("power of two"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, SetTimeSignatureRejectsZero)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    for (const auto& pair : { std::pair<int, int> { 0, 4 }, { 4, 0 }, { -3, 4 } }) {
+        const RecipeResult result = runRecipe(score.get(), [&] {
+            return setTimeSignature(score.get(), 1, pair.first, pair.second);
+        });
+        EXPECT_FALSE(result.ok) << pair.first << "/" << pair.second << " must be refused";
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, SetTimeSignatureToWhatIsAlreadyThereSucceedsAndSaysSo)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setTimeSignature(score.get(), 1, 4, 4);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("already"))) << result.detail.toStdString();
 }

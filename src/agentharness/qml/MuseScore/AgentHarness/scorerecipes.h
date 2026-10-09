@@ -200,6 +200,34 @@ bool textStyleNeedsAddress(const QString& style, bool& known);
 //! The style names `addText` accepts, for the tool's error message and its schema.
 QStringList textStyleNames();
 
+//! ── Key and time signature ────────────────────────────────────────────────────────────────────
+//! ⛔⛔ THESE HAVE NO COMMAND, and that is not an oversight in the harness - the notation command
+//! registry simply has none. `command_list` enumerates every command that exists, and a caller looking
+//! for "change the key signature" finds nothing there. So the recipe path is the ONLY path, which is why
+//! the plan lists these three (key, time, barline) as the ones that cannot go through `command_dispatch`.
+
+//! Set the key signature at a measure, as a number of sharps (positive) or flats (negative).
+//!
+//! @param fifths -7 (seven flats) to +7 (seven sharps); 0 is C major / A minor.
+//!
+//! ⚠️ The value is the number of sharps or flats, NOT a key name, because a key NAME is ambiguous in a
+//! way this interface cannot resolve: "C" is C major to one caller and the note C to another, and a
+//! caller that meant A minor would have to know that A minor is also zero accidentals. The count is
+//! what the notation layer actually stores, so nothing is lost by asking for it directly.
+//!
+//! ⚠️ `EditKeySig::undoChangeKeySig` applies the change to every staff LINKED to the one given, which is
+//! what a user expects from the key signature button - the linked staves show the same key.
+RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int fifths);
+
+//! Set the time signature at a measure, e.g. 3/4.
+//!
+//! ⚠️ `local = false`: the signature applies to the whole score from that measure on, which is what
+//! "change the time signature" means. A local signature changes one staff only and is a different,
+//! rarer operation - offering it as a flag would make the common case look like it had an option it
+//! does not need.
+RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, int numerator,
+                              int denominator);
+
 //! ── Rest recipes ──────────────────────────────────────────────────────────────────────────────
 //! Replace the chord at an address with a rest of the SAME duration.
 //!

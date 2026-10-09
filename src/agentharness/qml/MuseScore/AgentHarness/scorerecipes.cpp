@@ -30,7 +30,14 @@
 #include "engraving/dom/note.h"
 #include "engraving/dom/pitchspelling.h"
 #include "engraving/dom/chordrest.h"
+#include "engraving/dom/factory.h"
+#include "engraving/editing/editkeysig.h"
+#include "engraving/editing/edittimesig.h"
+#include "engraving/editing/transaction/transaction.h"
 #include "engraving/dom/measure.h"
+#include "engraving/dom/timesig.h"
+#include "engraving/dom/segment.h"
+#include "engraving/dom/sig.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/textbase.h"
 #include "engraving/editing/navigation.h"
@@ -282,6 +289,22 @@ RecipeResult muse::agentharness::setNotePitch(mu::engraving::Score* score, const
 //! ⚠️ Ties and tuplets are deliberately NOT special-cased: a tie means the note's SOUND continues, but
 //! its WRITTEN duration still has to fit the measure, and a tuplet's written duration is already scaled
 //! by `ticks()`. Special-casing either would be inventing a rule.
+//! A key signature as a musician reads it: the number of sharps or flats, named.
+//!
+//! ⚠️ Reported as "3 sharps" rather than as a key NAME (A major) on purpose. The notation layer stores a
+//! COUNT, and the count is what was asked for; naming the major key would silently pick one of the two
+//! modes that share every signature (A major and F# minor are both three sharps), and a caller who meant
+//! the minor one would be told something that is not what it set.
+QString describeKeySignature(int fifths)
+{
+    if (fifths == 0) {
+        return QStringLiteral("no sharps or flats");
+    }
+    const int count = qAbs(fifths);
+    return QStringLiteral("%1 %2").arg(count).arg(fifths > 0
+                                                  ? (count == 1 ? QStringLiteral("sharp") : QStringLiteral("sharps"))
+                                                  : (count == 1 ? QStringLiteral("flat") : QStringLiteral("flats")));
+}
 bool durationFits(mu::engraving::ChordRest* chord, const mu::engraving::TDuration& duration)
 {
     if (!chord) {
@@ -750,6 +773,157 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
                                      .arg(formatAddress(address), style, text));
     }
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
+}
+RecipeResult muse::agentharness::setKeySignature(mu::engraving::Score* score, int measureNumber, int fifths)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    //! ⛔ Validated against the enum's own bounds rather than a literal 7, so that if upstream ever widens
+    //! the range this starts accepting the new values instead of silently refusing them.
+    const int lowest = int(mu::engraving::Key::MIN);
+    const int highest = int(mu::engraving::Key::MAX);
+    if (fifths < lowest || fifths > highest) {
+        return RecipeResult::failure(
+            QStringLiteral("%1 is not a key signature. Use a number of sharps (1 to %2) or flats (-1 to "
+                           "%3), or 0 for no accidentals.").arg(fifths).arg(highest).arg(-lowest));
+    }
+
+    if (measureNumber < 1) {
+        return RecipeResult::failure(QStringLiteral("measure numbers start at 1 (got %1)")
+                                     .arg(measureNumber));
+    }
+
+    mu::engraving::Measure* measure = nullptr;
+    int index = 0;
+    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure(), ++index) {
+        if (index + 1 == measureNumber) {
+            measure = m;
+            break;
+        }
+    }
+    if (!measure) {
+        return RecipeResult::failure(QStringLiteral("there is no measure %1; the score has %2")
+                                     .arg(measureNumber).arg(index));
+    }
+
+    mu::engraving::KeySigEvent event;
+    event.setKey(mu::engraving::Key(fifths));
+    //! ⚠️ `setCustom(false)` matters: a custom key signature is one with an explicit accidental list, and
+    //! marking a plain -3 as custom would make the score claim it carries a signature the user built by
+    //! hand. The notation layer distinguishes the two, and so does the file format.
+    event.setCustom(false);
+
+    //! ⚠️ The transaction comes from the score rather than being opened here. `runNoteRecipe` already
+    //! prepared one, and `EditKeySig` needs the SAME transaction so that the change joins the undo step
+    //! the harness opened - opening a second one would either be reused silently or end the outer one.
+    mu::engraving::Transaction& tx = score->transactionManager()->currentOrDummyTransaction();
+
+    const QString was = describeKeySignature(int(score->staff(0)->key(measure->tick())));
+    for (mu::engraving::Staff* staff : score->staves()) {
+        mu::engraving::EditKeySig::undoChangeKeySig(tx, score, staff, measure->tick(), event);
+    }
+
+    const QString now = describeKeySignature(int(score->staff(0)->key(measure->tick())));
+    if (was == now) {
+        return RecipeResult::success(QStringLiteral("measure %1 is already in %2")
+                                     .arg(measureNumber).arg(now));
+    }
+
+    return RecipeResult::success(QStringLiteral("measure %1: %2 -> %3 (from this measure on)")
+                                 .arg(measureNumber).arg(was, now));
+}
+
+RecipeResult muse::agentharness::setTimeSignature(mu::engraving::Score* score, int measureNumber,
+                                                 int numerator, int denominator)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (numerator < 1 || denominator < 1) {
+        return RecipeResult::failure(QStringLiteral("%1/%2 is not a time signature; both numbers must be "
+                                                    "at least 1").arg(numerator).arg(denominator));
+    }
+    //! A power of two is not a stylistic preference - the notation layer stores the denominator as a
+    //! power of two, so 6/3 would be accepted here and then silently stored as something else.
+    if ((denominator & (denominator - 1)) != 0) {
+        return RecipeResult::failure(QStringLiteral("the lower number of a time signature must be a power "
+                                                    "of two (2, 4, 8, 16...); %1 is not")
+                                     .arg(denominator));
+    }
+
+    if (measureNumber < 1) {
+        return RecipeResult::failure(QStringLiteral("measure numbers start at 1 (got %1)")
+                                     .arg(measureNumber));
+    }
+
+    mu::engraving::Measure* measure = nullptr;
+    int index = 0;
+    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure(), ++index) {
+        if (index + 1 == measureNumber) {
+            measure = m;
+            break;
+        }
+    }
+    if (!measure) {
+        return RecipeResult::failure(QStringLiteral("there is no measure %1; the score has %2")
+                                     .arg(measureNumber).arg(index));
+    }
+
+    const mu::engraving::Fraction wanted(numerator, denominator);
+    if (measure->timesig() == wanted) {
+        return RecipeResult::success(QStringLiteral("measure %1 is already %2/%3")
+                                     .arg(measureNumber).arg(numerator).arg(denominator));
+    }
+
+    mu::engraving::TimeSig* ts = mu::engraving::Factory::createTimeSig(score->dummy()->segment());
+    ts->setSig(wanted, mu::engraving::TimeSigType::NORMAL);
+
+    mu::engraving::Transaction& tx = score->transactionManager()->currentOrDummyTransaction();
+
+    //! ⛔⛔ `addTimeSig` REWRITES THE FOLLOWING MEASURES ITSELF - the first version of this recipe called
+    //! `rewriteMeasures` after it, which was wrong twice over: the two-argument form does not exist (it
+    //! takes a `staff_idx_t`), and the reflow had already happened inside `addTimeSig`.
+    //!
+    //! ⚠️ It is also the ONLY thing to call, because the reflow is not optional from outside: `addTimeSig`
+    //! rewrites first and adds the signature only if that succeeded, and it calls
+    //! `activeTransaction()->unwind()` to abandon the whole change when it did not. Doing the steps in any
+    //! other order would put a signature on measures that were never reflowed - bars that do not match
+    //! their own signature, which is the "Agent 把工程写坏" state the plan lists first.
+    const int oldNumerator = measure->timesig().numerator();
+    const int oldDenominator = measure->timesig().denominator();
+    //! ⚠️ Captured BEFORE the call, because the reflow inside `addTimeSig` REMOVES AND RECREATES the
+    //! measures - so any `Measure*` taken before it is dangling afterwards, and the tick is the only
+    //! stable handle. (Reading a stale `Measure*` is what made the first diagnostic report "still 4/4"
+    //! for a signature that had in fact been applied.)
+    const mu::engraving::Fraction tick = measure->tick();
+
+    mu::engraving::EditTimeSig::addTimeSig(tx, score, measure, 0, ts, /*local*/ false);
+
+    //! ⛔⛔ VERIFIED BY EFFECT, AND BY TICK - both halves of that matter.
+    //!
+    //! ⚠️ BY EFFECT, because `addTimeSig` returns void and can abandon the change internally (when the
+    //! signature is already there, or when the reflow refuses). "I called it" is not evidence.
+    //!
+    //! ⛔⛔ BY TICK, because the reflow REMOVES AND RECREATES the measures. Any `Measure*` taken before
+    //! `addTimeSig` is DANGLING afterwards, and reading through it reports whatever the freed memory
+    //! happens to hold. That is not theoretical: this check originally read `measure->timesig()` and
+    //! reported "still 4/4" for a signature that HAD been applied, which sent the debugging after the
+    //! wrong thing for several rounds. The tick is the stable handle; the measure must be looked up again.
+    mu::engraving::Measure* after = score->tick2measure(tick);
+    if (!after || after->timesig() != wanted) {
+        return RecipeResult::failure(
+            QStringLiteral("the %1/%2 signature was not applied at measure %3 - the measures could not be "
+                           "rewritten to the new signature, so nothing was changed. (A signature on bars "
+                           "that were not reflowed would leave the score inconsistent.)")
+            .arg(numerator).arg(denominator).arg(measureNumber));
+    }
+
+    return RecipeResult::success(QStringLiteral("measure %1: %2/%3 -> %4/%5 (from this measure on)")
+                                 .arg(measureNumber).arg(oldNumerator).arg(oldDenominator)
+                                 .arg(numerator).arg(denominator));
 }
 RecipeResult muse::agentharness::setChordPitches(mu::engraving::Score* score, const ScoreAddress& address,
                                                 int voice, const QVector<int>& midiPitches)

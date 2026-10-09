@@ -822,6 +822,97 @@ ToolResult muse::agentharness::toolTextAdd(const QJsonObject& args, const ToolCo
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolKeySignature(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int measureNumber = 0;
+    if (!readInt(args, QStringLiteral("measure"), measureNumber)) {
+        return ToolResult::failure(QStringLiteral("`measure` is required and must be an integer"));
+    }
+
+    int fifths = 0;
+    if (!readInt(args, QStringLiteral("fifths"), fifths)) {
+        return ToolResult::failure(QStringLiteral("`fifths` is required: the number of sharps (positive) "
+                                                  "or flats (negative), 0 for none"));
+    }
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Set key signature"), [&](mu::engraving::Score* score) {
+        return setKeySignature(score, measureNumber, fifths);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
+
+ToolResult muse::agentharness::toolTimeSignature(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int measureNumber = 0;
+    if (!readInt(args, QStringLiteral("measure"), measureNumber)) {
+        return ToolResult::failure(QStringLiteral("`measure` is required and must be an integer"));
+    }
+
+    int numerator = 0;
+    int denominator = 0;
+    if (!readInt(args, QStringLiteral("numerator"), numerator)
+        || !readInt(args, QStringLiteral("denominator"), denominator)) {
+        return ToolResult::failure(QStringLiteral("`numerator` and `denominator` are required, e.g. 3 and 4 "
+                                                  "for 3/4"));
+    }
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Set time signature"), [&](mu::engraving::Score* score) {
+        return setTimeSignature(score, measureNumber, numerator, denominator);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1209,6 +1300,49 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("style"), QStringLiteral("text") }),
             toolTextAdd,
+        },
+        ToolSpec{
+            QStringLiteral("key_signature_set"),
+            QStringLiteral("Set the key signature at a measure, as a number of sharps (positive) or flats "
+                           "(negative). 0 is no accidentals. Applies from that measure on, to every "
+                           "linked staff. Undoable with Ctrl+Z. (There is no command for this - use this "
+                           "tool, not command_dispatch.)"),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("measure"), intProperty(QStringLiteral(
+                                                              "1-based measure number where the signature starts.")));
+                QJsonObject fifthsProp;
+                fifthsProp.insert(QStringLiteral("type"), QStringLiteral("integer"));
+                fifthsProp.insert(QStringLiteral("description"), QStringLiteral(
+                                                                     "-7 (seven flats) to 7 (seven sharps). 0 = no sharps or flats. Positive = "
+                                                                     "sharps, e.g. 2 for D major / B minor."));
+                props.insert(QStringLiteral("fifths"), fifthsProp);
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("fifths") }),
+            toolKeySignature,
+        },
+        ToolSpec{
+            QStringLiteral("time_signature_set"),
+            QStringLiteral("Set the time signature at a measure, e.g. 3/4. The measures from there on are "
+                           "rewritten to the new signature, and if that cannot be done nothing is "
+                           "changed. Undoable with Ctrl+Z. (There is no command for this - use this tool, "
+                           "not command_dispatch.)"),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("measure"), intProperty(QStringLiteral(
+                                                              "1-based measure number where the signature starts.")));
+                props.insert(QStringLiteral("numerator"), intProperty(QStringLiteral(
+                                                                   "The upper number, e.g. 3 for 3/4.")));
+                props.insert(QStringLiteral("denominator"), intProperty(QStringLiteral(
+                                                                     "The lower number, e.g. 4 for 3/4. Must be a power of two.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("numerator"),
+                             QStringLiteral("denominator") }),
+            toolTimeSignature,
         },
         ToolSpec{
             QStringLiteral("note_tie"),
