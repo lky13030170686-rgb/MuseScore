@@ -497,6 +497,86 @@ ToolResult muse::agentharness::toolNoteRemove(const QJsonObject& args, const Too
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolNoteAdd(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    int midiPitch = 0;
+    if (!readInt(args, QStringLiteral("pitch"), midiPitch)) {
+        return ToolResult::failure(QStringLiteral("`pitch` is required (a MIDI note number, 60 = middle C)"));
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Add note to chord"), [&](mu::engraving::Score* score) {
+        return addNoteToChord(score, address, voice, midiPitch);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
+
+ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
+{
+    //! Written as prose with the argument names in it, because that is what the model needs in order to
+    //! call the tools: a bare list of tool names would still leave it guessing which argument carries
+    //! the pitch and which the position.
+    QStringList lines;
+    lines.append(QStringLiteral("Operations that address a note or chord by position "
+                                "(measure/beat, both 1-based; `staff` defaults to 1; `note` is 0-based "
+                                "from the lowest and is required when a beat holds several notes):"));
+    lines.append(QString());
+    lines.append(QStringLiteral("  note_set_pitch    measure, beat, pitch (MIDI, 60 = middle C)"));
+    lines.append(QStringLiteral("                    -> set one note's pitch; spelling comes from the key"));
+    lines.append(QStringLiteral("  note_transpose    measure, beat, semitones (negative goes down)"));
+    lines.append(QStringLiteral("                    -> move one note; 0 is refused"));
+    lines.append(QStringLiteral("  note_add          measure, beat, pitch"));
+    lines.append(QStringLiteral("                    -> add a pitch to the chord on that beat"));
+    lines.append(QStringLiteral("  note_remove       measure, beat, note"));
+    lines.append(QStringLiteral("                    -> remove one note; refuses to empty the chord"));
+    lines.append(QStringLiteral("  note_set_duration measure, beat, duration"));
+    lines.append(QStringLiteral("                    -> how long the beat lasts; all notes on the beat change"));
+    lines.append(QString());
+    lines.append(QStringLiteral("Duration names: %1 - optionally dotted, e.g. `dotted-quarter`, `quarter.`")
+                 .arg(durationNames().join(QStringLiteral(", "))));
+    lines.append(QString());
+    lines.append(QStringLiteral("For anything else, use command_list and command_dispatch: the score's own "
+                                "editing commands (insert measures, rests, ties, dynamics, and so on) are "
+                                "reached that way. The two sets are complementary - a command URI cannot "
+                                "name a note, and a note recipe cannot insert a measure."));
+
+    return ToolResult::success(lines.join(QLatin1Char('\n')));
+}
 ToolResult muse::agentharness::toolScoreRevision(const QJsonObject&, const ToolContext& ctx){
     if (!ctx.field) {
         return ToolResult::failure(QStringLiteral("no information field available"));
@@ -766,6 +846,28 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("measure") }),
             toolNoteRemove,
+        },
+        ToolSpec{
+            QStringLiteral("note_add"),
+            QStringLiteral("Add a note to the chord at an address, making a single note into a chord. "
+                           "Refuses a pitch the chord already has. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                props.insert(QStringLiteral("pitch"), intProperty(QStringLiteral(
+                                                           "MIDI note number: 60 is middle C, 64 is E, 67 is G.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("pitch") }),
+            toolNoteAdd,
+        },
+        ToolSpec{
+            QStringLiteral("note_capabilities"),
+            QStringLiteral("List the operations that address a note or chord by position, with their "
+                           "arguments. Call this when you need to change a specific note - the command "
+                           "tools cover everything else."),
+            schemaObject({}),
+            toolNoteCapabilities,
         },
     };
     return table;

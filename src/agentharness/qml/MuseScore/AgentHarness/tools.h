@@ -168,4 +168,16 @@ ToolResult toolNoteSetDuration(const QJsonObject& args, const ToolContext& ctx);
 //! Write: remove one note from the chord at an address. Refuses to empty a chord.
 ToolResult toolNoteRemove(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: add a note to the chord at an address.
+ToolResult toolNoteAdd(const QJsonObject& args, const ToolContext& ctx);
+
+//! Read: list the operations that address a NOTE directly, rather than a command URI.
+//!
+//! WHY THIS TOOL HAS TO EXIST: the command tools are discoverable - `command_list` enumerates them, and
+//! their URIs appear in `command_dispatch`'s description. The note recipes are not: a model reading the
+//! tool descriptions would learn that it can set a pitch and a duration only if it worked that out from
+//! the names. This is the one place that says what the recipe vocabulary is, so the model does not have
+//! to infer it - and so a recipe added later is reachable without changing the prompt.
+ToolResult toolNoteCapabilities(const QJsonObject& args, const ToolContext& ctx);
+
 } // namespace muse::agentharness

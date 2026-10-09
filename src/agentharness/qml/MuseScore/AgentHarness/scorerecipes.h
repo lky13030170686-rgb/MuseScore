@@ -104,6 +104,15 @@ RecipeResult setChordDuration(mu::engraving::Score* score, const ScoreAddress& a
 //! a rest" - which is a different operation with a different command.
 RecipeResult removeNote(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex);
 
+//! Add a note to the chord at an address, making it a chord of several notes.
+//!
+//! ⛔ REFUSED WHEN THE PITCH IS ALREADY THERE. Adding a duplicate pitch to a chord is not a chord - it
+//! is the same note twice, which upstream will happily create and which then draws as one notehead and
+//! confuses every later read of the chord. The refusal names the existing note so the caller can tell
+//! "already done" from "wrong octave".
+RecipeResult addNoteToChord(mu::engraving::Score* score, const ScoreAddress& address, int voice,
+                            int midiPitch);
+
 //! The duration names `setChordDuration` accepts, for the tool's error message and its schema.
 QStringList durationNames();
 

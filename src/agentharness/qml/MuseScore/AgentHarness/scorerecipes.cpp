@@ -28,7 +28,11 @@
 #include "engraving/dom/pitchspelling.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/staff.h"
+#include "engraving/dom/noteval.h"
+#include "engraving/editing/transpose.h"
 #include "engraving/editing/editnote.h"
+#include "engraving/editing/noteinput.h"
+#include "engraving/editing/transaction/transaction.h"
 
 #include "addressing.h"
 #include "notelocator.h"
@@ -322,8 +326,87 @@ RecipeResult muse::agentharness::removeNote(mu::engraving::Score* score, const S
                                  .arg(formatAddress(address), was).arg(chord->notes().size()));
 }
 
-QStringList muse::agentharness::durationNames()
+RecipeResult muse::agentharness::addNoteToChord(mu::engraving::Score* score, const ScoreAddress& address,
+                                                int voice, int midiPitch)
 {
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (!pitchInRange(midiPitch)) {
+        return RecipeResult::failure(QStringLiteral("%1 is not a MIDI pitch; it must be 0-127 "
+                                                    "(60 is middle C)").arg(midiPitch));
+    }
+
+    const NoteLookup found = chordAt(score, address, voice);
+    if (!found.found()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the chord lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    mu::engraving::Chord* chord = found.chord;
+
+    //! ⛔ A duplicate pitch is not a chord, it is the same note twice. Upstream will create it without
+    //! complaint, and the result draws as ONE notehead while every later read of the chord sees two
+    //! notes at the same pitch - which reads as "the chord has a note I cannot see". Refusing also
+    //! settles the common case where the caller meant a different octave.
+    for (mu::engraving::Note* existing : chord->notes()) {
+        if (existing->pitch() == midiPitch) {
+            return RecipeResult::failure(
+                QStringLiteral("%1 already has a %2, so adding it again would put the same note in the "
+                               "chord twice. If you meant a different octave, give the MIDI number for "
+                               "that octave (60 is middle C).")
+                .arg(formatAddress(address), pitchName(midiPitch)));
+        }
+    }
+
+    //! The spelling is derived from the key, exactly as `setNotePitch` does it - a chord added to in C
+    //! major should spell a black key the way that key spells it.
+    const mu::engraving::Key key = chord->staff() ? chord->staff()->concertKey(chord->tick())
+                                                  : mu::engraving::Key::C;
+    const int tpc = mu::engraving::pitch2tpc(midiPitch, key, mu::engraving::Prefer::NEAREST);
+
+    mu::engraving::NoteVal nval(midiPitch);
+    nval.tpc1 = tpc;
+    //! ⚠️ `tpc2` is the TRANSPOSED spelling, and it must be set: leaving it at TPC_INVALID trips an
+    //! assert inside `Note::setPitch`. For a non-transposing instrument the two spellings are the same,
+    //! and for a transposing one the staff's interval is what converts between them.
+    if (chord->staff()) {
+        mu::engraving::Interval v = chord->staff()->transpose(chord->tick());
+        if (v.isZero()) {
+            nval.tpc2 = tpc;
+        } else {
+            v.flip();
+            nval.tpc2 = mu::engraving::Transpose::transposeTpc(tpc, v, true);
+        }
+    } else {
+        nval.tpc2 = tpc;
+    }
+
+    const size_t before = chord->notes().size();
+
+    //! ⛔ `NoteInput::addPitchToChord`, NOT `chord->add(note)`. This is the engraving layer's own
+    //! primitive for putting a pitch into a chord (the same one the user's note entry goes through),
+    //! and it pushes the right `UndoableCommand`s. A bare `chord->add()` changes the chord without
+    //! telling the undo stack - the note would appear and Ctrl+Z would not take it back.
+    mu::engraving::NoteInput::addPitchToChord(score->transactionManager()->currentOrDummyTransaction(),
+                                              score, nval, chord);
+
+    const size_t after = chord->notes().size();
+    if (after <= before) {
+        //! The primitive reported no change. Saying so is better than a success message the caller
+        //! cannot reconcile with what it reads back.
+        return RecipeResult::failure(QStringLiteral("adding %1 to %2 did not change the chord "
+                                                    "(it still has %3 note(s))")
+                                     .arg(pitchName(midiPitch), formatAddress(address)).arg(after));
+    }
+
+    return RecipeResult::success(QStringLiteral("%1: added %2 (the chord now has %3 note(s))")
+                                 .arg(formatAddress(address), pitchName(midiPitch)).arg(after));
+}
+QStringList muse::agentharness::durationNames(){
     return {
         QStringLiteral("long"), QStringLiteral("breve"), QStringLiteral("whole"), QStringLiteral("half"),
         QStringLiteral("quarter"), QStringLiteral("eighth"), QStringLiteral("16th"), QStringLiteral("32nd"),
