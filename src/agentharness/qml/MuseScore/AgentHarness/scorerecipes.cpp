@@ -21,6 +21,9 @@
  */
 #include "scorerecipes.h"
 
+#include <QHash>
+
+#include "engraving/dom/chord.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/pitchspelling.h"
 #include "engraving/dom/score.h"
@@ -36,6 +39,123 @@
 using namespace muse::agentharness;
 
 namespace {
+//! A parsed duration, or why it could not be parsed.
+struct DurationParse
+{
+    bool ok = false;
+    mu::engraving::TDuration value;
+    //! The canonical name, for the success message ("dotted-quarter" rather than what was typed).
+    QString name;
+    QString problem;
+};
+
+//! Map one duration name to its type.
+bool baseDurationType(const QString& name, mu::engraving::DurationType& out)
+{
+    using DT = mu::engraving::DurationType;
+    static const QHash<QString, DT> table = {
+        { QStringLiteral("long"), DT::V_LONG },
+        { QStringLiteral("breve"), DT::V_BREVE },
+        { QStringLiteral("whole"), DT::V_WHOLE },
+        { QStringLiteral("half"), DT::V_HALF },
+        { QStringLiteral("quarter"), DT::V_QUARTER },
+        { QStringLiteral("eighth"), DT::V_EIGHTH },
+        { QStringLiteral("16th"), DT::V_16TH },
+        { QStringLiteral("32nd"), DT::V_32ND },
+        { QStringLiteral("64th"), DT::V_64TH },
+        { QStringLiteral("128th"), DT::V_128TH },
+        { QStringLiteral("256th"), DT::V_256TH },
+        { QStringLiteral("512th"), DT::V_512TH },
+        { QStringLiteral("1024th"), DT::V_1024TH },
+        { QStringLiteral("measure"), DT::V_MEASURE },
+    };
+    const auto it = table.constFind(name);
+    if (it == table.constEnd()) {
+        return false;
+    }
+    out = it.value();
+    return true;
+}
+
+//! Parse a duration name, with dots in any of the spellings a model actually produces.
+//!
+//! ⛔ WHY NOT TAKE A FRACTION OR A TICK COUNT: a model asked for "a dotted quarter" that has to compute
+//! `3/8` will eventually compute something else, and the failure will look like a wrong duration
+//! rather than a wrong conversion - which is much harder to notice and to explain. Accepting the name
+//! a musician uses removes that whole class of error.
+DurationParse parseDuration(const QString& raw)
+{
+    DurationParse result;
+
+    QString name = raw.trimmed().toLower();
+    if (name.isEmpty()) {
+        result.problem = QStringLiteral("no duration given");
+        return result;
+    }
+
+    //! Dots, in the three spellings seen in practice: a prefix (`dotted-quarter`), a suffix word
+    //! (`quarter dotted`), and the musical shorthand (`quarter.`).
+    int dots = 0;
+    if (name.startsWith(QLatin1String("double-dotted-")) || name.startsWith(QLatin1String("double dotted "))) {
+        dots = 2;
+        name = name.mid(name.indexOf(QLatin1Char('-')) >= 0 ? name.indexOf(QLatin1Char('-')) + 1
+                                                            : int(qstrlen("double dotted ")));
+    } else if (name.startsWith(QLatin1String("dotted-")) || name.startsWith(QLatin1String("dotted "))) {
+        dots = 1;
+        name = name.mid(name.indexOf(QLatin1Char('-')) >= 0 ? name.indexOf(QLatin1Char('-')) + 1
+                                                            : int(qstrlen("dotted ")));
+    }
+
+    while (name.endsWith(QLatin1Char('.'))) {
+        ++dots;
+        name.chop(1);
+    }
+    if (name.endsWith(QLatin1String(" dotted"))) {
+        ++dots;
+        name.chop(int(qstrlen(" dotted")));
+    }
+
+    mu::engraving::DurationType type = mu::engraving::DurationType::V_INVALID;
+    if (!baseDurationType(name, type)) {
+        result.problem = QStringLiteral("`%1` is not a duration I know. Use one of: %2 (optionally "
+                                        "dotted, e.g. `dotted-quarter`).")
+                         .arg(raw, durationNames().join(QStringLiteral(", ")));
+        return result;
+    }
+
+    //! A measure-long chord is complete by definition; a dot on it is meaningless rather than harmful,
+    //! but accepting it silently would suggest it did something.
+    if (type == mu::engraving::DurationType::V_MEASURE && dots > 0) {
+        result.problem = QStringLiteral("`measure` is already the whole measure, so it cannot be dotted");
+        return result;
+    }
+
+    if (dots > 3) {
+        result.problem = QStringLiteral("at most three dots are supported; `%1` has %2").arg(raw).arg(dots);
+        return result;
+    }
+
+    result.value = mu::engraving::TDuration(mu::engraving::DurationTypeWithDots(type, dots));
+    result.name = dots == 0 ? name
+                  : QStringLiteral("%1%2").arg(QString(dots == 2 ? QStringLiteral("double-dotted-")
+                                                                 : QStringLiteral("dotted-")), name);
+    result.ok = true;
+    return result;
+}
+
+//! A readable name for a duration, for "was -> now" messages. Falls back to the tick count, which is
+//! still better than an enum number.
+QString describeDuration(const mu::engraving::TDuration& d)
+{
+    for (const QString& candidate : durationNames()) {
+        DurationParse parsed = parseDuration(candidate);
+        if (parsed.ok && parsed.value.type() == d.type() && parsed.value.dots() == d.dots()) {
+            return candidate;
+        }
+    }
+    return QStringLiteral("%1 tick(s)").arg(d.ticks().ticks());
+}
+
 //! Reject a MIDI pitch that cannot exist. Doing this here rather than trusting the caller means the
 //! failure is a sentence about the input instead of a corrupt note.
 bool pitchInRange(int midiPitch)
@@ -116,6 +236,100 @@ RecipeResult muse::agentharness::setNotePitch(mu::engraving::Score* score, const
 
     return RecipeResult::success(QStringLiteral("%1: %2 -> %3")
                                  .arg(formatAddress(address), pitchName(oldPitch), pitchName(midiPitch)));
+}
+
+RecipeResult muse::agentharness::setChordDuration(mu::engraving::Score* score, const ScoreAddress& address,
+                                                 int voice, const QString& duration)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const NoteLookup found = chordAt(score, address, voice);
+    if (!found.found()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the chord lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    const DurationParse parsed = parseDuration(duration);
+    if (!parsed.ok) {
+        return RecipeResult::failure(parsed.problem);
+    }
+
+    mu::engraving::Chord* chord = found.chord;
+    const QString was = describeDuration(chord->durationType());
+
+    if (chord->durationType().type() == parsed.value.type()
+        && chord->durationType().dots() == parsed.value.dots()) {
+        //! Not an error: it is already that long. Reported as success so a model does not go looking
+        //! for another way to do what it already did.
+        return RecipeResult::success(QStringLiteral("%1 is already %2")
+                                     .arg(formatAddress(address), parsed.name));
+    }
+
+    //! ⛔ `Score::undoChangeChordRestLen`, not `chord->setDurationType()`. The latter changes the chord
+    //! without telling the undo stack, so Ctrl+Z would not take it back and the information field would
+    //! never see it - the edit would be real but invisible to everything that watches the score.
+    //!
+    //! ⚠️ It sets DURATION_TYPE_WITH_DOTS and DURATION as two properties. That is upstream's own
+    //! sequence; doing only the first leaves `ticks()` stale, which shows up as a chord that draws
+    //! short and overlaps the next beat.
+    score->undoChangeChordRestLen(chord, parsed.value);
+
+    return RecipeResult::success(QStringLiteral("%1: %2 -> %3")
+                                 .arg(formatAddress(address), was, parsed.name));
+}
+
+RecipeResult muse::agentharness::removeNote(mu::engraving::Score* score, const ScoreAddress& address,
+                                            int voice, int noteIndex)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const NoteLookup found = noteAt(score, address, voice, noteIndex);
+    if (!found.ok()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the note lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    mu::engraving::Chord* chord = found.chord;
+    mu::engraving::Note* note = found.note;
+
+    //! ⛔ REFUSED when it is the last note. A chord with no notes is not a rest - it is a broken chord
+    //! that will draw as nothing and may trip assertions later. A caller who wants silence wants a
+    //! rest, which is a different operation (`command://notation/...`), and saying so is more useful
+    //! than either doing it silently or corrupting the score.
+    if (chord->notes().size() <= 1) {
+        return RecipeResult::failure(
+            QStringLiteral("%1 has only one note, so removing it would leave an empty chord rather "
+                           "than a rest. To silence this beat, replace the note with a rest instead.")
+            .arg(formatAddress(address)));
+    }
+
+    const QString was = pitchName(note->pitch());
+
+    //! ⛔ `Score::undoRemoveElement`, which is what upstream's own note deletion uses
+    //! (`editvoice.cpp`, `edit.cpp`). It also drops the note's ties, which a bare `chord->remove()`
+    //! would leave dangling - a tie pointing at a note that no longer exists.
+    score->undoRemoveElement(note);
+
+    return RecipeResult::success(QStringLiteral("%1: removed %2 (the chord now has %3 note(s))")
+                                 .arg(formatAddress(address), was).arg(chord->notes().size()));
+}
+
+QStringList muse::agentharness::durationNames()
+{
+    return {
+        QStringLiteral("long"), QStringLiteral("breve"), QStringLiteral("whole"), QStringLiteral("half"),
+        QStringLiteral("quarter"), QStringLiteral("eighth"), QStringLiteral("16th"), QStringLiteral("32nd"),
+        QStringLiteral("64th"), QStringLiteral("128th"), QStringLiteral("256th"), QStringLiteral("512th"),
+        QStringLiteral("1024th"), QStringLiteral("measure"),
+    };
 }
 
 RecipeResult muse::agentharness::transposeNote(mu::engraving::Score* score, const ScoreAddress& address,

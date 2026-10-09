@@ -23,6 +23,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 
 namespace mu::engraving {
 class Score;
@@ -82,5 +83,28 @@ RecipeResult setNotePitch(mu::engraving::Score* score, const ScoreAddress& addre
 //! saying so is more useful than a silent success.
 RecipeResult transposeNote(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex,
                            int semitones);
+
+//! ── Chord recipes ─────────────────────────────────────────────────────────────────────────────
+//! These address the whole chord at a position rather than one note, which is what "change this beat's
+//! duration" means: a chord's notes all sound for the same length.
+
+//! Set the duration of the chord at an address.
+//!
+//! @param duration one of the names a musician uses: `whole`, `half`, `quarter`, `eighth`, `16th`,
+//!                 `32nd`, `64th`, `breve`, `long`, `measure` (a full-measure rest/chord), optionally
+//!                 with dots - `dotted-quarter`, `quarter.`, `double-dotted-half`. Parsed HERE rather
+//!                 than taking a raw fraction, because a model that has to compute a tick length will
+//!                 eventually compute the wrong one and the error will look like a wrong duration
+//!                 rather than a wrong conversion.
+RecipeResult setChordDuration(mu::engraving::Score* score, const ScoreAddress& address, int voice,
+                              const QString& duration);
+
+//! Remove one note from the chord at an address. Refused when it is the chord's LAST note: a chord with
+//! no notes is not a rest, it is a broken chord, and the caller almost certainly meant "make this beat
+//! a rest" - which is a different operation with a different command.
+RecipeResult removeNote(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex);
+
+//! The duration names `setChordDuration` accepts, for the tool's error message and its schema.
+QStringList durationNames();
 
 } // namespace muse::agentharness

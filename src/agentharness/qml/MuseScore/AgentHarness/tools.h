@@ -161,4 +161,11 @@ ToolResult toolNoteSetPitch(const QJsonObject& args, const ToolContext& ctx);
 //! Write: move one note by a number of semitones.
 ToolResult toolNoteTranspose(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: set the duration of the chord at an address. Takes a musician's name (`quarter`,
+//! `dotted-eighth`), not a tick count - see scorerecipes.h for why.
+ToolResult toolNoteSetDuration(const QJsonObject& args, const ToolContext& ctx);
+
+//! Write: remove one note from the chord at an address. Refuses to empty a chord.
+ToolResult toolNoteRemove(const QJsonObject& args, const ToolContext& ctx);
+
 } // namespace muse::agentharness

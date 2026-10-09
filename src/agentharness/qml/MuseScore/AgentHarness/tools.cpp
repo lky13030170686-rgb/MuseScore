@@ -404,8 +404,100 @@ ToolResult muse::agentharness::toolNoteTranspose(const QJsonObject& args, const 
     return ToolResult::success(result.detail, meta);
 }
 
-ToolResult muse::agentharness::toolScoreRevision(const QJsonObject&, const ToolContext& ctx)
+ToolResult muse::agentharness::toolNoteSetDuration(const QJsonObject& args, const ToolContext& ctx)
 {
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    const QString duration = args.value(QStringLiteral("duration")).toString();
+    if (duration.isEmpty()) {
+        return ToolResult::failure(QStringLiteral("`duration` is required; use one of: %1")
+                                   .arg(durationNames().join(QStringLiteral(", "))));
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Set duration"), [&](mu::engraving::Score* score) {
+        return setChordDuration(score, address, voice, duration);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
+
+ToolResult muse::agentharness::toolNoteRemove(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Remove note"), [&](mu::engraving::Score* score) {
+        return removeNote(score, address, voice, noteIndex);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
+ToolResult muse::agentharness::toolScoreRevision(const QJsonObject&, const ToolContext& ctx){
     if (!ctx.field) {
         return ToolResult::failure(QStringLiteral("no information field available"));
     }
@@ -644,6 +736,36 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("semitones") }),
             toolNoteTranspose,
+        },
+        ToolSpec{
+            QStringLiteral("note_set_duration"),
+            QStringLiteral("Set how long the beat at an address lasts, by name: `whole`, `half`, "
+                           "`quarter`, `eighth`, `16th` … optionally dotted (`dotted-quarter`). All the "
+                           "notes on that beat change together, because a chord's notes sound for the "
+                           "same length. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                props.insert(QStringLiteral("duration"), stringProperty(QStringLiteral(
+                                                                   "The duration name, optionally dotted: e.g. `quarter`, `dotted-eighth`.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("duration") }),
+            toolNoteSetDuration,
+        },
+        ToolSpec{
+            QStringLiteral("note_remove"),
+            QStringLiteral("Remove one note from the chord at an address, for turning a chord into a "
+                           "single note. Refuses when it is the chord's only note - silencing a beat "
+                           "means replacing it with a rest, which is a different operation. Undoable "
+                           "with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure") }),
+            toolNoteRemove,
         },
     };
     return table;
