@@ -179,6 +179,9 @@ ToolResult toolNoteAdd(const QJsonObject& args, const ToolContext& ctx);
 //! mode is explicit and validated, so a wrong mode is a sentence rather than a wrong edit.
 ToolResult toolNoteTie(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: replace the chord at an address with a rest of the same duration - i.e. silence this beat.
+ToolResult toolNoteToRest(const QJsonObject& args, const ToolContext& ctx);
+
 //! Read: list the operations that address a NOTE directly, rather than a command URI.
 //!
 //! WHY THIS TOOL HAS TO EXIST: the command tools are discoverable - `command_list` enumerates them, and

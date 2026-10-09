@@ -22,6 +22,8 @@
 #include "notelocator.h"
 
 #include "engraving/dom/chord.h"
+#include "engraving/dom/chordrest.h"
+#include "engraving/dom/rest.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/score.h"
@@ -35,23 +37,53 @@
 using namespace muse::agentharness;
 
 namespace {
-//! The segment at `tick` on `track`, or null.
+//! The segment holding a chord or rest at `tick` for `track`, or null.
 //!
 //! ⛔ `Score::tick2segment()` IS NOT A SUBSTITUTE: it only returns a segment when the tick falls
 //! exactly on one, and silently answers null otherwise - which would make "there is no note here" and
 //! "this tick does not exist" look the same. Walking the measure's segments lets the caller tell those
 //! apart, and that difference is the whole content of the error messages below.
+//!
+//! ⛔⛔ IT SEARCHES *ALL* SEGMENT TYPES, and that is not laziness. A whole-measure rest does not live on
+//! a `SegmentType::ChordRest` segment - it lives on the measure's own segment, which is a different
+//! type - so a walk restricted to ChordRest segments CANNOT SEE IT. The measured symptom was a
+//! `note_to_rest` call on a bar that was already a rest answering "there is no note at measure 2 beat
+//! 1", which is both wrong and misleading: the bar is full of rest, and the caller is told there is
+//! nothing there.
+//!
+//! ⚠️ It also does NOT require the element to be on `track`. A whole-measure rest is stored once, on
+//! the measure, and a caller asking about voice 2 of an empty bar should still be told "that is a
+//! rest" rather than "there is nothing here".
 mu::engraving::Segment* segmentAt(mu::engraving::Score* score, mu::engraving::Measure* measure,
                                   const mu::engraving::Fraction& tick, mu::engraving::track_idx_t track)
 {
-    for (mu::engraving::Segment* seg = measure->first(mu::engraving::SegmentType::ChordRest); seg;
-         seg = seg->next(mu::engraving::SegmentType::ChordRest)) {
-        if (seg->tick() == tick && seg->element(track)) {
-            return seg;
-        }
+    Q_UNUSED(score);
+    Q_UNUSED(track);
+
+    for (mu::engraving::Segment* seg = measure->first(mu::engraving::SegmentType::All); seg;
+         seg = seg->next(mu::engraving::SegmentType::All)) {
         if (seg->tick() > tick) {
             //! Segments are in tick order, so there is nothing at this tick.
             return nullptr;
+        }
+        if (seg->tick() != tick) {
+            continue;
+        }
+
+        //! The first segment at this tick that carries anything chord-like. Several segments share a
+        //! tick (clef, key, time signature, then the chord/rest), so the type has to be checked rather
+        //! than assumed from the tick alone.
+        if (seg->isChordRestType() || seg->segmentType() == mu::engraving::SegmentType::ChordRest) {
+            return seg;
+        }
+
+        const mu::engraving::track_idx_t trackCount = score ? score->ntracks() : 0;
+        for (mu::engraving::track_idx_t t = 0; t < trackCount; ++t) {
+            if (mu::engraving::EngravingItem* item = seg->element(t)) {
+                if (item->isChordRest()) {
+                    return seg;
+                }
+            }
         }
     }
     return nullptr;
@@ -138,17 +170,39 @@ NoteLookup muse::agentharness::chordAt(mu::engraving::Score* score, const ScoreA
 
     for (mu::engraving::track_idx_t track : tracks) {
         if (mu::engraving::Segment* seg = segmentAt(score, measure, tick, track)) {
-            LOGW() << "[agent-locate] track" << int(track) << "found segment, element="
-                   << (seg->element(track) != nullptr);
-            if (mu::engraving::EngravingItem* item = seg->element(track)) {
-                if (item->isChord()) {
-                    result.chord = mu::engraving::toChord(item);
-                    LOGW() << "[agent-locate] track" << int(track) << "is a chord with"
-                           << result.chord->notes().size() << "note(s)";
-                    return result;
+            //! ⚠️ Look at the element for THIS track, and fall back to whatever chord-like element the
+            //! segment carries. A whole-measure rest is stored once on the measure, so asking about
+            //! voice 2 of an empty bar finds it only through the fallback - and without that, the
+            //! caller is told "there is nothing here" about a bar full of rest.
+            mu::engraving::EngravingItem* item = seg->element(track);
+            if (!item) {
+                for (mu::engraving::track_idx_t t = 0; t < score->ntracks(); ++t) {
+                    mu::engraving::EngravingItem* candidate = seg->element(t);
+                    if (candidate && candidate->isChordRest()) {
+                        item = candidate;
+                        break;
+                    }
                 }
-                LOGW() << "[agent-locate] track" << int(track) << "element is not a chord";
             }
+
+            if (item && item->isChord()) {
+                result.chord = mu::engraving::toChord(item);
+                LOGW() << "[agent-locate] track" << int(track) << "is a chord with"
+                       << result.chord->notes().size() << "note(s)";
+                return result;
+            }
+
+            if (item && item->isRest()) {
+                //! ⛔ A REST IS A LEGITIMATE ANSWER, and returning "nothing here" for one is what made
+                //! `changeToRest`'s "already a rest" branch unreachable on the most common rest there
+                //! is. `found()` is true because `chord` is set; `ok()` stays false because there is no
+                //! note - which is exactly the distinction the two predicates exist to draw.
+                result.rest = mu::engraving::toChordRest(item);
+                LOGW() << "[agent-locate] track" << int(track) << "is a rest";
+                return result;
+            }
+
+            LOGW() << "[agent-locate] track" << int(track) << "element is not a chord or rest";
         }
     }
 

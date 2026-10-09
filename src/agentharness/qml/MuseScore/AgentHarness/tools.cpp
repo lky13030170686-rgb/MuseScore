@@ -604,6 +604,49 @@ ToolResult muse::agentharness::toolNoteTie(const QJsonObject& args, const ToolCo
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolNoteToRest(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Change to rest"), [&](mu::engraving::Score* score) {
+        return changeToRest(score, address, voice);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -959,6 +1002,19 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("mode") }),
             toolNoteTie,
+        },
+        ToolSpec{
+            QStringLiteral("note_to_rest"),
+            QStringLiteral("Replace the beat at an address with a rest of the same length - i.e. silence "
+                           "it. This is how you remove the last note of a chord: note_remove refuses that "
+                           "case, because an empty chord is not a rest. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure") }),
+            toolNoteToRest,
         },
         ToolSpec{
             QStringLiteral("note_capabilities"),

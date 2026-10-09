@@ -134,6 +134,21 @@ RecipeResult removeTie(mu::engraving::Score* score, const ScoreAddress& address,
 //! the state the caller asked for, whichever it was.
 RecipeResult toggleTie(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex);
 
+//! ── Rest recipes ──────────────────────────────────────────────────────────────────────────────
+
+//! Replace the chord at an address with a rest of the SAME duration.
+//!
+//! ⛔ WHY THIS IS THE ANSWER TO "silence this beat" AND `note_remove` IS NOT: removing the last note of
+//! a chord leaves an empty chord, which is not a rest - it draws as nothing and is a broken object.
+//! `note_remove` refuses that case and points here, so the two tools are complements rather than
+//! alternatives, and a caller that wants silence has exactly one place to go.
+//!
+//! The duration is taken from the chord being replaced, not from an argument: "make this beat a rest"
+//! means the beat keeps its length. Changing the length as well is `note_set_duration`'s job, and doing
+//! both at once would make "the rest is the wrong length" and "the rest is in the wrong place"
+//! indistinguishable in the result.
+RecipeResult changeToRest(mu::engraving::Score* score, const ScoreAddress& address, int voice);
+
 //! The duration names `setChordDuration` accepts, for the tool's error message and its schema.
 QStringList durationNames();
 

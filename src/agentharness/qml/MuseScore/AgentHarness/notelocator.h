@@ -28,6 +28,7 @@ namespace mu::engraving {
 class Score;
 class Note;
 class Chord;
+class ChordRest;
 }
 
 namespace muse::agentharness {
@@ -51,21 +52,30 @@ struct NoteLookup
 {
     mu::engraving::Note* note = nullptr;
     mu::engraving::Chord* chord = nullptr;
+    //! Set when the position holds a REST rather than a chord.
+    //!
+    //! ⛔ THIS IS NOT A CURIOSITY. Before it existed, a lookup on a bar that was already a rest answered
+    //! "there is no note at measure 2 beat 1" - both wrong and misleading, and it made `changeToRest`'s
+    //! "already a rest" branch unreachable on the most common rest there is (a whole-measure rest).
+    mu::engraving::ChordRest* rest = nullptr;
     //! Empty when the lookup succeeded.
     QString problem;
 
-    //! Whether a NOTE was found. `chordAt` legitimately returns with only `chord` set, so this is not
-    //! the right question to ask about its result.
+    //! Whether a NOTE was found. `chordAt` legitimately returns with only `chord` or `rest` set, so this
+    //! is not the right question to ask about its result.
     bool ok() const { return note != nullptr; }
 
-    //! Whether the lookup itself succeeded - a chord for `chordAt`, a note for `noteAt`.
+    //! Whether the lookup itself succeeded - a chord or rest for `chordAt`, a note for `noteAt`.
     //!
     //! ⛔ THE TWO ARE NOT THE SAME, and conflating them cost several rebuilds: `noteAt` began with
     //! `if (!result.ok()) return result;` on `chordAt`'s result, and `ok()` asks for a NOTE - which
     //! `chordAt` never sets. So every lookup bailed out immediately, returning a default-constructed
     //! `problem`, and the caller reported an empty failure. The symptom (a failure with no message) was
     //! indistinguishable from "the recipe never ran", which is what made it expensive.
-    bool found() const { return note != nullptr || chord != nullptr; }
+    bool found() const { return note != nullptr || chord != nullptr || rest != nullptr; }
+
+    //! Whether the position holds a rest. A recipe that wants silence asks this before doing anything.
+    bool isRest() const { return rest != nullptr; }
 };
 
 //! The note at an address.

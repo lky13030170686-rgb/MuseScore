@@ -31,6 +31,7 @@
 #include "engraving/dom/score.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/noteval.h"
+#include "engraving/dom/rest.h"
 #include "engraving/editing/transpose.h"
 #include "engraving/editing/editnote.h"
 #include "engraving/editing/noteinput.h"
@@ -313,7 +314,7 @@ RecipeResult muse::agentharness::removeNote(mu::engraving::Score* score, const S
     if (chord->notes().size() <= 1) {
         return RecipeResult::failure(
             QStringLiteral("%1 has only one note, so removing it would leave an empty chord rather "
-                           "than a rest. To silence this beat, replace the note with a rest instead.")
+                           "than a rest. Use note_to_rest to silence this beat instead.")
             .arg(formatAddress(address)));
     }
 
@@ -544,6 +545,53 @@ RecipeResult muse::agentharness::toggleTie(mu::engraving::Score* score, const Sc
     }
 
     return addTie(score, address, voice, noteIndex);
+}
+RecipeResult muse::agentharness::changeToRest(mu::engraving::Score* score, const ScoreAddress& address, int voice)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const NoteLookup found = chordAt(score, address, voice);
+    if (!found.found()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the chord lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    mu::engraving::Chord* chord = found.chord;
+
+    if (found.isRest()) {
+        //! Not an error: it is already silent. Reported as success so the caller does not go looking for
+        //! another way to do what is already done.
+        return RecipeResult::success(QStringLiteral("%1 is already a rest").arg(formatAddress(address)));
+    }
+
+    if (!chord) {
+        return RecipeResult::failure(QStringLiteral("%1 holds something that is neither a chord nor a "
+                                                    "rest, so it cannot be silenced")
+                                     .arg(formatAddress(address)));
+    }
+
+    //! The duration comes from the chord, so the beat keeps its length. See the note in the header on
+    //! why changing it as well would blur two different failures into one.
+    const mu::engraving::Fraction ticks = chord->ticks();
+    const QString was = describeDuration(chord->durationType());
+
+    //! ⛔ `Score::setNoteRest` with a default `NoteVal` (pitch -1, i.e. `isRest()`), which is the
+    //! engraving layer's own primitive for "put this duration at this position as a rest". It handles
+    //! the removal of the existing chord and the gap arithmetic, and it is what upstream's own rest
+    //! entry goes through - so the undo stack and the layout see a normal edit.
+    //!
+    //! ⚠️ NOT `Score::cmdEnterRest`: that reads the global input state (where the cursor is), appends a
+    //! measure when the position is past the end, and moves the cursor afterwards. An addressed write
+    //! must not depend on, or disturb, where the user's cursor happens to be.
+    mu::engraving::NoteVal restVal;   //! pitch == -1 -> a rest
+    score->setNoteRest(chord->segment(), chord->track(), restVal, ticks);
+
+    return RecipeResult::success(QStringLiteral("%1: replaced the chord with a %2 rest")
+                                 .arg(formatAddress(address), was));
 }
 QStringList muse::agentharness::durationNames(){
     return {
