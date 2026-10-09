@@ -353,6 +353,25 @@ public:
     //! is only valid for the duration of the call (the "never cache an EngravingObject*" invariant).
     RecipeResult runNoteRecipe(const QString& actionName, const std::function<RecipeResult(mu::engraving::Score*)>& recipe);
 
+    //! Run a recipe inside the transaction that is ALREADY OPEN, without opening one of its own.
+    //!
+    //! ⛔⛔ WHY THIS EXISTS, and it is not a convenience. `changesChannel` fires once per non-empty
+    //! transaction COMMIT (`transaction.cpp:226`), and each `runNoteRecipe` opens and commits its own - so
+    //! a 200-operation batch produced 200 notifications even though `mergeTransactionsFrom` folded it into
+    //! ONE undo step. Measured: `agent-field record` had 200 lines for one batch, against a design that
+    //! says "one write = one op".
+    //!
+    //! ⚠️ And it CANNOT be done by nesting: `TransactionManager::beginTransaction` reuses an active
+    //! transaction (`if (stack->hasActiveTransaction()) { LOGD() << "cmd already active"; return; }`), so
+    //! the recipe's own `commitChanges()` would close the BATCH's transaction early - the failure mode
+    //! §4.1.1 of the plan warns about. The only way to get one notification is to not open a second
+    //! transaction at all.
+    //!
+    //! Returns a failure when no transaction is open, rather than silently opening one: a caller that
+    //! reaches for this has already decided the transaction boundary, and quietly changing it would make
+    //! the notification count depend on which path ran.
+    RecipeResult runRecipeInOpenTransaction(const std::function<RecipeResult(mu::engraving::Score*)>& recipe);
+
     //! The score behind the current notation, or null. For recipes - everything else should go through
     //! the notation interface.
     mu::engraving::Score* currentScore() const;

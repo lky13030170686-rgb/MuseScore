@@ -993,17 +993,41 @@ RecipeResult FieldController::runNoteRecipe(const QString& actionName,
 
     RecipeResult outcome;
 
-    //! `prepareChanges`/`commitChanges` rather than `transaction()`: the recipe is a plain function, and
-    //! the pair is the shape that lets the outcome be read before deciding to commit. A recipe that
-    //! failed must ROLL BACK rather than commit an empty transaction - an empty commit still moves the
-    //! revision, which would make a no-op look like an edit to anything watching the fence.
-    undoStack->prepareChanges(muse::TranslatableString::untranslatable(muse::String(actionName)));
+    //! ⛔⛔ WHEN A TRANSACTION IS ALREADY OPEN, JOIN IT INSTEAD OF OPENING A SECOND ONE.
+    //!
+    //! WHY THIS IS THE FIX FOR THE NOTIFICATION COUNT: `changesChannel` fires once per non-empty
+    //! transaction COMMIT (`transaction.cpp:226`). A batch that ran 200 recipes each opening and
+    //! committing its own transaction therefore produced 200 notifications, even though
+    //! `mergeTransactionsFrom` folded the result into ONE undo step - because merging happens after the
+    //! commits, and a notification already sent cannot be recalled. Measured: one 200-operation batch put
+    //! 200 lines in the field's raw log, against a design that says "one write = one op".
+    //!
+    //! ⚠️ AND NESTING WOULD NOT HAVE WORKED: `TransactionManager::beginTransaction` REUSES an active
+    //! transaction (`if (stack->hasActiveTransaction()) { LOGD() << "cmd already active"; return; }`), so
+    //! the inner `commitChanges()` would have closed the OUTER transaction early - the failure mode the
+    //! plan's §4.1.1 warns about. The only way to get one notification is to not open a second transaction.
+    //!
+    //! ⚠️ The commit/rollback is skipped for the same reason: the caller owns the transaction boundary, so
+    //! it owns the outcome too. A recipe that fails inside a batch reports its failure to the batch, and
+    //! the batch is what decides to roll back - which it already does, by undoing to the recorded revision.
+    const bool joinedAnOpenTransaction = hasActiveTransaction();
+
+    if (!joinedAnOpenTransaction) {
+        //! `prepareChanges`/`commitChanges` rather than `transaction()`: the recipe is a plain function, and
+        //! the pair is the shape that lets the outcome be read before deciding to commit. A recipe that
+        //! failed must ROLL BACK rather than commit an empty transaction - an empty commit still moves the
+        //! revision, which would make a no-op look like an edit to anything watching the fence.
+        undoStack->prepareChanges(muse::TranslatableString::untranslatable(muse::String(actionName)));
+    }
+
     outcome = recipe(score);
 
-    if (outcome.ok) {
-        undoStack->commitChanges();
-    } else {
-        undoStack->rollbackChanges();
+    if (!joinedAnOpenTransaction) {
+        if (outcome.ok) {
+            undoStack->commitChanges();
+        } else {
+            undoStack->rollbackChanges();
+        }
     }
 
     if (fieldTraceEnabled()) {
@@ -1117,6 +1141,32 @@ void FieldController::postToEventLoop(std::function<void()> body)
     QMetaObject::invokeMethod(this, std::move(body), Qt::QueuedConnection);
 }
 
+RecipeResult FieldController::runRecipeInOpenTransaction(
+    const std::function<RecipeResult(mu::engraving::Score*)>& recipe)
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return RecipeResult::failure(QStringLiteral("no score is open"));
+    }
+
+    mu::engraving::Score* score = notation->score();
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score is open"));
+    }
+
+    //! ⛔ REFUSED rather than opening one. A caller that reached for this has already decided where the
+    //! transaction boundary is, and quietly opening one here would make the notification count depend on
+    //! which path happened to run - the exact thing this function exists to make predictable.
+    if (!hasActiveTransaction()) {
+        return RecipeResult::failure(
+            QStringLiteral("no transaction is open, and this path does not open one (internal)"));
+    }
+
+    //! ⚠️ NO `prepareChanges` / `commitChanges` HERE - that is the whole point. The commands the recipe
+    //! pushes join the caller's transaction, so the caller's single commit produces a single change
+    //! notification for all of them.
+    return recipe(score);
+}
 bool FieldController::hasActiveTransaction() const
 {
     INotationPtr notation = context()->currentNotation();

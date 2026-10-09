@@ -48,57 +48,6 @@ ScoreActionGateway::ScoreActionGateway(FieldController* field)
 {
 }
 
-WriteResult ScoreActionGateway::performWith(FieldController* field, const WriteOp& op, const ToolContext& context)
-{
-    WriteResult result;
-    result.command = op.command.isEmpty() ? op.tool : op.command;
-
-    if (!field) {
-        result.ok = false;
-        result.error = QStringLiteral("no score context available");
-        return result;
-    }
-
-    //! ── THE RECIPE PATH ──────────────────────────────────────────────────────────────────────────
-    //!
-    //! ⛔⛔ WHY RECIPES HAD TO BE ADDED HERE. `patch_apply` only accepted `command://` URIs, so none of
-    //! the `note_*` tools could take part in a batch - and a batch is exactly how "change many notes in
-    //! one undo step" is done. The tools that most need batching were the ones that could not use it.
-    //!
-    //! ⚠️ The recipe runs through `runNoteRecipe`, the SAME path the standalone tool uses, so the two
-    //! entry points cannot drift: a refusal that works when the tool is called directly works in a batch
-    //! for the same reason, because it is the same call.
-    if (op.recipe) {
-        //! ⚠️ `op.recipe` IS the tool function, so this runs the tool - argument parsing, revision
-        //! fence, validation, recipe and all. A batch operation is not a similar code path to a direct
-        //! call; it is the same one.
-        const ToolResult outcome = op.recipe(context);
-        result.ok = outcome.ok;
-        result.error = outcome.ok ? QString() : outcome.text;
-        return result;
-    }
-
-    if (op.command.isEmpty()) {
-        result.ok = false;
-        result.error = QStringLiteral("empty command");
-        return result;
-    }
-
-    //! ⛔ Ask first. A disabled notation command is silently skipped by the controller's outer
-    //! wrapper, so dispatching it yields "success" and no change at all (维护手册.md §4.8, 第 594 条 -
-    //! this project has paid for that twice). The refusal has to happen HERE, before the dispatch,
-    //! because after it there is nothing left to detect.
-    if (!field->isCommandEnabled(op.command)) {
-        result.ok = false;
-        result.error = QStringLiteral("`%1` is not enabled right now, so dispatching it would be "
-                                      "silently ignored").arg(op.command);
-        return result;
-    }
-
-    result.error = field->dispatchCommand(op.command, op.params);
-    result.ok = result.error.isEmpty();
-    return result;
-}
 
 void ScoreActionGateway::performBatch(const QVector<WriteOp>& ops, const QString& actionName,
                                       const ToolContext& context,
