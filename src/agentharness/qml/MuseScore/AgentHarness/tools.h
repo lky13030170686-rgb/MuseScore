@@ -174,6 +174,9 @@ ToolResult toolNoteAdd(const QJsonObject& args, const ToolContext& ctx);
 //! Write: make the chord at an address have exactly a given set of pitches.
 ToolResult toolChordSetPitches(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: add text to the score - a title, a rehearsal mark, system text, and so on.
+ToolResult toolTextAdd(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: tie / untie / toggle the tie on the note at an address.
 //!
 //! WHY ONE TOOL WITH A MODE RATHER THAN THREE: the three are the same question asked three ways

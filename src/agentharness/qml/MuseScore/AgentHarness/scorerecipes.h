@@ -171,6 +171,35 @@ RecipeResult removeSlur(mu::engraving::Score* score, const ScoreAddress& address
 //! Add a slur if there is none, remove it if there is.
 RecipeResult toggleSlur(mu::engraving::Score* score, const ScoreAddress& address, int voice);
 
+//! ── Text recipes ──────────────────────────────────────────────────────────────────────────────
+//! Text in a score comes in TWO KINDS, and which kind a given style is decides whether it needs a
+//! position at all:
+//!
+//!   - **frame text** - title, subtitle, composer, lyricist. It belongs to the score, not to a beat, so
+//!     there is no address to give.
+//!   - **attached text** - rehearsal mark, system text, staff text, expression. It hangs off a specific
+//!     chord or rest, so it needs one.
+//!
+//! ⛔⛔ THE CRASH THIS FUNCTION EXISTS TO PREVENT: `Score::addText` calls `chordOrRest(destination)` for
+//! every attached style and then uses the result WITHOUT checking it. `chordOrRest` returns null for a
+//! null destination, so `addText(REHEARSAL_MARK, nullptr)` dereferences null and takes the process down.
+//! A model that names a rehearsal mark but forgets the measure reaches that in one call, so the check
+//! has to be here.
+
+//! Add text to the score. `address` is ignored for frame styles and REQUIRED for attached ones.
+//!
+//! @param style one of the names from `textStyleNames()`, e.g. `title`, `composer`, `rehearsal-mark`,
+//!              `system`, `staff`, `expression`
+RecipeResult addText(mu::engraving::Score* score, const ScoreAddress& address, const QString& style,
+                     const QString& text);
+
+//! Whether a style is attached to a position (and therefore needs an address).
+//! @param known set to false when the name is not a style this build knows
+bool textStyleNeedsAddress(const QString& style, bool& known);
+
+//! The style names `addText` accepts, for the tool's error message and its schema.
+QStringList textStyleNames();
+
 //! ── Rest recipes ──────────────────────────────────────────────────────────────────────────────
 //! Replace the chord at an address with a rest of the SAME duration.
 //!

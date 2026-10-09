@@ -761,6 +761,67 @@ ToolResult muse::agentharness::toolChordSetPitches(const QJsonObject& args, cons
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolTextAdd(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    const QString style = args.value(QStringLiteral("style")).toString();
+    if (style.isEmpty()) {
+        return ToolResult::failure(QStringLiteral("`style` is required. Use one of: %1")
+                                   .arg(textStyleNames().join(QStringLiteral(", "))));
+    }
+
+    const QString text = args.value(QStringLiteral("text")).toString();
+
+    //! ⛔ THE ADDRESS IS REQUIRED ONLY FOR THE ATTACHED STYLES, and saying so is the whole point of
+    //! asking. `addText(title)` needs no position; `addText(rehearsal-mark)` does. A tool that demanded
+    //! a measure for a title would make callers invent one, and one that accepted a missing measure for a
+    //! rehearsal mark would reach the null dereference inside `Score::addText`.
+    bool known = false;
+    const bool needsAddress = textStyleNeedsAddress(style, known);
+    if (!known) {
+        return ToolResult::failure(QStringLiteral("`%1` is not a text style I know. Use one of: %2")
+                                   .arg(style, textStyleNames().join(QStringLiteral(", "))));
+    }
+
+    ScoreAddress address;
+    if (needsAddress) {
+        QString problem;
+        if (!readAddress(args, address, problem)) {
+            return ToolResult::failure(QStringLiteral("%1 text attaches to a position, so `measure` is "
+                                                      "required. %2").arg(style, problem));
+        }
+    }
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Add text"), [&](mu::engraving::Score* score) {
+        return addText(score, address, style, text);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1117,6 +1178,37 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("pitches") }),
             toolChordSetPitches,
+        },
+        ToolSpec{
+            QStringLiteral("text_add"),
+            QStringLiteral("Add text to the score: a title, subtitle, composer, lyricist, rehearsal "
+                           "mark, system text, staff text or expression. The frame styles (title, "
+                           "subtitle, composer, lyricist) need no position; the others attach to a beat, "
+                           "so `measure` is required for them. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                //! The address is optional HERE even though `addressProperties()` marks measure as
+                //! required - a title has no position. Which styles need it is stated in the
+                //! description and enforced by the tool, which is more useful than a schema that
+                //! demands a measure for a title.
+                props.insert(QStringLiteral("measure"), intProperty(QStringLiteral(
+                                                              "Required for the attached styles (rehearsal-mark, system, staff, expression); "
+                                                              "not used by title, subtitle, composer or lyricist.")));
+                QJsonObject styleProp;
+                styleProp.insert(QStringLiteral("type"), QStringLiteral("string"));
+                styleProp.insert(QStringLiteral("enum"), QJsonArray::fromStringList(textStyleNames()));
+                styleProp.insert(QStringLiteral("description"), QStringLiteral(
+                                                                   "Which kind of text. The frame styles need no position; the rest attach to a beat."));
+                props.insert(QStringLiteral("style"), styleProp);
+                QJsonObject textProp;
+                textProp.insert(QStringLiteral("type"), QStringLiteral("string"));
+                textProp.insert(QStringLiteral("description"), QStringLiteral("The text itself."));
+                props.insert(QStringLiteral("text"), textProp);
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("style"), QStringLiteral("text") }),
+            toolTextAdd,
         },
         ToolSpec{
             QStringLiteral("note_tie"),

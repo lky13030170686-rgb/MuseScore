@@ -32,6 +32,7 @@
 #include "engraving/dom/chordrest.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/score.h"
+#include "engraving/dom/textbase.h"
 #include "engraving/editing/navigation.h"
 #include "engraving/dom/slur.h"
 #include "engraving/dom/staff.h"
@@ -624,6 +625,131 @@ RecipeResult muse::agentharness::toggleTie(mu::engraving::Score* score, const Sc
     }
 
     return addTie(score, address, voice, noteIndex);
+}
+namespace {
+//! The styles this build accepts, with whether each one hangs off a position.
+//!
+//! ⚠️ The list is deliberately SHORT and hand-picked rather than "all of TextStyleType". Most of that
+//! enum is not something a caller adds directly - it is the style OF an element that already exists
+//! (`DYNAMICS` styles a dynamic, `LYRICS_ODD` styles a lyric, `TUPLET` styles a tuplet number). Offering
+//! those here would invite a caller to "add a dynamics text" and get a plain text box wearing a
+//! dynamic's font - which looks right and is not a dynamic.
+struct TextStyleEntry {
+    const char* name;
+    mu::engraving::TextStyleType type;
+    bool needsAddress;
+};
+
+const TextStyleEntry kTextStyles[] = {
+    //! Frame text: belongs to the score, not to a beat.
+    { "title", mu::engraving::TextStyleType::TITLE, false },
+    { "subtitle", mu::engraving::TextStyleType::SUBTITLE, false },
+    { "composer", mu::engraving::TextStyleType::COMPOSER, false },
+    { "lyricist", mu::engraving::TextStyleType::LYRICIST, false },
+    //! Attached text: hangs off a chord or rest, so it needs an address.
+    { "rehearsal-mark", mu::engraving::TextStyleType::REHEARSAL_MARK, true },
+    { "system", mu::engraving::TextStyleType::SYSTEM, true },
+    { "staff", mu::engraving::TextStyleType::STAFF, true },
+    { "expression", mu::engraving::TextStyleType::EXPRESSION, true },
+};
+
+const TextStyleEntry* findTextStyle(const QString& style)
+{
+    for (const TextStyleEntry& entry : kTextStyles) {
+        if (style == QLatin1String(entry.name)) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+} // namespace
+
+QStringList muse::agentharness::textStyleNames()
+{
+    QStringList names;
+    for (const TextStyleEntry& entry : kTextStyles) {
+        names.append(QString::fromLatin1(entry.name));
+    }
+    return names;
+}
+
+bool muse::agentharness::textStyleNeedsAddress(const QString& style, bool& known)
+{
+    const TextStyleEntry* entry = findTextStyle(style);
+    known = entry != nullptr;
+    return entry && entry->needsAddress;
+}
+
+RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const ScoreAddress& address,
+                                        const QString& style, const QString& text)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (text.trimmed().isEmpty()) {
+        //! An empty text box is invisible and unselectable - it is an object in the score that nobody
+        //! can find again. Refused rather than created.
+        return RecipeResult::failure(QStringLiteral("no text given; an empty text is invisible in the "
+                                                    "score and cannot be selected again"));
+    }
+
+    bool known = false;
+    const bool needsAddress = textStyleNeedsAddress(style, known);
+    if (!known) {
+        return RecipeResult::failure(QStringLiteral("`%1` is not a text style I know. Use one of: %2")
+                                     .arg(style, textStyleNames().join(QStringLiteral(", "))));
+    }
+
+    mu::engraving::EngravingItem* destination = nullptr;
+
+    if (needsAddress) {
+        const NoteLookup found = chordAt(score, address, 0);
+        if (!found.found()) {
+            return RecipeResult::failure(found.problem.isEmpty()
+                                         ? QStringLiteral("the lookup failed without saying why "
+                                                          "(internal) - nothing was changed")
+                                         : found.problem);
+        }
+        destination = found.chord ? static_cast<mu::engraving::EngravingItem*>(found.chord)
+                                  : static_cast<mu::engraving::EngravingItem*>(found.rest);
+
+        //! ⛔⛔ THE GUARD. `Score::addText` does NOT check this: it calls `chordOrRest(destination)` and
+        //! dereferences the result, so a null destination is a null dereference inside upstream. Getting
+        //! here means the address resolved to something that is neither a chord nor a rest, which the
+        //! locator should already have excluded - so this is a backstop, not the normal path.
+        if (!destination) {
+            return RecipeResult::failure(QStringLiteral("%1 holds nothing that text can attach to")
+                                         .arg(formatAddress(address)));
+        }
+    }
+
+    const TextStyleEntry* entry = findTextStyle(style);
+    mu::engraving::TextBase* added = score->addText(entry->type, destination);
+    if (!added) {
+        return RecipeResult::failure(QStringLiteral("the %1 could not be created").arg(style));
+    }
+
+    //! ⚠️ The text is set AFTER `addText`, because `addText` creates the element with its style's default
+    //! text (for a title, the score's own title placeholder). Setting it through `undoChangeProperty` is
+    //! what makes the content change part of the same undo step as the creation - assigning the string
+    //! directly would leave the element's text invisible to the undo stack and to the information field.
+    //!
+    //! ⚠️ `muse::String(text)` and not `muse::String::fromUtf8(text.toUtf8())`: `fromUtf8` has overloads
+    //! for `const char*`, `std::string_view` and `ByteArray`, and a `QByteArray` argument matches more
+    //! than one of them. `String` has a `QString` constructor, which is the conversion actually wanted.
+    //!
+    //! ⚠️ Three arguments, because `TextBase` overrides the 3-argument form and its
+    //! `using EngravingObject::undoChangeProperty` does not re-expose the 2-argument one.
+    added->undoChangeProperty(mu::engraving::Pid::TEXT,
+                              mu::engraving::PropertyValue(muse::String(text)),
+                              mu::engraving::PropertyFlags::STYLED);
+
+    if (needsAddress) {
+        return RecipeResult::success(QStringLiteral("%1: added %2 text \"%3\"")
+                                     .arg(formatAddress(address), style, text));
+    }
+    return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
 }
 RecipeResult muse::agentharness::setChordPitches(mu::engraving::Score* score, const ScoreAddress& address,
                                                 int voice, const QVector<int>& midiPitches)

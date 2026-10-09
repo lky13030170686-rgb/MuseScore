@@ -29,7 +29,10 @@
 #include "engraving/dom/note.h"
 #include "engraving/dom/rest.h"
 #include "engraving/dom/score.h"
+#include "engraving/dom/segment.h"
 #include "engraving/dom/slur.h"
+#include "engraving/dom/stafftext.h"
+#include "engraving/dom/textbase.h"
 #include "engraving/dom/tie.h"
 #include "engraving/editing/transaction/transaction.h"
 #include "engraving/tests/utils/scorerw.h"
@@ -899,4 +902,118 @@ TEST(AgentHarness_ScoreRecipes, SetChordPitchesToWhatIsAlreadyThereSucceedsAndSa
     });
     EXPECT_TRUE(result.ok) << result.problem.toStdString();
     EXPECT_TRUE(result.detail.contains(QStringLiteral("already"))) << result.detail.toStdString();
+}
+//! ── addText ───────────────────────────────────────────────────────────────────────────────────
+//!
+//! ⛔⛔ THE CRASH THESE GUARD AGAINST: `Score::addText` calls `chordOrRest(destination)` for every
+//! ATTACHED style and uses the result without checking it. `chordOrRest` returns null for a null
+//! destination, so `addText(REHEARSAL_MARK, nullptr)` dereferences null and takes the process down. A
+//! model that names a rehearsal mark and forgets the measure reaches that in one call - which is why the
+//! recipe checks the style BEFORE calling upstream rather than trusting the caller.
+
+TEST(AgentHarness_ScoreRecipes, AddTextStyleNamesAreSplittableIntoTheTwoKinds)
+{
+    //! The distinction the tool is built on: frame styles belong to the score, attached styles hang off a
+    //! beat. If a style ever moves between the two lists, this fails and points at the description that
+    //! has to change with it.
+    bool known = false;
+
+    for (const char* frame : { "title", "subtitle", "composer", "lyricist" }) {
+        EXPECT_FALSE(textStyleNeedsAddress(QString::fromLatin1(frame), known)) << frame;
+        EXPECT_TRUE(known) << frame << " should be a known style";
+    }
+
+    for (const char* attached : { "rehearsal-mark", "system", "staff", "expression" }) {
+        EXPECT_TRUE(textStyleNeedsAddress(QString::fromLatin1(attached), known)) << attached;
+        EXPECT_TRUE(known) << attached << " should be a known style";
+    }
+
+    //! An unknown name must be reported as unknown rather than silently treated as frame text - which
+    //! would send it down the "no address needed" path and produce the wrong kind of element.
+    textStyleNeedsAddress(QStringLiteral("dynamics"), known);
+    EXPECT_FALSE(known) << "`dynamics` is a style OF an existing element, not something you add as text";
+}
+
+TEST(AgentHarness_ScoreRecipes, AddTextRejectsAnUnknownStyleAndListsTheOnesItKnows)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! `dynamics` is the interesting wrong answer: it IS a TextStyleType, so a caller could reasonably
+    //! try it - but it styles a dynamic that already exists, and adding a plain text box wearing a
+    //! dynamic's font looks right and is not a dynamic.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addText(score.get(), address(1, 1), QStringLiteral("dynamics"), QStringLiteral("mf"));
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("title"))) << "it must list the valid names";
+}
+
+TEST(AgentHarness_ScoreRecipes, AddTextRejectsEmptyText)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! An empty text box is invisible and unselectable - an object in the score nobody can find again.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addText(score.get(), address(1, 1), QStringLiteral("staff"), QStringLiteral("   "));
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(result.problem.isEmpty());
+}
+
+TEST(AgentHarness_ScoreRecipes, AddTextAttachesAStaffTextToTheNamedBeat)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addText(score.get(), address(1, 2), QStringLiteral("staff"), QStringLiteral("dolce"));
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ AND IT MUST LAND ON THE NAMED BEAT, not wherever the selection happened to be. This is the
+    //! difference between an addressed write and the interactive command, and the assertion is the point
+    //! of the whole recipe.
+    const NoteLookup found = chordAt(score.get(), address(1, 2), 0);
+    ASSERT_TRUE(found.found());
+    ASSERT_TRUE(found.chord->segment() != nullptr);
+
+    bool attachedHere = false;
+    for (mu::engraving::EngravingItem* item : found.chord->segment()->annotations()) {
+        if (item->isStaffText()) {
+            attachedHere = true;
+        }
+    }
+    EXPECT_TRUE(attachedHere) << "the staff text should be attached to beat 2";
+}
+
+TEST(AgentHarness_ScoreRecipes, AddTextOnARestStillAttachesRatherThanCrashing)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⚠️ A rest is a legitimate anchor for attached text - a rehearsal mark over a silent bar is
+    //! ordinary. The locator returns `rest` for that case, and the recipe has to pass the REST through
+    //! rather than a null chord.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addText(score.get(), address(2, 1), QStringLiteral("rehearsal-mark"), QStringLiteral("B"));
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, AddTextOutOfRangeIsRefusedNotCrashed)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! The lookup fails, so there is no destination - and the refusal must happen BEFORE `addText`, which
+    //! would dereference the null. Before the recipe had this check, this exact call was a crash.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addText(score.get(), address(99, 1), QStringLiteral("rehearsal-mark"), QStringLiteral("Z"));
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(result.problem.isEmpty());
 }
