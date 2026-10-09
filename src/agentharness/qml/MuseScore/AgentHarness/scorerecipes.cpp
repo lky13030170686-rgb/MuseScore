@@ -30,8 +30,11 @@
 #include "engraving/dom/note.h"
 #include "engraving/dom/pitchspelling.h"
 #include "engraving/dom/chordrest.h"
+#include "engraving/dom/dynamic.h"
+#include "engraving/dom/hairpin.h"
 #include "engraving/dom/factory.h"
 #include "engraving/editing/editkeysig.h"
+#include "engraving/editing/edithairpin.h"
 #include "engraving/editing/edittimesig.h"
 #include "engraving/editing/transaction/transaction.h"
 #include "engraving/dom/measure.h"
@@ -773,6 +776,135 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
                                      .arg(formatAddress(address), style, text));
     }
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
+}
+namespace {
+//! The chord or rest at an address, as a `ChordRest*`, for elements that hang off a beat.
+//!
+//! ⚠️ Dynamics and hairpins attach to the SEGMENT, not to a note, so no note index is involved - which is
+//! why this returns the chord rest rather than going through `noteAt`.
+mu::engraving::ChordRest* chordRestAt(mu::engraving::Score* score, const ScoreAddress& address,
+                                      QString& problem)
+{
+    const NoteLookup found = chordAt(score, address, 0);
+    if (!found.found()) {
+        problem = found.problem.isEmpty()
+                  ? QStringLiteral("the lookup failed without saying why (internal) - nothing was changed")
+                  : found.problem;
+        return nullptr;
+    }
+    return found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
+                       : static_cast<mu::engraving::ChordRest*>(found.rest);
+}
+} // namespace
+
+RecipeResult muse::agentharness::addDynamic(mu::engraving::Score* score, const ScoreAddress& address,
+                                           const QString& mark)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (mark.trimmed().isEmpty()) {
+        return RecipeResult::failure(QStringLiteral("no dynamic marking given, e.g. `mf`"));
+    }
+
+    QString problem;
+    mu::engraving::ChordRest* at = chordRestAt(score, address, problem);
+    if (!at) {
+        return RecipeResult::failure(problem);
+    }
+
+    mu::engraving::Dynamic* dynamic = mu::engraving::Factory::createDynamic(at->segment());
+    dynamic->setTrack(at->track());
+
+    //! ⛔⛔ VALIDATED AGAINST A LIST, because the parser does NOT report failure.
+    //!
+    //! `setDynamicType(String)` runs a regex and falls back to `DynamicType::OTHER` for anything it cannot
+    //! place, storing the raw text as an uninterpreted blob. So `12345` would come back as a dynamic that
+    //! draws as nothing meaningful, and the caller would be told "added the dynamic 12345".
+    //!
+    //! ⚠️ And the check cannot be "did it return OTHER" either: the regex is `[fmnprsz]+`, and a marking
+    //! really can be spelled from those letters - `xyzzy` matches it and yields a non-OTHER type. (That
+    //! was the first version of this test's mistake, and the mistake was in the test data, not the parser.)
+    //! An explicit list is the only check that means what it says.
+    static const QStringList kMarkings = {
+        "pppppp", "ppppp", "pppp", "ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "ffff", "fffff",
+        "ffffff", "fp", "pf", "sf", "sfz", "sff", "sffz", "sfff", "sfffz", "rf", "rfz", "fz",
+    };
+    if (!kMarkings.contains(mark.trimmed().toLower())) {
+        delete dynamic;
+        return RecipeResult::failure(
+            QStringLiteral("`%1` is not a dynamic marking I know. Use one of: %2")
+            .arg(mark, kMarkings.join(QStringLiteral(", "))));
+    }
+
+    dynamic->setDynamicType(muse::String(mark));
+    if (dynamic->dynamicType() == mu::engraving::DynamicType::OTHER) {
+        //! Belt and braces: the list above and the parser should agree, and if they ever stop agreeing this
+        //! is where it shows up rather than in a score carrying a marking nothing can read.
+        delete dynamic;
+        return RecipeResult::failure(
+            QStringLiteral("`%1` is in the accepted list but the score format's own parser did not "
+                           "recognise it - that is a bug in this tool, not in your request").arg(mark));
+    }
+
+    dynamic->setOwnershipParent(at->segment());
+    score->undoAddElement(dynamic);
+
+    return RecipeResult::success(QStringLiteral("%1: added the dynamic %2")
+                                 .arg(formatAddress(address), mark));
+}
+
+RecipeResult muse::agentharness::addHairpin(mu::engraving::Score* score, const ScoreAddress& from,
+                                           const ScoreAddress& to, const QString& kind)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    mu::engraving::HairpinType type = mu::engraving::HairpinType::INVALID;
+    if (kind == QLatin1String("crescendo")) {
+        type = mu::engraving::HairpinType::CRESC_HAIRPIN;
+    } else if (kind == QLatin1String("diminuendo")) {
+        type = mu::engraving::HairpinType::DIM_HAIRPIN;
+    } else {
+        return RecipeResult::failure(QStringLiteral("`%1` is not a hairpin kind; use `crescendo` or "
+                                                    "`diminuendo`").arg(kind));
+    }
+
+    QString problem;
+    mu::engraving::ChordRest* start = chordRestAt(score, from, problem);
+    if (!start) {
+        return RecipeResult::failure(problem);
+    }
+
+    //! ⛔ THE END IS RESOLVED HERE, NOT LEFT TO UPSTREAM. Passing a null `cr2` makes `addHairpin` use the
+    //! next chord rest, which is right when the caller did not say - but it is ALSO what it does when the
+    //! caller named an end that does not resolve, so "I named bar 2" and "I named nothing" would produce
+    //! the same hairpin. Resolving it here keeps the two apart, and a wrong address stays an error.
+    mu::engraving::ChordRest* end = nullptr;
+    if (to.measure == from.measure && to.beat == from.beat && to.staff == from.staff) {
+        end = nullptr;   //!< same beat -> let upstream run to the next chord rest
+    } else {
+        end = chordRestAt(score, to, problem);
+        if (!end) {
+            return RecipeResult::failure(problem);
+        }
+    }
+
+    mu::engraving::Transaction& tx = score->transactionManager()->currentOrDummyTransaction();
+    mu::engraving::Hairpin* hairpin = mu::engraving::EditHairpin::addHairpin(tx, score, type, start, end);
+    if (!hairpin) {
+        return RecipeResult::failure(QStringLiteral("the hairpin could not be created at %1")
+                                     .arg(formatAddress(from)));
+    }
+
+    if (end) {
+        return RecipeResult::success(QStringLiteral("added a %1 from %2 to %3")
+                                     .arg(kind, formatAddress(from), formatAddress(to)));
+    }
+    return RecipeResult::success(QStringLiteral("added a %1 from %2 to the next beat")
+                                 .arg(kind, formatAddress(from)));
 }
 RecipeResult muse::agentharness::setKeySignature(mu::engraving::Score* score, int measureNumber, int fifths)
 {

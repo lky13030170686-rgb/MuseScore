@@ -913,6 +913,112 @@ ToolResult muse::agentharness::toolTimeSignature(const QJsonObject& args, const 
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+namespace {
+//! The revision fence, in one place. Every write tool does the same thing with `expectRevision`, and
+//! repeating it per tool is how one of them ends up checking it slightly differently.
+//! Returns an empty string when the fence passes or was not asked for.
+QString revisionRefusal(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!args.contains(QStringLiteral("expectRevision"))) {
+        return QString();
+    }
+    int expected = 0;
+    if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+        return QStringLiteral("`expectRevision` must be an integer");
+    }
+    const int actual = ctx.field->scoreRevision();
+    if (expected == actual) {
+        return QString();
+    }
+    return QStringLiteral("the score has changed since you read it (you expected revision %1, it is now "
+                          "%2), so this edit was NOT applied. Read the score again and redo the edit "
+                          "against what is there now.").arg(expected).arg(actual);
+}
+} // namespace
+
+ToolResult muse::agentharness::toolDynamicAdd(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    const QString mark = args.value(QStringLiteral("mark")).toString();
+    if (mark.isEmpty()) {
+        return ToolResult::failure(QStringLiteral("`mark` is required, e.g. `mf`"));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Add dynamic"), [&](mu::engraving::Score* score) {
+        return addDynamic(score, address, mark);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
+
+ToolResult muse::agentharness::toolHairpinAdd(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress from;
+    QString problem;
+    if (!readAddress(args, from, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    //! The end is OPTIONAL: without it the hairpin runs to the next chord rest, which is what the palette
+    //! does. Naming it is how a caller says "and stop there" instead of "and stop wherever".
+    ScoreAddress to = from;
+    if (args.contains(QStringLiteral("toMeasure")) || args.contains(QStringLiteral("toBeat"))) {
+        if (!readInt(args, QStringLiteral("toMeasure"), to.measure)
+            || !readInt(args, QStringLiteral("toBeat"), to.beat)) {
+            return ToolResult::failure(QStringLiteral("`toMeasure` and `toBeat` must both be given, and be "
+                                                      "integers"));
+        }
+        to.staff = from.staff;
+    }
+
+    const QString kind = args.value(QStringLiteral("kind")).toString();
+    if (kind.isEmpty()) {
+        return ToolResult::failure(QStringLiteral("`kind` is required: `crescendo` or `diminuendo`"));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Add hairpin"), [&](mu::engraving::Score* score) {
+        return addHairpin(score, from, to, kind);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1343,6 +1449,47 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("numerator"),
                              QStringLiteral("denominator") }),
             toolTimeSignature,
+        },
+        ToolSpec{
+            QStringLiteral("dynamic_add"),
+            QStringLiteral("Add a dynamic marking (`pp`, `mf`, `ff`, `sfz`, ...) at a beat. The marking is "
+                           "parsed by the score format's own parser, so anything the format accepts works. "
+                           "Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                QJsonObject markProp;
+                markProp.insert(QStringLiteral("type"), QStringLiteral("string"));
+                markProp.insert(QStringLiteral("description"), QStringLiteral(
+                                                                   "The marking as written, e.g. `mf`. Not a number - the score stores the marking "
+                                                                   "itself, not a loudness."));
+                props.insert(QStringLiteral("mark"), markProp);
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("mark") }),
+            toolDynamicAdd,
+        },
+        ToolSpec{
+            QStringLiteral("hairpin_add"),
+            QStringLiteral("Add a crescendo or diminuendo hairpin starting at a beat. Without an end it "
+                           "runs to the next beat; give `toMeasure`/`toBeat` to say where it stops. "
+                           "Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                QJsonObject kindProp;
+                kindProp.insert(QStringLiteral("type"), QStringLiteral("string"));
+                kindProp.insert(QStringLiteral("enum"), QJsonArray{ QStringLiteral("crescendo"),
+                                                                    QStringLiteral("diminuendo") });
+                props.insert(QStringLiteral("kind"), kindProp);
+                props.insert(QStringLiteral("toMeasure"), intProperty(QStringLiteral(
+                                                                  "Optional. 1-based measure where the hairpin ends. Omit to run to the next beat.")));
+                props.insert(QStringLiteral("toBeat"), intProperty(QStringLiteral(
+                                                               "Optional. 1-based beat where the hairpin ends. Give it together with `toMeasure`.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("kind") }),
+            toolHairpinAdd,
         },
         ToolSpec{
             QStringLiteral("note_tie"),

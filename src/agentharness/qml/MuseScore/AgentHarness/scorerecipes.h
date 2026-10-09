@@ -228,6 +228,24 @@ RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int
 RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, int numerator,
                               int denominator);
 
+//! ── Dynamics and hairpins ─────────────────────────────────────────────────────────────────────
+//! These are the first elements that are NOT notes and NOT text: they attach to a beat and belong to a
+//! staff, and they are what makes a score sound like something.
+
+//! Add a dynamic marking (`pp`, `mf`, `sfz`, ...) at a beat.
+//!
+//! @param mark the marking as written, e.g. `mf`. Parsed by the notation layer's own parser, so the
+//!             accepted set is exactly what the score format accepts rather than a list kept here.
+RecipeResult addDynamic(mu::engraving::Score* score, const ScoreAddress& address, const QString& mark);
+
+//! Add a crescendo or diminuendo hairpin from one beat to another.
+//!
+//! @param kind `crescendo` or `diminuendo`
+//! @param toAddress the end of the hairpin; when it names the same beat as the start, the hairpin runs to
+//!                  the next chord rest, which is what a user gets from the palette
+RecipeResult addHairpin(mu::engraving::Score* score, const ScoreAddress& from, const ScoreAddress& to,
+                        const QString& kind);
+
 //! ── Rest recipes ──────────────────────────────────────────────────────────────────────────────
 //! Replace the chord at an address with a rest of the SAME duration.
 //!

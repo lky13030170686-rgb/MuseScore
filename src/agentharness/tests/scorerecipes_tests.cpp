@@ -25,6 +25,8 @@
 
 #include "engraving/dom/chord.h"
 #include "engraving/dom/masterscore.h"
+#include "engraving/dom/dynamic.h"
+#include "engraving/dom/hairpin.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/note.h"
@@ -1198,4 +1200,189 @@ TEST(AgentHarness_ScoreRecipes, SetTimeSignatureToWhatIsAlreadyThereSucceedsAndS
     });
     EXPECT_TRUE(result.ok) << result.problem.toStdString();
     EXPECT_TRUE(result.detail.contains(QStringLiteral("already"))) << result.detail.toStdString();
+}
+//! ── Dynamics and hairpins ─────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_ScoreRecipes, AddDynamicPutsTheMarkingOnTheNamedBeat)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addDynamic(score.get(), address(1, 2), QStringLiteral("mf"));
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ AND IT MUST LAND ON THE NAMED BEAT. A dynamic is not a property of the score - it takes effect
+    //! from where it is placed, so putting it on the wrong beat changes how the music sounds from the
+    //! wrong place onward.
+    const NoteLookup found = chordAt(score.get(), address(1, 2), 0);
+    ASSERT_TRUE(found.found());
+    ASSERT_TRUE(found.chord->segment() != nullptr);
+
+    bool foundDynamic = false;
+    for (mu::engraving::EngravingItem* item : found.chord->segment()->annotations()) {
+        if (item->isDynamic()) {
+            foundDynamic = true;
+            EXPECT_EQ(toDynamic(item)->dynamicType(), DynamicType::MF);
+        }
+    }
+    EXPECT_TRUE(foundDynamic) << "the dynamic should be attached to beat 2";
+}
+
+TEST(AgentHarness_ScoreRecipes, AddDynamicAcceptsTheMarkingsTheFormatAccepts)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! The parser is the notation layer's own, so this is checking that the recipe REUSES it rather than
+    //! keeping a list that would drift from what the file format accepts.
+    for (const char* mark : { "pp", "p", "mp", "mf", "f", "ff", "sfz" }) {
+        const auto fresh = loadScore(NOTE_SCORE);
+        ASSERT_TRUE(fresh);
+        const RecipeResult result = runRecipe(fresh.get(), [&] {
+            return addDynamic(fresh.get(), address(1, 1), QString::fromLatin1(mark));
+        });
+        EXPECT_TRUE(result.ok) << mark << ": " << result.problem.toStdString();
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, AddDynamicRejectsSomethingThatIsNotAMarking)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ THE PARSER FALLS BACK TO `DynamicType::OTHER` RATHER THAN FAILING, so without a check the caller
+    //! would be told "added `12345`" for a marking stored as an uninterpreted blob. That is the
+    //! "looks like it worked" failure this project keeps meeting.
+    //!
+    //! ⚠️ The first version of this test used `xyzzy`, which the parser ACCEPTS: its pattern is
+    //! `[fmnprsz]+`, and `xyzzy` is made only of those letters. That is not a bug in the parser - a
+    //! dynamic marking really can be spelled from that set - so the test data was wrong, not the code.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addDynamic(score.get(), address(1, 1), QStringLiteral("12345"));
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("12345"))) << result.problem.toStdString();
+
+    //! And nothing may have been added.
+    //!
+    //! ⚠️ COUNTED, not asserted-absent: `test.mscx` already carries a `pp` on beat 1, so "there is no
+    //! dynamic here" fails on the pre-existing one. Comparing the count before and after is what actually
+    //! tests "this call added nothing".
+    const NoteLookup found = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(found.found());
+    int dynamicsHere = 0;
+    for (mu::engraving::EngravingItem* item : found.chord->segment()->annotations()) {
+        if (item->isDynamic()) {
+            ++dynamicsHere;
+        }
+    }
+    EXPECT_EQ(dynamicsHere, 1) << "the score ships with one dynamic on beat 1; the refused call must not "
+                               << "have added a second";
+}
+
+TEST(AgentHarness_ScoreRecipes, AddDynamicOnARestStillWorks)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A dynamic over a rest is ordinary notation. The locator returns `rest` for that case and the recipe
+    //! has to pass it through rather than a null chord.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addDynamic(score.get(), address(2, 1), QStringLiteral("p"));
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, AddHairpinFromOneBeatToAnother)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addHairpin(score.get(), address(1, 1), address(1, 3), QStringLiteral("crescendo"));
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ THE END MUST BE WHERE IT WAS ASKED FOR. A hairpin that exists but spans the wrong beats draws
+    //! correctly and sounds wrong - the crescendo happens over the wrong notes.
+    const NoteLookup start = chordAt(score.get(), address(1, 1), 0);
+    const NoteLookup end = chordAt(score.get(), address(1, 3), 0);
+    ASSERT_TRUE(start.found());
+    ASSERT_TRUE(end.found());
+
+    //! ⛔ A HAIRPIN IS A SPANNER, NOT AN ANNOTATION. Looking for it in the segment's annotations finds
+    //! nothing even when it exists - the first version of this test did exactly that and reported "the
+    //! hairpin should start at beat 1" for a hairpin that was there. Spanners live in the score's spanner
+    //! map, which is the same place `ChordRest::slur()` looks.
+    //! ⛔⛔ TWO THINGS ABOUT THIS ASSERTION, both learned the hard way.
+    //!
+    //! ⚠️ ONE: `test.mscx` SHIPS WITH A HAIRPIN over bar 1, so searching the spanner map finds more than
+    //! the one just created - asserting on every hairpin in range fails on the pre-existing one. Counting
+    //! hairpins that START at the requested tick is what actually tests "this call added one".
+    //!
+    //! ⛔ TWO: THE END IS `cr2->endTick()`, NOT `cr2->tick()`. Upstream sets the hairpin's end to the END
+    //! of the chord rest it was given, so a hairpin told to end "at beat 3" covers beats 1-3 INCLUSIVE and
+    //! its `tick2` is beat 4. The first version of this test expected `tick2 == end.chord->tick()` and
+    //! failed against correct behaviour. A musician means the same thing by it - "crescendo through beat
+    //! 3" - so the recipe is right and the expectation was wrong.
+    //! ⚠️ AND THE PRE-EXISTING HAIRPIN IS SHORTER THAN THE REQUESTED ONE, which is what makes the span
+    //! itself the discriminator. `test.mscx`'s own hairpin starts at beat 1 but STOPS at beat 2 - upstream
+    //! truncates a hairpin at the next dynamic, and there is a `pp` on beat 2. So "starts at beat 1" alone
+    //! matches both, and only "starts at beat 1 AND ends at beat 4" identifies the one this call made.
+    int hairpinsWithTheRequestedSpan = 0;
+    for (auto& pair : score->spannerMap().findOverlapping(start.chord->tick().ticks(),
+                                                          end.chord->endTick().ticks())) {
+        mu::engraving::Spanner* spanner = pair.value;
+        if (!spanner->isHairpin()) {
+            continue;
+        }
+        if (spanner->tick() == start.chord->tick() && spanner->tick2() == end.chord->endTick()) {
+            ++hairpinsWithTheRequestedSpan;
+        }
+    }
+    EXPECT_EQ(hairpinsWithTheRequestedSpan, 1)
+        << "exactly one hairpin should span beat 1 to the end of beat 3";
+}
+
+TEST(AgentHarness_ScoreRecipes, AddHairpinWithoutAnEndRunsToTheNextBeat)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! The palette behaviour: no end given means "from here to the next thing". Passing the same address
+    //! as the end is how a caller says that, and it must NOT be confused with "the end is this beat".
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addHairpin(score.get(), address(1, 1), address(1, 1), QStringLiteral("diminuendo"));
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, AddHairpinRejectsAnUnknownKind)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addHairpin(score.get(), address(1, 1), address(1, 1), QStringLiteral("swell"));
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("crescendo"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, AddHairpinWithAnEndThatDoesNotExistIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ THE CASE THE EXPLICIT END RESOLUTION EXISTS FOR. A null `cr2` makes upstream run to the next
+    //! chord rest, so "I named bar 99" and "I named nothing" would otherwise produce the SAME hairpin -
+    //! and the caller would have no way to tell that its address was ignored.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return addHairpin(score.get(), address(1, 1), address(99, 1), QStringLiteral("crescendo"));
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("99"))) << result.problem.toStdString();
 }

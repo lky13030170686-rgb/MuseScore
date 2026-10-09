@@ -187,6 +187,12 @@ ToolResult toolKeySignature(const QJsonObject& args, const ToolContext& ctx);
 //! Write: set the time signature at a measure.
 ToolResult toolTimeSignature(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: add a dynamic marking at a beat.
+ToolResult toolDynamicAdd(const QJsonObject& args, const ToolContext& ctx);
+
+//! Write: add a crescendo or diminuendo hairpin.
+ToolResult toolHairpinAdd(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: tie / untie / toggle the tie on the note at an address.
 //!
 //! WHY ONE TOOL WITH A MODE RATHER THAN THREE: the three are the same question asked three ways
