@@ -100,6 +100,10 @@ private:
     QTimer m_processTimer;
     std::vector<muse::midi::Event> m_eventsQueue;
 
+    //! [our addition] 这一撮事件的**到达时刻**（墙钟毫秒）：只给 `MUSE_MIDI_LATENCY_TRACE` 的
+    //! 延迟探针用，好让日志能说出"从按下到发声"里排队占了多少 —— 见 .cpp 里的 `isNoteEvent()`。
+    qint64 m_burstArrivalMs = 0;
+
     std::vector<int> m_activeMidiPitches; // pitches of MIDI keys currently being held down
 
     QTimer m_realtimeTimer;

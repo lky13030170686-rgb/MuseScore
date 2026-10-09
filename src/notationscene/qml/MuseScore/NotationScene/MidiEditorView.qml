@@ -1609,8 +1609,13 @@ Item {
 
         //! 🆕 **编辑哪个谱表**也在这里交给模型：录制 / 插入音符 / 粘贴都要问"往哪个谱表写"，
         //! 而模型看不到视图的 `currentStaff` —— 三处必须同一个来源（见 `editStaff` 的说明）。
+        //! ⛔ 写成**属性赋值**，不要写成 `model.setEditStaff(...)` —— 那是 property 的 WRITE
+        //! 访问器，QML 里**不是方法**（`Q_INVOKABLE` 才是）。写成方法调用会抛
+        //! `TypeError: Property 'setEditStaff' ... is not a function`，而 QML 的报错**只中止
+        //! 这一个处理器**：它后面的语句全部不执行 —— 第 1632 行那处就是这么让"起录时收回焦点"
+        //! 静默失效的（表现：录制中按电脑键盘一个音都没有）。见 `维护手册.md` §4.8。
         if (model !== null) {
-            model.setEditStaff(currentStaff)
+            model.editStaff = currentStaff
         }
 
         repaintAll()
@@ -1629,7 +1634,10 @@ Item {
             //! 模型看不到视图的 `currentStaff`，所以由这里传进去。
             recordStaff = currentStaff
             if (model !== null) {
-                model.setEditStaff(currentStaff)
+                //! ⛔ 属性赋值，不是 `model.setEditStaff(...)` —— 理由见 `onCurrentStaffChanged`
+                //! 里那段注释（QML 的 TypeError 会吃掉这个处理器**后面**的所有语句，
+                //! 而"起录时把键盘焦点收回来"恰好就在后面）。
+                model.editStaff = currentStaff
             }
 
             //! 🆕 **把键盘焦点收回来**：用户是按走带上那个录制键进来的，焦点此刻在**那个按钮**上 ——

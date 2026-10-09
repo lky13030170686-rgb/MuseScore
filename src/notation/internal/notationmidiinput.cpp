@@ -22,7 +22,9 @@
 
 #include "notationmidiinput.h"
 
+#include <QDateTime>
 #include <QGuiApplication>
+#include <QThread>
 
 #include "containers.h"
 #include "defer.h"
@@ -46,6 +48,38 @@ using namespace mu::notation;
 using namespace mu::engraving;
 
 static constexpr int PROCESS_INTERVAL = 20;
+
+//! ── [our addition] 按下就发声（2026-10-09，进度快照第 77 条）───────────────────────────────
+//! `PROCESS_INTERVAL` 是**合批窗口**：一个和弦的几个音是几条独立的 MIDI 消息，得凑到一起
+//! 才算"一次按下去"。但它同时是**每个音的固定延迟** —— 上游一律等满这个窗口才处理，
+//! 于是录制的实时监听（按下 → 听声）平均要晚 10ms、最坏 20ms，而这一段延迟没有任何用处。
+//! 这里的做法：**只把"空队列上的第一个音"提前**到本回合事件循环处理，窗口本身不动 ——
+//!   * 同一个事件循环回合里到达的音（和弦、同一次 drain 里的多条消息）仍然同批处理；
+//!   * 单音（旋律线）不再白等一个窗口 ⇒ 按下即响；
+//!   * CC / PitchBend 这类成串的控制器消息照旧走窗口合并（上游刻意只留最后一条防刷屏）。
+//! ⚠️ 用 `QueuedConnection` 投给 `m_processTimer`（= 构造本对象的那个线程，即主线程）：
+//! 写乐谱与发声只能在主线程做，而这个函数**可能从 MIDI 端口线程进来**（WinMM 回调）。
+//! 投递而不是直接调用还有一个好处：即使哪天端口那条路真的跨线程送事件，
+//! 这里也不会依赖 `QTimer::start()` 能否跨线程生效（跨线程 start 是会被 Qt 拒绝的）。
+static bool isNoteEvent(muse::midi::Event::Opcode opcode)
+{
+    return opcode == muse::midi::Event::Opcode::NoteOn || opcode == muse::midi::Event::Opcode::NoteOff;
+}
+
+//! 延迟探针（`MUSE_MIDI_LATENCY_TRACE=1`）：把"按下 → 交给音频引擎"拆成
+//! **排队多久**与**处理多久**两个数打进日志。存在的理由：这条改动是**时间**上的，
+//! 而时间既看不见也听不出具体多少毫秒 —— 没有这两个数，"按下就发声"只是一句话。
+//! 见 `维护手册.md` §4.8.4（证据表）。
+static bool latencyTraceEnabled()
+{
+    static const bool enabled = qEnvironmentVariableIsSet("MUSE_MIDI_LATENCY_TRACE");
+    return enabled;
+}
+
+static qint64 latencyNowMs()
+{
+    return QDateTime::currentMSecsSinceEpoch();
+}
 
 static mu::playback::IPlaybackController::PlayParams makeNoteOnParams(bool infiniteDuration)
 {
@@ -102,10 +136,36 @@ void NotationMidiInput::onMidiEventReceived(const muse::midi::Event& event)
     };
 
     if (muse::contains(ACCEPTED_OPCODES, event.opcode())) {
+        //! ── [our addition] 事件可能**从别的线程**进来（WinMM 的回调线程）────────────────────
+        //! 上游对此不作区分，但 `m_eventsQueue` 与 `doProcessEvents()` 都不是线程安全的
+        //! （队列无锁，而处理里面要写乐谱、要调播放器 —— 只能用主线程）。
+        //! 所以这里把"不是本对象线程发来的"事件先投回本线程，再走下面同一套逻辑：
+        //! **队列永远只有一个写者**，而且两条来路（硬件端口 / 电脑键盘）的行为完全一致。
+        //! ⚠️ 框架的 `async::Channel` 通常已经把回调投到订阅者所在线程
+        //! （`channelimpl.h` 的 `sendAuto` → `sendToQueue`，主线程那个 1ms 的
+        //! `m_asyncTicker` 就是干这个的），所以这一支在正常构建里**不会**被走到 ——
+        //! 它是"万一"的护栏，代价是一次线程 id 比较。
+        if (QThread::currentThread() != m_processTimer.thread()) {
+            QMetaObject::invokeMethod(&m_processTimer, [this, event]() { onMidiEventReceived(event); }, Qt::QueuedConnection);
+            return;
+        }
+
+        //! 这一条是不是"新一撮的第一个"？是的话它的到达时刻要被记下来，好让日志能说出
+        //! "从按下到发声"到底花了多久（`m_burstArrivalMs`）。
+        const bool startsNewBurst = m_eventsQueue.empty();
+        if (startsNewBurst) {
+            m_burstArrivalMs = latencyNowMs();
+        }
+
         m_eventsQueue.push_back(event);
 
         if (!m_processTimer.isActive()) {
-            m_processTimer.start(PROCESS_INTERVAL);
+            if (startsNewBurst && isNoteEvent(event.opcode())) {
+                //! [our addition] 按下就发声 —— 理由见文件上方 `isNoteEvent()` 那段注释。
+                QMetaObject::invokeMethod(&m_processTimer, [this]() { doProcessEvents(); }, Qt::QueuedConnection);
+            } else {
+                m_processTimer.start(PROCESS_INTERVAL);
+            }
         }
     }
 }
@@ -148,6 +208,8 @@ Score* NotationMidiInput::score() const
 
 void NotationMidiInput::doProcessEvents()
 {
+    const qint64 processStartMs = latencyNowMs();
+
     DEFER {
         m_eventsQueue.clear();
         m_processTimer.stop();
@@ -219,12 +281,31 @@ void NotationMidiInput::doProcessEvents()
         }
 
         const std::vector<const EngravingItem*> elements(notesOn.begin(), notesOn.end());
+        const qint64 playStartMs = latencyNowMs();
         playbackController()->playElements(elements, makeNoteOnParams(useDurationAndVelocity), true);
+
+        //! [our addition] 这一行就是"按下到发声"的证据：`wait` = 排队等了多久（这一轮要砍掉的
+        //! 就是它），`play` = 从调 `playElements()` 到事件已经交给音频引擎花了多久（渲染 + RPC，
+        //! 不归这条链路管）。日志级别用 `LOGW`：`console.log` 进不了日志文件（维护手册 §7.1）。
+        if (latencyTraceEnabled()) {
+            LOGW() << "[midi-lat] note-on -> engine: wait=" << (processStartMs - m_burstArrivalMs)
+                   << "ms, play=" << (latencyNowMs() - playStartMs)
+                   << "ms, notes=" << notesOn.size()
+                   << (isNoteInput ? "(note input)" : "(sound preview)");
+        }
+
         m_notesReceivedChannel.send(notesOn);
     }
 
     if (!notesOff.empty()) {
+        const qint64 offStartMs = latencyNowMs();
         releasePlayingNotes(notesOff);
+
+        if (latencyTraceEnabled()) {
+            LOGW() << "[midi-lat] note-off -> engine: wait=" << (processStartMs - m_burstArrivalMs)
+                   << "ms, play=" << (latencyNowMs() - offStartMs)
+                   << "ms, notes=" << notesOff.size();
+        }
     }
 }
 

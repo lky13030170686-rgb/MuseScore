@@ -24,7 +24,9 @@
 
 #include <algorithm>
 
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QThread>
 
 #include "engraving/dom/measure.h"
 #include "engraving/dom/masterscore.h"
@@ -58,6 +60,25 @@ using namespace muse;
 //! 把 MIDI 队列搬到主线程的间隔（毫秒）。与上游 `NotationMidiInput::PROCESS_INTERVAL` 同一个量级：
 //! 再小也只是更频繁地空转 —— 录制的精度由**事件的到达时刻**保证，与"什么时候处理"无关。
 static constexpr int MIDI_PROCESS_INTERVAL_MS = 10;
+
+//! ── 延迟探针（`MUSE_MIDI_LATENCY_TRACE=1`，2026-10-09，第 77 条）─────────────────────────
+//! "按下 → 听到声音"这条路横跨两处（本页的采集 + 上游 `NotationMidiInput` 的发声），
+//! 所以探针分两半：这里记**事件到达本页的时刻与线程**，上游那边记**排队/发声各花了多久**
+//! （`[midi-lat]` 前缀，两处同名，一条 grep 就能把一次按键的全过程按顺序排出来）。
+//! 线程那一项是长期悬着的问题：框架的 `async::Channel` 把回调投给**订阅者所在线程**
+//! （`channelimpl.h` 的 `sendAuto` → `sendToQueue`），所以端口事件应当落在主线程上；
+//! 有硬件键盘时跑一次这个探针就能确认（`main=1`）。不设环境变量时一行都不会执行。
+static bool midiLatencyTraceEnabled()
+{
+    static const bool enabled = qEnvironmentVariableIsSet("MUSE_MIDI_LATENCY_TRACE");
+    return enabled;
+}
+
+static bool isOnMainThread()
+{
+    const QCoreApplication* app = QCoreApplication::instance();
+    return !app || QThread::currentThread() == app->thread();
+}
 
 //! 实时预览的重算节流（毫秒）：按住不放的音要"长出来"，但没必要每 10ms 重算整串音。
 static constexpr int RECORD_OVERLAY_INTERVAL_MS = 60;
@@ -1420,6 +1441,11 @@ void MidiEditorModel::onMidiPortEvent(int opcode, int note, int velocity)
     event.velocity = velocity;
     event.arrivalMs = nowMs();      //!< 在端口线程上取：这是"这个音真的到了"的时刻
 
+    if (midiLatencyTraceEnabled()) {
+        LOGW() << "[midi-lat] port event arrived: note=" << note << " on=" << (velocity > 0)
+               << " main=" << (isOnMainThread() ? 1 : 0) << " t=" << event.arrivalMs;
+    }
+
     std::lock_guard<std::mutex> lock(m_midiMutex);
     m_midiQueue.push_back(event);
 }
@@ -1585,6 +1611,10 @@ static constexpr int VIRTUAL_KEY_VELOCITY = 80;
 void MidiEditorModel::playVirtualKey(int pitch, bool pressed)
 {
     pitch = std::clamp(pitch, 0, 127);
+
+    if (midiLatencyTraceEnabled()) {
+        LOGW() << "[midi-lat] virtual key: note=" << pitch << " on=" << pressed << " t=" << nowMs();
+    }
 
     //! ① 发声：**就是钢琴键盘面板那一个调用**（`PianoKeyboardController::sendNoteOn`）——
     //! 记谱页的 MIDI 输入会把它当成一次真实的 MIDI 输入去试听（音符输入模式下还会顺手写谱，
@@ -1793,9 +1823,22 @@ void MidiEditorModel::runDemoRecording()
         { 1550, 72, 100 }, { 2150, 72, 0 },
     };
 
+    //! `MUSE_MIDIEDITOR_DEMO_RECORD_KEYS=1`：把这段演奏走**电脑键盘那条路**
+    //! （`playVirtualKey()` = 发声 + 采集），而不是只走采集 —— 于是"按下有没有立刻发声"
+    //! 这件事在**没有 MIDI 键盘**的机器上也能量（配合 `MUSE_MIDI_LATENCY_TRACE=1` 的
+    //! `[midi-lat]` 日志；2026-10-09 第 77 条就是靠它测出"按下到发声"从约 20ms 变成 1ms）。
+    //! ⚠️ 这条路与硬件键盘**发声走的是同一个调用**（`notation->midiInput()->onMidiEventReceived`），
+    //! 差别只有"硬件事件要先经过框架的 async channel"那一跳（订阅者线程的 1ms ticker）。
+    const bool viaVirtualKeys = qEnvironmentVariableIsSet("MUSE_MIDIEDITOR_DEMO_RECORD_KEYS");
+
     for (const Step& step : steps) {
-        QTimer::singleShot(step.delayMs, this, [this, step]() {
+        QTimer::singleShot(step.delayMs, this, [this, step, viaVirtualKeys]() {
             if (!m_isRecording) {
+                return;
+            }
+
+            if (viaVirtualKeys) {
+                playVirtualKey(step.note, step.velocity > 0);
                 return;
             }
 
@@ -1804,5 +1847,29 @@ void MidiEditorModel::runDemoRecording()
         });
     }
 
-    QTimer::singleShot(2600, this, [this]() { finishRecording(true); });
+    //! `MUSE_MIDIEDITOR_DEMO_RECORD_KEYS=1` 时再补一个**和弦**：三个音在**同一个**事件循环
+    //! 回合里按下（同一个 lambda 里连着三次 `playVirtualKey()`）。它证明"按下就发声"没有把
+    //! 上游那个合批窗口弄丢 —— 日志里该是**一行** `notes=3`，而不是三行 `notes=1`
+    //! （和弦被拆成三次发声，听感上就是三把不同的琴在弹同一个和弦）。
+    if (viaVirtualKeys) {
+        QTimer::singleShot(2250, this, [this]() {
+            if (!m_isRecording) {
+                return;
+            }
+            playVirtualKey(60, true);
+            playVirtualKey(64, true);
+            playVirtualKey(67, true);
+        });
+
+        QTimer::singleShot(2500, this, [this]() {
+            if (!m_isRecording) {
+                return;
+            }
+            playVirtualKey(60, false);
+            playVirtualKey(64, false);
+            playVirtualKey(67, false);
+        });
+    }
+
+    QTimer::singleShot(viaVirtualKeys ? 3000 : 2600, this, [this]() { finishRecording(true); });
 }

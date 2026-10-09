@@ -22,6 +22,8 @@
 
 #include "playbackmodel.h"
 
+#include <QtGlobal>
+
 #include "dom/fret.h"
 #include "dom/harmony.h"
 #include "dom/instrument.h"
@@ -339,6 +341,21 @@ void PlaybackModel::triggerEventsForItems(const std::vector<const EngravingItem*
         }
 
         m_renderer.render(item, timestamp, duration, dynamicLevel, m_playbackCtx, profile, result);
+    }
+
+    //! [our addition] 延迟探针（`MUSE_MIDI_LATENCY_TRACE=1`，2026-10-09，第 77 条）：
+    //! 试听的最后一步 —— 事件**真的**渲染出来了、并且交给了 `offStream` 通道。
+    //! 存在的理由有两个：① 上面每一处提前 return（trackId 无效 / 轨道不在播放数据里 /
+    //! 没有演奏法 profile）都是**静默**的，"按了没声音"与"按了声音晚"在日志里必须能分开；
+    //! ② `events` 的条数就是"这一声到底有没有内容"（一个音至少一条 NoteEvent）。
+    if (qEnvironmentVariableIsSet("MUSE_MIDI_LATENCY_TRACE")) {
+        size_t eventCount = 0;
+        for (const auto& pair : result) {
+            eventCount += pair.second.size();
+        }
+
+        LOGW() << "[midi-lat] offstream -> engine: events=" << eventCount
+               << " flush=" << flushSound << " tick=" << items.front()->tick().ticks();
     }
 
     trackPlaybackData.offStream.send(result, flushSound);
