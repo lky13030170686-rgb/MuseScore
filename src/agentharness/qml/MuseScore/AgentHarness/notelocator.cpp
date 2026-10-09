@@ -232,6 +232,19 @@ NoteLookup muse::agentharness::noteAt(mu::engraving::Score* score, const ScoreAd
         return result;
     }
 
+    //! ⛔ A REST HAS NO CHORD, and dereferencing one crashes. `chordAt` legitimately returns with only
+    //! `rest` set - that is the whole point of the `rest` field - so this has to be checked before the
+    //! chord is touched. The unit suite caught this on its first run with an access violation; the
+    //! running program never hit it because no recipe asked for a note on a rest.
+    //!
+    //! The message says what IS there, because "there is no note" about a bar full of rest is the
+    //! misleading answer that cost round 14.
+    if (!result.chord) {
+        result.problem = QStringLiteral("measure %1 beat %2 is a rest, so there is no note to act on")
+                         .arg(address.measure).arg(address.beat);
+        return result;
+    }
+
     const std::vector<mu::engraving::Note*>& notes = result.chord->notes();
 
     //! ⚠️ Trace, because an empty `problem` is otherwise indistinguishable from "the lookup never ran":
