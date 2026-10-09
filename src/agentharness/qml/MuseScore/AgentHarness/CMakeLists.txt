@@ -40,6 +40,10 @@ qt_add_qml_module(agentharness_qml
         addressing.h
         semanticderive.cpp
         semanticderive.h
+        scoredigest.cpp
+        scoredigest.h
+        tools.cpp
+        tools.h
     QML_FILES
         AgentPanel.qml
 

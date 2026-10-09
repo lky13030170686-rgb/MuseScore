@@ -22,6 +22,9 @@
 #include "fieldcontroller.h"
 
 #include <QDateTime>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 
 #include "log.h"
 
@@ -37,6 +40,8 @@
 
 #include "addressing.h"
 #include "semanticderive.h"
+#include "scoredigest.h"
+#include "tools.h"
 
 using namespace muse;
 using namespace muse::agentharness;
@@ -96,6 +101,52 @@ void FieldController::init()
     });
 
     bindToCurrentNotation();
+}
+
+void FieldController::applyDemoToolCallIfPending()
+{
+    //! ── Verification hook ─────────────────────────────────────────────────────────────────
+    //! MUSE_AGENT_DEMO_TOOL="<tool>|<json args>" runs one tool call as soon as a score is bound.
+    //!
+    //! WHY THIS EXISTS: the tool table is the agent's entire write surface, and the only way to
+    //! prove "an agent's edit is the user's edit - same undo stack, same Ctrl+Z" is to actually
+    //! perform one from inside the running program. Driving it through a chat window would require
+    //! the M2 agent loop, which does not exist yet; this hook tests the thing that matters (the
+    //! write path) without waiting for the thing that does not (the conversation).
+    //!
+    //! Same shape as the MIDI page's MUSE_MIDIEDITOR_DEMO_* family: an environment switch, no
+    //! rebuild to toggle, and it doubles as the reverse-verification control.
+    if (!qEnvironmentVariableIsSet("MUSE_AGENT_DEMO_TOOL")) {
+        return;
+    }
+
+    const QString spec = qEnvironmentVariable("MUSE_AGENT_DEMO_TOOL");
+    const int bar = spec.indexOf(QLatin1Char('|'));
+    const QString name = bar < 0 ? spec : spec.left(bar);
+    const QString args = bar < 0 ? QString() : spec.mid(bar + 1);
+
+    LOGW() << "[agent-demo] tool call before:" << name << args
+           << "measures=" << measureCount()
+           << "revision=" << revision()
+           << "canUndo=" << (undoStackCanUndo());
+
+    const QString text = runTool(name, args);
+
+    LOGW() << "[agent-demo] tool call after :" << (m_lastToolOk ? "OK" : "FAILED")
+           << "measures=" << measureCount()
+           << "revision=" << revision()
+           << "canUndo=" << (undoStackCanUndo())
+           << "result=" << text.left(300);
+}
+
+bool FieldController::undoStackCanUndo() const
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return false;
+    }
+    INotationUndoStackPtr stack = notation->undoStack();
+    return stack ? stack->canUndo() : false;
 }
 
 void FieldController::unbind()
@@ -170,8 +221,11 @@ void FieldController::bindToCurrentNotation()
 
     refreshScoreFacts();
     emit fieldChanged();
-}
 
+    //! Verification hook, at the very end of the bind so the tool sees a fully wired field: the
+    //! change channel is subscribed, the grid is built, and `revision` has a real value.
+    applyDemoToolCallIfPending();
+}
 void FieldController::refreshScoreFacts()
 {
     if (!m_score) {
@@ -205,10 +259,47 @@ void FieldController::noteActionFromUndoStack(RawFieldEvent& event) const
         return;
     }
 
-    //! `translated()` is the load-bearing call: a TranslatableString is a *deferred* translation,
-    //! and this is the point where the user-facing name ("Insert note", "Transpose harmony")
-    //! becomes a plain string we can store and show.
-    event.action = undoStack->topMostUndoActionName().translated().toQString();
+    //! ⛔ WHICH NAME, AND WHY IT IS NOT ALWAYS `topMostUndoActionName()`.
+    //!
+    //! That call returns the transaction at the stack's *current* position - i.e. the one the next
+    //! Ctrl+Z would take back. That is the right answer for an ordinary edit (the edit just pushed
+    //! it) but the WRONG answer for an undo: after `undo()` the position has already moved back, so
+    //! the "top" is the transaction *before* the one that was just undone. Reading it there labelled
+    //! an undo of "添加2小节" as "迁移项目" - a plausible-looking name for an operation that did not
+    //! happen, which is exactly the confidently-wrong label this field must never produce.
+    //!
+    //! For an undo the transaction that was taken back is the one sitting AT the current position,
+    //! and `topMostRedoActionName()` is defined as exactly that (`UndoStack::next()` returns
+    //! `m_transactions[m_currentIndex]`). So:
+    //!
+    //!     undo -> the name of what is now redoable  (the thing that was just undone)
+    //!     edit -> the name of what is now undoable  (the thing that just committed)
+    //!
+    //! ⚠️ `lastActionNameAtIdx()` is NOT the tool for this: it is defined as
+    //! `m_transactions[idx - 1]` (it answers "which transaction led to state idx"), so feeding it
+    //! `currentStateIndex()` reads one transaction too early. That off-by-one was tried and is
+    //! recorded here because both versions produce a *plausible* wrong name rather than an error.
+    if (event.isUndo) {
+        event.action = undoStack->topMostRedoActionName().translated().toQString();
+    }
+
+    if (event.action.isEmpty()) {
+        //! Ordinary edit (or an undo whose name could not be resolved): the stack top is the
+        //! transaction that just committed, which is the right answer here.
+        //! `translated()` is the load-bearing call: a TranslatableString is a *deferred* translation,
+        //! and this is the point where the user-facing name ("Insert note", "添加2小节") becomes a
+        //! plain string we can store and show.
+        event.action = undoStack->topMostUndoActionName().translated().toQString();
+    }
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] name:"
+               << (event.isUndo ? "UNDO" : "edit")
+               << "stateIndex=" << int(undoStack->currentStateIndex())
+               << "count=" << int(undoStack->undoRedoActionCount())
+               << "top=\"" << undoStack->topMostUndoActionName().translated().toQString() << "\""
+               << "chosen=\"" << event.action << "\"";
+    }
 }
 
 void FieldController::onScoreChanges(const ScoreChanges& changes)
@@ -400,6 +491,166 @@ QVariantList FieldController::recentOps() const
     }
 
     return out;
+}
+
+QString FieldController::digestOverview() const
+{
+    if (!m_score) {
+        return QStringLiteral("(no score open)");
+    }
+
+    const QString text = buildScoreOverview(m_score);
+
+    //! MUSE_AGENT_FIELD_TRACE also dumps the digest, because "what would the agent be told" is the
+    //! question the read side exists to answer - and the only way to answer it without an agent
+    //! loop in place yet is to print it.
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] digest overview:\n" << text;
+    }
+
+    return text;
+}
+
+QString FieldController::digestWindow(int firstMeasure, int lastMeasure) const
+{
+    if (!m_score) {
+        return QStringLiteral("(no score open)");
+    }
+
+    const QString text = buildMeasureWindow(m_score, firstMeasure, lastMeasure);
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] digest window" << firstMeasure << ".." << lastMeasure << ":\n" << text;
+    }
+
+    return text;
+}
+
+QString FieldController::runTool(const QString& name, const QString& argsJson)
+{
+    const ToolSpec* spec = findTool(name);
+    if (!spec) {
+        m_lastToolOk = false;
+        return QStringLiteral("no such tool: %1 (available: %2)")
+               .arg(name, toolNames().join(QStringLiteral(", ")));
+    }
+
+    //! Parse, and refuse malformed JSON *before* the body runs. A model that emits broken arguments
+    //! should be told so plainly and get to try again; feeding `{}` to the body instead would make
+    //! it look like the arguments were accepted and silently ignored (DSH keeps the raw string and
+    //! reports INVALID_ARGS for the same reason).
+    QJsonObject args;
+    if (!argsJson.trimmed().isEmpty()) {
+        QJsonParseError err {};
+        const QJsonDocument doc = QJsonDocument::fromJson(argsJson.toUtf8(), &err);
+        if (err.error != QJsonParseError::NoError) {
+            m_lastToolOk = false;
+            return QStringLiteral("arguments are not valid JSON: %1").arg(err.errorString());
+        }
+        if (!doc.isObject()) {
+            m_lastToolOk = false;
+            return QStringLiteral("arguments must be a JSON object");
+        }
+        args = doc.object();
+    }
+
+    ToolContext ctx;
+    ctx.field = this;
+
+    const ToolResult result = spec->execute(args, ctx);
+    m_lastToolOk = result.ok;
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-tool]" << name
+               << (result.ok ? "OK" : "FAILED")
+               << "args=" << argsJson
+               << "->" << result.text.left(200);
+    }
+
+    return result.text;
+}
+
+QStringList FieldController::availableTools() const
+{
+    return toolNames();
+}
+
+bool FieldController::isCommandEnabled(const QString& command) const
+{
+    if (command.isEmpty()) {
+        return false;
+    }
+
+    const muse::rcommand::Command cmd(muse::Uri(command.toStdString()));
+    return commandsState()->commandState(cmd).enabled;
+}
+
+QStringList FieldController::enabledCommandNames() const
+{
+    //! Enumerating the register and asking each command's state is the only way to answer "what can I
+    //! do right now" without hardcoding a list - and a hardcoded list would drift from the 446
+    //! commands the moment upstream adds one. This is the same reason the write side asks upstream
+    //! `toDurationList()` instead of keeping a table of writable durations.
+    QStringList names;
+    for (const muse::rcommand::CommandInfo& info : commandsRegister()->commandInfoList()) {
+        if (!info.isValid()) {
+            continue;
+        }
+        if (commandsState()->commandState(info.command).enabled) {
+            names.append(QString::fromStdString(info.command.toString()));
+        }
+    }
+    return names;
+}
+
+QString FieldController::dispatchCommand(const QString& command, const QJsonObject& args)
+{
+    if (command.isEmpty()) {
+        return QStringLiteral("empty command");
+    }
+
+    const muse::rcommand::Command cmd(muse::Uri(command.toStdString()));
+
+    //! Translate the tool's JSON arguments into the command layer's `Params`. Only the scalar types a
+    //! notation command actually declares are mapped; anything else is dropped rather than coerced,
+    //! because silently turning an object into a string would make the handler misread it.
+    //! NOTE `Val`'s constructors are all `explicit`, so `params[key] = true` does not compile - the
+    //! value has to be named before it goes in.
+    muse::rcommand::Params params;
+    for (auto it = args.constBegin(); it != args.constEnd(); ++it) {
+        const QJsonValue v = it.value();
+        const std::string key = it.key().toStdString();
+        if (v.isBool()) {
+            params.insert({ key, muse::Val(v.toBool()) });
+        } else if (v.isDouble()) {
+            //! JSON has no integer type: `2` and `2.0` both arrive as double. Send the integral form
+            //! when the value is integral, because command handlers read `count` as an int and
+            //! `Val::toInt()` on a stored double is a different path.
+            const double d = v.toDouble();
+            if (d == double(int(d))) {
+                params.insert({ key, muse::Val(int(d)) });
+            } else {
+                params.insert({ key, muse::Val(d) });
+            }
+        } else if (v.isString()) {
+            params.insert({ key, muse::Val(v.toString().toStdString()) });
+        }
+    }
+
+    muse::async::Promise<muse::rcommand::Response> promise
+        = params.empty() ? commandDispatcher()->dispatch(cmd) : commandDispatcher()->dispatch(cmd, params);
+
+    //! The dispatch is asynchronous, but every notation command's handler runs synchronously inside
+    //! it (they are plain C++ handlers, not queued work), so by the time the promise settles the
+    //! edit has already happened. Reporting a failure here means the handler itself refused.
+    QString error;
+    promise.onResolve(this, [&error](const muse::rcommand::Response& res) {
+        if (!res.ret) {
+            error = QString::fromStdString(res.ret.toString());
+        }
+    });
+
+    return error;
 }
 
 QString FieldController::statusText() const

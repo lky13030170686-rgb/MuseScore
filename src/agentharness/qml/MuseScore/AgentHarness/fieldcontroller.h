@@ -24,6 +24,9 @@
 
 #include <QObject>
 #include <QString>
+//! `QJsonObject` is a parameter type on the tool entry point below, so it must be a COMPLETE type
+//! here, not a forward declaration. moc alone would accept the declaration; the compiler will not.
+#include <QJsonObject>
 #include <QVariantList>
 #include <QVariantMap>
 #include <qqmlintegration.h>
@@ -34,6 +37,9 @@
 #include "modularity/ioc.h"
 #include "context/iglobalcontext.h"
 #include "interactive/iinteractive.h"
+#include "rcommand/icommanddispatcher.h"
+#include "rcommand/icommandsstate.h"
+#include "rcommand/icommandsregister.h"
 
 #include "addressing.h"
 
@@ -159,6 +165,18 @@ class FieldController : public QObject, public muse::Contextable, public muse::a
     //! NOTE the interface is `muse::IInteractive`, NOT `muse::interactive::IInteractive` - the
     //! header lives in the `interactive/` directory but declares into namespace `muse`.
     muse::ContextInject<muse::IInteractive> interactive = { this };
+    //! The write path goes through the notation command layer, so an agent's edit is the *same*
+    //! action a user performs - same undo stack, same command state, same notifications. Anything
+    //! that reaches around this into `Score::undoXxx` would be a second, divergent write path.
+    muse::ContextInject<muse::rcommand::ICommandDispatcher> commandDispatcher = { this };
+    muse::ContextInject<muse::rcommand::ICommandsState> commandsState = { this };
+    //! Needed to *enumerate* commands: there is no global list of the 446 notation command constants,
+    //! only the register that knows every command registered by every module. Asking it is what keeps
+    //! `command_list` from being a hand-maintained copy that drifts the moment upstream adds one.
+    //! ⚠️ GLOBAL, not contextual: `ICommandsRegister : MODULE_GLOBAL_INTERFACE` (the dispatcher and
+    //! the state next to it are context interfaces). Using `ContextInject` here is a compile error -
+    //! a `static_assert` inside the injector, not a subtle runtime surprise.
+    muse::GlobalInject<muse::rcommand::ICommandsRegister> commandsRegister;
 
 public:
     explicit FieldController(QObject* parent = nullptr);
@@ -167,6 +185,39 @@ public:
     //! Start observing the current notation, and keep following it across score changes.
     //! Called from QML's Component.onCompleted. Safe to call twice; the second call only rebinds.
     Q_INVOKABLE void init();
+
+    //! Snapshot layer, on demand. Both are pure projections of the score as it is *right now*, so
+    //! neither can go stale - see scoredigest.h for why nothing here is cached.
+    //! These are the read surface the agent's read tools will be built on; exposing them to QML now
+    //! also makes them verifiable from the running program without an agent loop.
+    Q_INVOKABLE QString digestOverview() const;
+    Q_INVOKABLE QString digestWindow(int firstMeasure, int lastMeasure) const;
+
+    //! ── The tool surface ─────────────────────────────────────────────────────────────────────
+    //! One entry point for every tool call, so "the agent can only do what the table exposes" is
+    //! enforced in a single place rather than at each call site. Returns the model-facing text;
+    //! `ok` is reported through `lastToolOk()` (kept out of the return value because QML has no
+    //! cheap way to return a pair).
+    Q_INVOKABLE QString runTool(const QString& name, const QString& argsJson);
+    Q_INVOKABLE bool lastToolOk() const { return m_lastToolOk; }
+    //! Tool names, for diagnostics and (later) the prompt's tool list.
+    Q_INVOKABLE QStringList availableTools() const;
+
+    //! ── The write path ───────────────────────────────────────────────────────────────────────
+    //! ⛔ Ask before writing. A disabled notation command is *silently skipped* by the controller's
+    //! outer wrapper, so dispatching one produces "the call succeeded and nothing happened"
+    //! (`维护手册.md` §4.8, 第 594 条 - this project has paid for that twice).
+    bool isCommandEnabled(const QString& command) const;
+    //! Names of the commands that are enabled right now.
+    QStringList enabledCommandNames() const;
+    //! Dispatch one notation command. Empty return means it was dispatched; otherwise the reason.
+    //! NOTE this goes through the notation command layer, NOT through a bare `Score::undoXxx`, so
+    //! the edit lands on the same undo stack as the user's own actions and Ctrl+Z takes it back.
+    //! ⛔ `args` MUST be forwarded. Some handlers behave completely differently without their
+    //! parameters: `append-measures` with no `count` opens a "how many measures?" dialog instead of
+    //! appending anything, and a dialog in a scripted run never resolves. The command then reports
+    //! success and nothing happens - the silent-no-op shape this project keeps running into.
+    QString dispatchCommand(const QString& command, const QJsonObject& args = QJsonObject());
 
     int eventCount() const { return int(m_events.size() + m_droppedEvents); }
     int revision() const { return m_revision; }
@@ -208,6 +259,11 @@ private:
 
     void record(RawFieldEvent event);
     void noteActionFromUndoStack(RawFieldEvent& event) const;
+    //! Verification hook: run one tool call once a score is bound (MUSE_AGENT_DEMO_TOOL).
+    void applyDemoToolCallIfPending();
+    //! Whether the notation undo stack currently has something to undo. Used by the demo hook to
+    //! show that a tool's write landed on the *user's* undo stack, not a private one.
+    bool undoStackCanUndo() const;
 
     mu::engraving::Score* m_score = nullptr;
 
@@ -229,5 +285,7 @@ private:
     //! The undo stack's state index as of the last recorded event. Undo/redo is derived by
     //! comparing it, NOT from `undoRedoNotification` - see the note in onScoreChanges.
     int m_lastStateIndex = -1;
+    //! Whether the last `runTool()` call succeeded. See the note on `runTool`.
+    bool m_lastToolOk = true;
 };
 } // namespace muse::agentharness
