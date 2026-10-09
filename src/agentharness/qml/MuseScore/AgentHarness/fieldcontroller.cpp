@@ -39,6 +39,8 @@
 #include "notation/inotationundostack.h"
 
 #include "addressing.h"
+#include "agentloop.h"
+#include "llmtransport.h"
 #include "semanticderive.h"
 #include "scoredigest.h"
 #include "systemprompt.h"
@@ -106,49 +108,60 @@ void FieldController::init()
 
 void FieldController::applyDemoToolCallIfPending()
 {
-    //! ── Verification hook ─────────────────────────────────────────────────────────────────
-    //! MUSE_AGENT_DEMO_TOOL="<tool>|<json args>" runs one tool call as soon as a score is bound.
+    //! ── Verification hooks ─────────────────────────────────────────────────────────────────
+    //! Two independent switches, each gated on its OWN variable:
+    //!   MUSE_AGENT_DEMO_TOOL="<tool>|<json args>"  runs one tool call directly
+    //!   MUSE_AGENT_DEMO_AGENT="<message>"          runs one real turn through the agent loop
     //!
-    //! WHY THIS EXISTS: the tool table is the agent's entire write surface, and the only way to
-    //! prove "an agent's edit is the user's edit - same undo stack, same Ctrl+Z" is to actually
-    //! perform one from inside the running program. Driving it through a chat window would require
-    //! the M2 agent loop, which does not exist yet; this hook tests the thing that matters (the
-    //! write path) without waiting for the thing that does not (the conversation).
-    //!
-    //! Same shape as the MIDI page's MUSE_MIDIEDITOR_DEMO_* family: an environment switch, no
-    //! rebuild to toggle, and it doubles as the reverse-verification control.
-    if (!qEnvironmentVariableIsSet("MUSE_AGENT_DEMO_TOOL")) {
-        return;
+    //! ⚠️ They are checked SEPARATELY and neither returns early past the other. The first version put
+    //! the agent hook at the end of the tool hook's body, behind its early return - so setting only
+    //! the agent variable produced *nothing at all*, with no error anywhere. A verification switch
+    //! that silently does nothing is worse than no switch, because it reads as "the feature is
+    //! broken" rather than "the switch is not wired".
+    if (qEnvironmentVariableIsSet("MUSE_AGENT_DEMO_TOOL")) {
+        const QString spec = qEnvironmentVariable("MUSE_AGENT_DEMO_TOOL");
+        const int bar = spec.indexOf(QLatin1Char('|'));
+        const QString name = bar < 0 ? spec : spec.left(bar);
+        const QString args = bar < 0 ? QString() : spec.mid(bar + 1);
+
+        LOGW() << "[agent-demo] tool call before:" << name << args
+               << "measures=" << measureCount()
+               << "revision=" << revision()
+               << "canUndo=" << (undoStackCanUndo());
+
+        const QString text = runTool(name, args);
+
+        LOGW() << "[agent-demo] tool call after :" << (m_lastToolOk ? "OK" : "FAILED")
+               << "measures=" << measureCount()
+               << "revision=" << revision()
+               << "canUndo=" << (undoStackCanUndo())
+               << "result=" << text.left(300);
     }
 
-    const QString spec = qEnvironmentVariable("MUSE_AGENT_DEMO_TOOL");
-    const int bar = spec.indexOf(QLatin1Char('|'));
-    const QString name = bar < 0 ? spec : spec.left(bar);
-    const QString args = bar < 0 ? QString() : spec.mid(bar + 1);
-
-    LOGW() << "[agent-demo] tool call before:" << name << args
-           << "measures=" << measureCount()
-           << "revision=" << revision()
-           << "canUndo=" << (undoStackCanUndo());
-
-    const QString text = runTool(name, args);
-
-    LOGW() << "[agent-demo] tool call after :" << (m_lastToolOk ? "OK" : "FAILED")
-           << "measures=" << measureCount()
-           << "revision=" << revision()
-           << "canUndo=" << (undoStackCanUndo())
-           << "result=" << text.left(300);
-
-    //! ── The session log, exercised from the running program ───────────────────────────────────
-    //! Appending a real turn and printing the projection is what verifies the claim that matters:
-    //! **the model's history is derived from the log**, so "what the model saw" is answerable from
-    //! what was recorded. Doing it here (rather than only in unit tests) also checks the JSONL form
-    //! survives the real QString/QJson round trip.
-    seedSystemPrompt();
-    appendUserMessage(QStringLiteral("what is in this score?"));
-
+    //! The session log, exercised from the running program: printing the JSONL and the projection is
+    //! what verifies the claim that matters - **the model's history is derived from the log**, so
+    //! "what the model saw" is answerable from what was recorded.
+    //! ⚠️ The user message is NOT appended here: `sendToAgent()` below appends it as part of the turn.
+    //! Doing both put the same sentence in the request twice, which is exactly the kind of quiet
+    //! duplication a reader would blame on the projection.
     LOGW() << "[agent-session] jsonl:\n" << sessionJsonLines();
-    LOGW() << "[agent-session] projection:\n" << sessionPreview();
+
+    //! ── The full loop ─────────────────────────────────────────────────────────────────────────
+    //! Pointed at the mock server (build/ah/mock-llm-server.ps1) this exercises the whole chain with
+    //! no API key: request assembled from the log, streamed tool call, tool executed against the real
+    //! score, second request carrying the result. Pointed at the real endpoint with a key it is the
+    //! real thing.
+    if (qEnvironmentVariableIsSet("MUSE_AGENT_DEMO_AGENT")) {
+        const QString message = qEnvironmentVariable("MUSE_AGENT_DEMO_AGENT");
+        LOGW() << "[agent-demo] submitting a real turn:" << message
+               << "base=" << qEnvironmentVariable("MUSE_AGENT_API_BASE")
+               << "configured=" << agentConfigured();
+        sendToAgent(message);
+    } else {
+        seedSystemPrompt();
+        appendUserMessage(QStringLiteral("what is in this score?"));
+        LOGW() << "[agent-session] projection:\n" << sessionPreview();
+    }
 }
 
 bool FieldController::undoStackCanUndo() const
@@ -737,6 +750,101 @@ void FieldController::seedSystemPrompt()
 int FieldController::sessionEventCount() const
 {
     return m_session.size();
+}
+
+void FieldController::ensureAgentLoop()
+{
+    if (m_loop) {
+        return;
+    }
+
+    m_transport = std::make_unique<LlmTransport>();
+
+    //! The base URL is overridable so the whole chain can be pointed at a local mock. That is what
+    //! makes the transport verifiable without a real key - and it is the same switch a user behind a
+    //! gateway needs.
+    const QString override = qEnvironmentVariable("MUSE_AGENT_API_BASE");
+    m_transport->setBaseUrl(override.isEmpty() ? QStringLiteral("https://api.deepseek.com") : override);
+
+    m_loop = std::make_unique<AgentLoop>(&m_session, m_transport.get(), this);
+
+    connect(m_loop.get(), &AgentLoop::assistantText, this, [this](const QString&) {
+        emit fieldChanged();
+    });
+    connect(m_loop.get(), &AgentLoop::assistantReasoning, this, [this](const QString&) {
+        emit fieldChanged();
+    });
+    connect(m_loop.get(), &AgentLoop::runningChanged, this, [this]() {
+        emit fieldChanged();
+    });
+    connect(m_loop.get(), &AgentLoop::turnFinished, this, [this](bool ok, const QString& error) {
+        m_agentLastError = ok ? QString() : error;
+        LOGW() << "[agent-loop] turn finished" << (ok ? "OK" : "FAILED")
+               << "error=" << error
+               << "sessionEvents=" << m_session.size();
+        LOGW() << "[agent-loop] projection after the turn:\n" << sessionPreview();
+        emit fieldChanged();
+    });
+}
+
+void FieldController::sendToAgent(const QString& text)
+{
+    ensureAgentLoop();
+    m_agentLastError.clear();
+    m_loop->submitUserMessage(text);
+    emit fieldChanged();
+}
+
+void FieldController::abortAgent()
+{
+    if (m_loop) {
+        m_loop->abort();
+    }
+}
+
+bool FieldController::agentRunning() const
+{
+    return m_loop && m_loop->isRunning();
+}
+
+bool FieldController::agentConfigured() const
+{
+    //! Constructing the transport is cheap and does not open a socket; it is the only way to ask the
+    //! key question before a turn starts.
+    const_cast<FieldController*>(this)->ensureAgentLoop();
+    return m_transport && m_transport->isConfigured();
+}
+
+QString FieldController::agentStreamingText() const
+{
+    return m_loop ? m_loop->streamingText() : QString();
+}
+
+QString FieldController::agentStreamingReasoning() const
+{
+    return m_loop ? m_loop->streamingReasoning() : QString();
+}
+
+QString FieldController::agentLastError() const
+{
+    return m_agentLastError;
+}
+
+QString FieldController::agentModel() const
+{
+    return m_loop ? m_loop->model() : QStringLiteral("deepseek-chat");
+}
+
+void FieldController::setAgentModel(const QString& model)
+{
+    ensureAgentLoop();
+    m_loop->setModel(model);
+}
+
+void FieldController::setAgentBaseUrl(const QString& url)
+{
+    ensureAgentLoop();
+    m_transport->setBaseUrl(url);
 }
 
 QString FieldController::statusText() const

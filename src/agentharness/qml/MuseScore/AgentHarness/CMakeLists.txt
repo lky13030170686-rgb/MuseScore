@@ -54,6 +54,13 @@ qt_add_qml_module(agentharness_qml
         llmclient.h
         systemprompt.cpp
         systemprompt.h
+        # The loop body and its socket. The transport uses QNetworkAccessManager directly rather than
+        # `muse::network` because SSE is a streaming read and that wrapper has no streaming hook (and
+        # no way to read response headers at all).
+        agentloop.cpp
+        agentloop.h
+        llmtransport.cpp
+        llmtransport.h
     QML_FILES
         AgentPanel.qml
 
@@ -71,6 +78,9 @@ target_link_libraries(agentharness_qml PRIVATE
     muse::uicomponents_qml
     engraving
     notation
+    # Already linked into the application (the cloud module uses it), so this adds no new dependency.
+    # Needed for the agent loop's SSE transport.
+    Qt::Network
 )
 
 # Necessary for the auto-generated sources (moc output includes the header by bare name).

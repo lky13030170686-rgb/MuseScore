@@ -32,6 +32,7 @@
 #include <qqmlintegration.h>
 
 #include <deque>
+#include <memory>
 
 #include "async/asyncable.h"
 #include "modularity/ioc.h"
@@ -43,6 +44,11 @@
 
 #include "addressing.h"
 #include "sessionlog.h"
+
+namespace muse::agentharness {
+class AgentLoop;
+class LlmTransport;
+}
 
 namespace mu::engraving {
 class Score;
@@ -219,6 +225,25 @@ public:
     //! Number of events in the session log.
     Q_INVOKABLE int sessionEventCount() const;
 
+    //! ── The agent loop ────────────────────────────────────────────────────────────────────────
+    //! Send a user message and run a turn. Returns immediately: the loop is asynchronous, and
+    //! blocking here would freeze the editor for the length of a model response.
+    Q_INVOKABLE void sendToAgent(const QString& text);
+    Q_INVOKABLE void abortAgent();
+    //! Whether a turn is currently running (the panel disables its input while it is).
+    Q_INVOKABLE bool agentRunning() const;
+    //! Whether an API key is available. The panel says "not configured" rather than letting the user
+    //! send a message that will fail on the wire.
+    Q_INVOKABLE bool agentConfigured() const;
+    //! The assistant's text so far in the running turn - the panel renders this live.
+    Q_INVOKABLE QString agentStreamingText() const;
+    Q_INVOKABLE QString agentStreamingReasoning() const;
+    Q_INVOKABLE QString agentLastError() const;
+    Q_INVOKABLE QString agentModel() const;
+    Q_INVOKABLE void setAgentModel(const QString& model);
+    //! Override the API base URL (a gateway, or a local mock for verification).
+    Q_INVOKABLE void setAgentBaseUrl(const QString& url);
+
     //! ── The write path ───────────────────────────────────────────────────────────────────────
     //! ⛔ Ask before writing. A disabled notation command is *silently skipped* by the controller's
     //! outer wrapper, so dispatching one produces "the call succeeded and nothing happened"
@@ -308,5 +333,13 @@ private:
     //! from the field means the transcript and the derived history are inspectable before the loop
     //! exists - which is how the projection gets verified against the running program.
     SessionLog m_session;
+
+    //! The loop and its transport, created on first use. Lazily, so a session that never talks to a
+    //! model never builds a network stack - and so the field keeps working with no key configured.
+    std::unique_ptr<LlmTransport> m_transport;
+    std::unique_ptr<AgentLoop> m_loop;
+    QString m_agentLastError;
+
+    void ensureAgentLoop();
 };
 } // namespace muse::agentharness
