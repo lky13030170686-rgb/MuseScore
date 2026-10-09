@@ -21,6 +21,8 @@
  */
 #include "scoreactiongateway.h"
 
+#include "tools.h"
+
 #include "async/async.h"
 
 #include "log.h"
@@ -46,19 +48,33 @@ ScoreActionGateway::ScoreActionGateway(FieldController* field)
 {
 }
 
-WriteResult ScoreActionGateway::perform(const WriteOp& op) const
-{
-    return performWith(m_field, op);
-}
-
-WriteResult ScoreActionGateway::performWith(FieldController* field, const WriteOp& op)
+WriteResult ScoreActionGateway::performWith(FieldController* field, const WriteOp& op, const ToolContext& context)
 {
     WriteResult result;
-    result.command = op.command;
+    result.command = op.command.isEmpty() ? op.tool : op.command;
 
     if (!field) {
         result.ok = false;
         result.error = QStringLiteral("no score context available");
+        return result;
+    }
+
+    //! ── THE RECIPE PATH ──────────────────────────────────────────────────────────────────────────
+    //!
+    //! ⛔⛔ WHY RECIPES HAD TO BE ADDED HERE. `patch_apply` only accepted `command://` URIs, so none of
+    //! the `note_*` tools could take part in a batch - and a batch is exactly how "change many notes in
+    //! one undo step" is done. The tools that most need batching were the ones that could not use it.
+    //!
+    //! ⚠️ The recipe runs through `runNoteRecipe`, the SAME path the standalone tool uses, so the two
+    //! entry points cannot drift: a refusal that works when the tool is called directly works in a batch
+    //! for the same reason, because it is the same call.
+    if (op.recipe) {
+        //! ⚠️ `op.recipe` IS the tool function, so this runs the tool - argument parsing, revision
+        //! fence, validation, recipe and all. A batch operation is not a similar code path to a direct
+        //! call; it is the same one.
+        const ToolResult outcome = op.recipe(context);
+        result.ok = outcome.ok;
+        result.error = outcome.ok ? QString() : outcome.text;
         return result;
     }
 
@@ -85,7 +101,8 @@ WriteResult ScoreActionGateway::performWith(FieldController* field, const WriteO
 }
 
 void ScoreActionGateway::performBatch(const QVector<WriteOp>& ops, const QString& actionName,
-                                     std::function<void(const QVector<WriteResult>&, bool)> done) const
+                                      const ToolContext& context,
+                                      std::function<void(const QVector<WriteResult>&, bool)> done) const
 {
     if (!m_field) {
         QVector<WriteResult> results;
@@ -127,14 +144,21 @@ void ScoreActionGateway::performBatch(const QVector<WriteOp>& ops, const QString
     //! it is what groups them - and merging is then a no-op.
     auto chain = std::make_shared<std::function<void(int)>>();
 
-    *chain = [field, ops, state, chain, actionName, done](int index) {
+    *chain = [field, ops, state, chain, actionName, context, done](int index) {
         if (index == 0) {
             //! Refusals are checked BEFORE anything is dispatched: a disabled command would be silently
             //! skipped by the controller's outer wrapper, so catching it here is the only chance
             //! (维护手册.md §4.8, 第 594 条). Nothing has been opened, so nothing needs rolling back.
             for (const WriteOp& op : ops) {
                 WriteResult r;
-                r.command = op.command;
+                r.command = op.command.isEmpty() ? op.tool : op.command;
+                //! ⛔ A RECIPE OP HAS NO COMMAND TO BE ENABLED. Asking `isCommandEnabled` about one would
+                //! refuse every recipe for having an empty URI - and the tools were exactly what this
+                //! batch could not run before, so getting this wrong would look like "still broken".
+                if (op.recipe) {
+                    state->results.append(r);
+                    continue;
+                }
                 if (!field->isCommandEnabled(op.command)) {
                     r.ok = false;
                     r.error = QStringLiteral("`%1` is not enabled right now, so dispatching it would be "
@@ -205,6 +229,27 @@ void ScoreActionGateway::performBatch(const QVector<WriteOp>& ops, const QString
         }
 
         const WriteOp op = ops[index];
+
+        //! ── A RECIPE OP RUNS INLINE AND ADVANCES IMMEDIATELY ────────────────────────────────────────
+        //!
+        //! ⛔ It needs no promise: a recipe is a plain function call that has already finished by the time
+        //! it returns, unlike `dispatch` (see the note below on why that one is asynchronous). So it
+        //! records its own result and re-enters the chain for the next index.
+        //!
+        //! ⚠️ `chain` is the same callable the command path resolves into, so the ordering guarantee is
+        //! identical: operations run strictly in request order, one at a time, against one score.
+        if (op.recipe) {
+            const ToolResult outcome = op.recipe(context);
+            state->results[index].ok = outcome.ok;
+            state->results[index].error = outcome.ok ? QString() : outcome.text;
+            if (!outcome.ok) {
+                state->allOk = false;
+            }
+            //! ⚠️ `(*chain)(...)` and not `chain(...)`: `chain` is a `shared_ptr` to the callable (it has
+            //! to be, because the lambda refers to itself), and `shared_ptr` has no `operator()`.
+            (*chain)(index + 1);
+            return;
+        }
 
         //! ⛔⛔ ONE `onResolve` PER PROMISE, and the reason is a trap worth naming: the callback
         //! registry is keyed by RECEIVER, and `onResolve` registers with `Mode::SetOnce` - which

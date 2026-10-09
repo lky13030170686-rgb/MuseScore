@@ -23,19 +23,44 @@
 #pragma once
 
 #include <QJsonObject>
+
+#include <functional>
 #include <QString>
 #include <QVector>
 
-#include <functional>
 
 namespace muse::agentharness {
 class FieldController;
 
+//! What a tool reports. Declared in tools.h, which is in this same namespace - forward-declared here so
+//! the gateway does not have to include the whole tool surface.
+struct ToolResult;
+struct ToolContext;
+
 //! One requested write.
+//!
+//! ⛔⛔ TWO KINDS, AND A BATCH MAY MIX THEM. The first version of this struct held only `command`, which
+//! made `patch_apply` unable to run any of the `note_*` recipes - and batching is exactly the mechanism
+//! for "change many notes in one undo step", so the tools that most need batching could not use it.
+//! Measured: a batch naming `note_add` was refused twice, once for the wrong key and once because the
+//! value was a tool name where a `command://` URI was expected.
+//!
+//! Exactly one of the three is set:
+//!   - `command` - a `command://notation/...` URI, dispatched through the notation command layer;
+//!   - `tool`    - the name of a write recipe tool (`note_set_pitch`, `text_add`, ...), for the record;
+//!   - `recipe`  - what to run for that tool: THE TOOL FUNCTION ITSELF, bound to its arguments.
+//!
+//! ⛔⛔ `recipe` CALLS THE TOOL, NOT THE UNDERLYING RECIPE, and that is the point of the design. A batch
+//! could have re-implemented each tool's argument parsing here - seventeen of them - and then the two
+//! entry points would be two implementations of one contract, drifting apart a refusal at a time. Calling
+//! the tool function makes a batch operation and a direct call THE SAME CODE: every validation, every
+//! refusal message and every revision check applies identically, because it is the same function.
 struct WriteOp
 {
     QString command;
+    QString tool;
     QJsonObject params;
+    std::function<ToolResult(const ToolContext&)> recipe;
 };
 
 //! The outcome of one requested write, in request order.
@@ -66,9 +91,6 @@ class ScoreActionGateway
 public:
     explicit ScoreActionGateway(FieldController* field);
 
-    //! Perform one write. Never throws; a refusal comes back as `ok == false` with a reason.
-    WriteResult perform(const WriteOp& op) const;
-
     //! Perform several writes as ONE undo step.
     //!
     //! ⛔ THE REASON THIS EXISTS, and it is not convenience. A model that wants to add a note to eight
@@ -95,7 +117,7 @@ public:
     //!
     //! \b Asynchronous. `done` is called with the per-operation results and whether the batch committed.
     //! It is invoked from the event loop, so callers must not assume it has run when this returns.
-    void performBatch(const QVector<WriteOp>& ops, const QString& actionName,
+    void performBatch(const QVector<WriteOp>& ops, const QString& actionName, const ToolContext& context,
                       std::function<void(const QVector<WriteResult>&, bool committed)> done) const;
 
 private:
@@ -105,7 +127,7 @@ private:
     //! stack temporary in the tool that builds it, so by the time the queue runs the callback, `this`
     //! points at a destroyed object - which SIGSEGVed the application. A static function taking the
     //! field by value has nothing to dangle.
-    static WriteResult performWith(FieldController* field, const WriteOp& op);
+    static WriteResult performWith(FieldController* field, const WriteOp& op, const ToolContext& context);
 
     FieldController* m_field = nullptr;
 };

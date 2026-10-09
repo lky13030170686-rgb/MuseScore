@@ -112,6 +112,10 @@ const std::vector<ToolSpec>& toolTable();
 //! guessing, because a model that asks for a tool that does not exist should be told so plainly.
 const ToolSpec* findTool(const QString& name);
 
+//! Whether a tool may take part in a `patch_apply` batch. See the note on the implementation for what is
+//! deliberately excluded and why.
+bool isBatchableTool(const QString& name);
+
 //! Every tool name, for diagnostics.
 QStringList toolNames();
 

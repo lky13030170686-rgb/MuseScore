@@ -22,6 +22,7 @@
 #include "tools.h"
 
 #include <QJsonArray>
+#include <QSet>
 #include <QJsonValue>
 
 #include "fieldcontroller.h"
@@ -1255,11 +1256,51 @@ ToolResult muse::agentharness::toolPatchApply(const QJsonObject& args, const Too
         const QJsonObject obj = v.toObject();
         WriteOp op;
         op.command = obj.value(QStringLiteral("command")).toString();
+        op.tool = obj.value(QStringLiteral("tool")).toString();
         op.params = obj.value(QStringLiteral("params")).toObject();
+
+        //! ── A `tool` OP, RESOLVED TO THE TOOL ITSELF ──────────────────────────────────────────────
+        //!
+        //! ⛔⛔ WHY THIS EXISTS: without it `patch_apply` could not run any of the `note_*` recipes, and a
+        //! batch is exactly how "change many notes in one undo step" is done - so the tools that most
+        //! needed batching were the ones that could not use it. Measured: a batch naming `note_add` was
+        //! refused twice, once for the wrong key and once because a tool name is not a `command://` URI.
+        //!
+        //! ⚠️ The op is resolved to the TOOL FUNCTION, not to the recipe underneath it, so a batched
+        //! operation and a direct call are the same code: the same argument parsing, the same revision
+        //! fence, the same refusals. Re-implementing seventeen tools' parsing here would have been two
+        //! implementations of one contract, drifting apart a refusal at a time.
+        if (!op.tool.isEmpty()) {
+            const ToolSpec* spec = findTool(op.tool);
+            if (!spec) {
+                return ToolResult::failure(QStringLiteral("`%1` is not a tool. Nothing was applied.")
+                                           .arg(op.tool));
+            }
+            if (!isBatchableTool(op.tool)) {
+                //! ⛔ Refused rather than ignored. A read tool inside a batch is a caller that has
+                //! misunderstood what a batch is, and silently doing nothing would let it carry on
+                //! believing the result of that read was used.
+                return ToolResult::failure(
+                    QStringLiteral("`%1` cannot take part in a batch: only the write tools can. "
+                                   "`patch_apply` itself and the read tools are not batchable. Nothing was "
+                                   "applied.").arg(op.tool));
+            }
+
+            const std::function<ToolResult(const QJsonObject&, const ToolContext&)> call = spec->execute;
+            const QJsonObject toolArgs = op.params;
+            op.recipe = [call, toolArgs](const ToolContext& context) {
+                return call(toolArgs, context);
+            };
+            ops.append(op);
+            continue;
+        }
 
         if (op.command.isEmpty()) {
             return ToolResult::failure(QStringLiteral(
-                                           "every operation needs a `command`; one of them had none. Nothing was applied."));
+                                           "every operation needs either a `command` (a "
+                                           "`command://notation/...` URI) or a `tool` (the name of a write "
+                                           "tool, with its arguments in `params`); one of them had "
+                                           "neither. Nothing was applied."));
         }
         ops.append(op);
     }
@@ -1277,7 +1318,7 @@ ToolResult muse::agentharness::toolPatchApply(const QJsonObject& args, const Too
     //! ⛔ `complete` is captured BY VALUE: the callback runs from a queued invocation, after this
     //! function has returned.
     ScoreActionGateway gateway(ctx.field);
-    gateway.performBatch(ops, actionName,
+    gateway.performBatch(ops, actionName, ctx,
                          [complete = ctx.complete](const QVector<WriteResult>& results, bool committed) {
         int failed = 0;
         QStringList lines;
@@ -1382,7 +1423,10 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             QStringLiteral("Perform several notation actions as ONE undo step: one Ctrl+Z takes them all "
                            "back, and the timeline records them as a single action. Use this whenever a "
                            "request needs more than one write - adding a note to each of several "
-                           "measures, say - rather than calling command_dispatch repeatedly.\n"
+                           "measures, say - rather than calling the tools one at a time.\n"
+                           "Each operation names EITHER a `command` (a command://notation/... URI, with "
+                           "`params`) OR a `tool` (the name of a write tool such as `note_set_pitch`, with "
+                           "its arguments in `params`). The two kinds can be mixed in one batch.\n"
                            "All or nothing: if any operation is refused, none of them are applied."),
             schemaObject({
                 { QStringLiteral("ops"), QJsonObject{
@@ -1391,7 +1435,8 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                       { QStringLiteral("items"), QJsonObject{
                             { QStringLiteral("type"), QStringLiteral("object") },
                             { QStringLiteral("properties"), QJsonObject{
-                                  { QStringLiteral("command"), stringProperty(QStringLiteral("The command://notation/... URI.")) },
+                                  { QStringLiteral("command"), stringProperty(QStringLiteral("The command://notation/... URI. Give this OR `tool`.")) },
+                                    { QStringLiteral("tool"), stringProperty(QStringLiteral("The name of a write tool, e.g. note_set_pitch. Give this OR `command`. Its arguments go in `params`.")) },
                                   { QStringLiteral("params"), objectProperty(QStringLiteral("Optional command parameters.")) },
                               } },
                             { QStringLiteral("required"), QJsonArray{ QStringLiteral("command") } },
@@ -1745,6 +1790,36 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
     return table;
 }
 
+bool muse::agentharness::isBatchableTool(const QString& name)
+{
+    //! ⛔⛔ THE LIST IS EXPLICIT AND SHORT ON PURPOSE, and the alternative was tried and rejected: marking
+    //! each `ToolSpec` with a "batchable" flag would put the answer in seventeen places, where one of them
+    //! would eventually be wrong - and the wrongness would show up as a batch that silently skipped an
+    //! operation.
+    //!
+    //! ⚠️ What is NOT here matters as much as what is:
+    //!   - the READ tools (`score_overview`, `score_window`, ...) - a batch is a write, and a read inside
+    //!     one is a caller that has misunderstood what a batch is;
+    //!   - `command_dispatch` - it would run a command OUTSIDE the batch's merge window, so it would not
+    //!     be part of the single undo step the caller asked for;
+    //!   - `patch_apply` - nesting a batch inside a batch has no meaning for the undo stack;
+    //!   - `command_list` / `note_capabilities` / `score_revision` - reads.
+    static const QSet<QString> kBatchable = {
+        //! note-level
+        QStringLiteral("note_set_pitch"), QStringLiteral("note_transpose"),
+        QStringLiteral("note_set_duration"), QStringLiteral("note_add"),
+        QStringLiteral("note_remove"), QStringLiteral("note_to_rest"),
+        QStringLiteral("note_tie"), QStringLiteral("note_slur"),
+        QStringLiteral("note_move"), QStringLiteral("chord_set_pitches"),
+        //! notation elements
+        QStringLiteral("text_add"), QStringLiteral("dynamic_add"),
+        QStringLiteral("hairpin_add"),
+        //! signatures and structure
+        QStringLiteral("key_signature_set"), QStringLiteral("time_signature_set"),
+        QStringLiteral("measure_insert"), QStringLiteral("measure_remove"),
+    };
+    return kBatchable.contains(name);
+}
 const ToolSpec* muse::agentharness::findTool(const QString& name)
 {
     for (const ToolSpec& spec : toolTable()) {
