@@ -769,3 +769,134 @@ TEST(AgentHarness_ScoreRecipes, ShrinkingIsNeverBlockedByTheGate)
     });
     EXPECT_TRUE(result.ok) << result.problem.toStdString();
 }
+//! ── setChordPitches ───────────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_ScoreRecipes, SetChordPitchesTurnsASingleNoteIntoATriad)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordPitches(score.get(), address(1, 1), 0, { 60, 64, 67 });   //!< C major
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    const NoteLookup found = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(found.found());
+    ASSERT_EQ(found.chord->notes().size(), 3u);
+    for (int pitch : { 60, 64, 67 }) {
+        EXPECT_TRUE(found.chord->findNote(pitch) != nullptr) << "missing " << pitch;
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, SetChordPitchesReplacesWithoutEmptyingInTheMiddle)
+{
+    const auto score = loadScore(CHORD_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ THE CASE THE RECIPE EXISTS FOR. The chord starts as [C4 E4 B4] and must end as [D4 F#4]:
+    //! NOTHING is shared, so a caller doing "remove the old, then add the new" would empty the chord in
+    //! the middle - which is a broken object, and which `removeNote` refuses. The recipe adds first, so
+    //! the chord is non-empty at every point.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordPitches(score.get(), address(1, 1), 0, { 62, 66 });
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    const NoteLookup found = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(found.found());
+    ASSERT_EQ(found.chord->notes().size(), 2u);
+    EXPECT_TRUE(found.chord->findNote(62) != nullptr) << "D4 should be there";
+    EXPECT_TRUE(found.chord->findNote(66) != nullptr) << "F#4 should be there";
+    EXPECT_TRUE(found.chord->findNote(60) == nullptr) << "C4 should be gone";
+    EXPECT_TRUE(found.chord->findNote(64) == nullptr) << "E4 should be gone";
+    EXPECT_TRUE(found.chord->findNote(67) == nullptr) << "B4 should be gone";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetChordPitchesCanGrowAndShrinkAtOnce)
+{
+    const auto score = loadScore(CHORD_SCORE);
+    ASSERT_TRUE(score);
+
+    //! [C4 E4 B4] -> [C4 E4 G4 A4]: C4 and E4 stay, B4 goes, G4 and A4 arrive. Both directions in one
+    //! call, which is the ordinary case for "make this chord a ..." and the one a sequence of external
+    //! adds/removes gets wrong.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordPitches(score.get(), address(1, 1), 0, { 60, 64, 67, 69 });
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    const NoteLookup found = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(found.found());
+    EXPECT_EQ(found.chord->notes().size(), 4u);
+    for (int pitch : { 60, 64, 67, 69 }) {
+        EXPECT_TRUE(found.chord->findNote(pitch) != nullptr) << "missing " << pitch;
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, SetChordPitchesRefusesAnEmptyListAndPointsAtRest)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ An empty list means "silence this beat" - and an empty chord is NOT a rest, it is a broken
+    //! object. Naming the tool that does what the caller wants is more useful than refusing flatly.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordPitches(score.get(), address(1, 1), 0, {});
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("note_to_rest"))) << result.problem.toStdString();
+
+    const NoteLookup found = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(found.found());
+    EXPECT_EQ(found.chord->notes().size(), 1u) << "nothing may have changed";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetChordPitchesRefusesARepeatedPitchBeforeWritingAnything)
+{
+    const auto score = loadScore(CHORD_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ Caught BEFORE anything is written: two notes at the same pitch draw as one notehead while every
+    //! later read sees two, which reads as "the chord has a note I cannot see". Checking first also means
+    //! the score is untouched on refusal, which the assertion below pins.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordPitches(score.get(), address(1, 1), 0, { 60, 64, 64 });
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("E4"))) << result.problem.toStdString();
+
+    const NoteLookup found = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(found.found());
+    EXPECT_EQ(found.chord->notes().size(), 3u) << "the original chord must be intact";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetChordPitchesRefusesOnARest)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A rest is not a chord, and a rest cannot be given pitches - putting notes there needs an existing
+    //! chord (`note_add` on a note). Refused with that direction rather than half-done.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordPitches(score.get(), address(2, 1), 0, { 60, 64 });
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("rest"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, SetChordPitchesToWhatIsAlreadyThereSucceedsAndSaysSo)
+{
+    const auto score = loadScore(CHORD_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Not an error: the chord already is what was asked for. A model told "failed" here would go looking
+    //! for another way to do what is already done.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordPitches(score.get(), address(1, 1), 0, { 64, 67, 60 });   //!< same set, other order
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("already"))) << result.detail.toStdString();
+}

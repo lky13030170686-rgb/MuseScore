@@ -171,6 +171,9 @@ ToolResult toolNoteRemove(const QJsonObject& args, const ToolContext& ctx);
 //! Write: add a note to the chord at an address.
 ToolResult toolNoteAdd(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: make the chord at an address have exactly a given set of pitches.
+ToolResult toolChordSetPitches(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: tie / untie / toggle the tie on the note at an address.
 //!
 //! WHY ONE TOOL WITH A MODE RATHER THAN THREE: the three are the same question asked three ways

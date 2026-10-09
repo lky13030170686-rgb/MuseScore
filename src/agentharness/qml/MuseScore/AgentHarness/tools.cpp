@@ -703,6 +703,64 @@ ToolResult muse::agentharness::toolNoteSlur(const QJsonObject& args, const ToolC
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolChordSetPitches(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    const QJsonValue pitchesValue = args.value(QStringLiteral("pitches"));
+    if (!pitchesValue.isArray()) {
+        return ToolResult::failure(QStringLiteral("`pitches` is required and must be an array of MIDI "
+                                                  "note numbers"));
+    }
+
+    QVector<int> pitches;
+    for (const QJsonValue& v : pitchesValue.toArray()) {
+        if (!v.isDouble()) {
+            return ToolResult::failure(QStringLiteral("every entry of `pitches` must be a MIDI note "
+                                                      "number"));
+        }
+        pitches.append(int(v.toDouble()));
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Set chord pitches"), [&](mu::engraving::Score* score) {
+        return setChordPitches(score, address, voice, pitches);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1036,6 +1094,29 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("pitch") }),
             toolNoteAdd,
+        },
+        ToolSpec{
+            QStringLiteral("chord_set_pitches"),
+            QStringLiteral("Make the chord at an address have exactly these pitches - e.g. turn a single "
+                           "note into a C major triad in one call. Use this instead of repeated "
+                           "note_add / note_remove when replacing a chord. Refuses an empty list (that "
+                           "is note_to_rest) and a repeated pitch. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                QJsonObject pitchesProp;
+                pitchesProp.insert(QStringLiteral("type"), QStringLiteral("array"));
+                pitchesProp.insert(QStringLiteral("description"), QStringLiteral(
+                                                                      "The MIDI note numbers the chord should end up with, e.g. [60, 64, 67] for a C "
+                                                                      "major triad. Order does not matter."));
+                QJsonObject items;
+                items.insert(QStringLiteral("type"), QStringLiteral("integer"));
+                pitchesProp.insert(QStringLiteral("items"), items);
+                props.insert(QStringLiteral("pitches"), pitchesProp);
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("pitches") }),
+            toolChordSetPitches,
         },
         ToolSpec{
             QStringLiteral("note_tie"),

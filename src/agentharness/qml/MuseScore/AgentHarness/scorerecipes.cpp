@@ -22,6 +22,7 @@
 #include "scorerecipes.h"
 
 #include <QHash>
+#include <QSet>
 
 #include "engraving/dom/chord.h"
 #include "engraving/dom/factory.h"
@@ -623,6 +624,113 @@ RecipeResult muse::agentharness::toggleTie(mu::engraving::Score* score, const Sc
     }
 
     return addTie(score, address, voice, noteIndex);
+}
+RecipeResult muse::agentharness::setChordPitches(mu::engraving::Score* score, const ScoreAddress& address,
+                                                int voice, const QVector<int>& midiPitches)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (midiPitches.isEmpty()) {
+        //! ⛔ An empty list means "make this beat silent", which is `changeToRest` - and an empty CHORD is
+        //! not a rest, it is a broken object. Saying which tool does what the caller wants is more useful
+        //! than refusing flatly.
+        return RecipeResult::failure(
+            QStringLiteral("no pitches given. To silence this beat use note_to_rest; a chord with no notes "
+                           "is not a rest."));
+    }
+
+    //! ⛔ DUPLICATES REFUSED BEFORE ANYTHING IS WRITTEN. Two notes at the same pitch draw as one
+    //! notehead while every later read of the chord sees two, which reads as "the chord has a note I
+    //! cannot see". Catching it here means the refusal happens before the score is touched at all.
+    QSet<int> wanted;
+    for (int pitch : midiPitches) {
+        if (pitch < 0 || pitch > 127) {
+            return RecipeResult::failure(QStringLiteral("%1 is not a MIDI pitch; it must be 0-127")
+                                         .arg(pitch));
+        }
+        if (wanted.contains(pitch)) {
+            return RecipeResult::failure(QStringLiteral("%1 appears twice in the pitch list; a chord "
+                                                        "cannot hold the same note twice")
+                                         .arg(pitchName(pitch)));
+        }
+        wanted.insert(pitch);
+    }
+
+    const NoteLookup found = chordAt(score, address, voice);
+    if (!found.found()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    if (!found.chord) {
+        //! A rest is not a chord, and turning one into a chord is `note_add` on a note - which requires a
+        //! note to add to. Refused with that direction rather than half-done.
+        return RecipeResult::failure(
+            QStringLiteral("%1 is a rest. To put notes here, this operation needs an existing chord - a "
+                           "rest cannot be given pitches.").arg(formatAddress(address)));
+    }
+
+    mu::engraving::Chord* chord = found.chord;
+
+    //! ⛔ THE ORDER MATTERS, and this is the whole reason the recipe exists. Removing first can empty the
+    //! chord - which `removeNote` refuses and which would be a broken object if it did not. So:
+    //!
+    //!   1. add every wanted pitch that is not already there   (the chord only grows)
+    //!   2. then remove every existing pitch that is not wanted (the chord never empties, because step 1
+    //!      guaranteed at least the overlap is present... and if there is NO overlap, step 1 added all of
+    //!      them, so the chord holds old+new and removing the old still leaves the new)
+    //!
+    //! The invariant is: **the chord is non-empty at every point**, which is what keeps it a legal object
+    //! throughout rather than only at the end.
+    QStringList added;
+    for (int pitch : midiPitches) {
+        if (chord->findNote(pitch)) {
+            continue;
+        }
+        const RecipeResult result = addNoteToChord(score, address, voice, pitch);
+        if (!result.ok) {
+            return result;
+        }
+        added.append(pitchName(pitch));
+    }
+
+    QStringList removed;
+    //! `notes()` is re-read on every iteration because the removals mutate it - iterating a snapshot while
+    //! deleting from the live vector is how a "skip every other element" bug happens.
+    for (int i = int(chord->notes().size()) - 1; i >= 0; --i) {
+        mu::engraving::Note* note = chord->notes()[size_t(i)];
+        if (wanted.contains(note->pitch())) {
+            continue;
+        }
+        const QString was = pitchName(note->pitch());
+        const RecipeResult result = removeNote(score, address, voice, i);
+        if (!result.ok) {
+            return result;
+        }
+        removed.append(was);
+    }
+
+    if (added.isEmpty() && removed.isEmpty()) {
+        //! Not an error: the chord already is what was asked for.
+        return RecipeResult::success(QStringLiteral("%1 already has exactly those notes")
+                                     .arg(formatAddress(address)));
+    }
+
+    QStringList parts;
+    if (!added.isEmpty()) {
+        parts.append(QStringLiteral("added %1").arg(added.join(QStringLiteral(", "))));
+    }
+    if (!removed.isEmpty()) {
+        parts.append(QStringLiteral("removed %1").arg(removed.join(QStringLiteral(", "))));
+    }
+
+    return RecipeResult::success(QStringLiteral("%1: %2 (the chord now has %3 note(s))")
+                                 .arg(formatAddress(address), parts.join(QStringLiteral(", ")))
+                                 .arg(chord->notes().size()));
 }
 RecipeResult muse::agentharness::changeToRest(mu::engraving::Score* score, const ScoreAddress& address, int voice)
 {

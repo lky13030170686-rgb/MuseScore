@@ -113,6 +113,20 @@ RecipeResult removeNote(mu::engraving::Score* score, const ScoreAddress& address
 RecipeResult addNoteToChord(mu::engraving::Score* score, const ScoreAddress& address, int voice,
                             int midiPitch);
 
+//! Make the chord at an address have exactly these pitches - e.g. turn a single note into a C major
+//! triad in one call.
+//!
+//! WHY THIS IS NOT JUST `addNoteToChord` CALLED REPEATEDLY: the interesting case is REPLACING a chord,
+//! where some of the old notes must go and some new ones must arrive. Doing that as a sequence of adds
+//! and removes from outside means the caller has to work out the order, and the obvious order
+//! (remove first) can leave the chord EMPTY in the middle - which `removeNote` refuses, for good reason.
+//! Doing it here means the invariant "never empty in the middle" is maintained in one place.
+//!
+//! ⛔ REFUSED WHEN THE LIST IS EMPTY or holds a duplicate. An empty list is "silence this beat", which is
+//! `changeToRest`; a duplicate is the same note twice, which is not a chord.
+RecipeResult setChordPitches(mu::engraving::Score* score, const ScoreAddress& address, int voice,
+                             const QVector<int>& midiPitches);
+
 //! ── Tie recipes ───────────────────────────────────────────────────────────────────────────────
 //! A tie joins a note to the next note OF THE SAME PITCH, which is what makes it different from a slur
 //! (a slur joins different pitches). Both of these act on the note at an address; the second note is
