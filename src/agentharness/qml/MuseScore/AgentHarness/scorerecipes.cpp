@@ -29,17 +29,20 @@
 #include "engraving/dom/tie.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/pitchspelling.h"
+#include "engraving/dom/articulation.h"
 #include "engraving/dom/chordrest.h"
 #include "engraving/dom/dynamic.h"
 #include "engraving/dom/hairpin.h"
 #include "engraving/dom/factory.h"
 #include "engraving/editing/editkeysig.h"
+#include "engraving/editing/editchord.h"
 #include "engraving/editing/edithairpin.h"
 #include "engraving/editing/edittimesig.h"
 #include "engraving/editing/transaction/transaction.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/measurebase.h"
 #include "engraving/dom/timesig.h"
+#include "engraving/types/symnames.h"
 #include "engraving/dom/segment.h"
 #include "engraving/dom/sig.h"
 #include "engraving/dom/score.h"
@@ -778,6 +781,72 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
     }
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
 }
+RecipeResult muse::agentharness::toggleArticulation(mu::engraving::Score* score, const ScoreAddress& address,
+                                                   int voice, int noteIndex, const QString& name)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (name.trimmed().isEmpty()) {
+        return RecipeResult::failure(QStringLiteral("no articulation given, e.g. `articStaccatoAbove`"));
+    }
+
+    //! ⛔⛔ `SymNames::symIdByName` RETURNS A DEFAULT RATHER THAN FAILING - `SymId::noSym` when the name
+    //! is not one it knows. So an unchecked lookup would go on to create an articulation with no symbol,
+    //! which draws as nothing and is an object in the score nobody can see or select. The default is
+    //! checked for exactly that reason, the same way the dynamic marking's `OTHER` fallback is.
+    const mu::engraving::SymId symbol = mu::engraving::SymNames::symIdByName(muse::String(name.trimmed()));
+    if (symbol == mu::engraving::SymId::noSym) {
+        return RecipeResult::failure(
+            QStringLiteral("`%1` is not an articulation name I know. The names are the score format's own "
+                           "SMuFL names, e.g. `articStaccatoAbove`, `articAccentAbove`, "
+                           "`articTenutoAbove`, `articMarcatoAbove`, `articStaccatissimoAbove`.")
+            .arg(name));
+    }
+
+    //! ⚠️ The NOTE is required here, unlike the segment-level elements: an articulation hangs off a note,
+    //! so a rest has nothing to attach it to. `noteAt` reports that with its own message.
+    const NoteLookup found = noteAt(score, address, voice, noteIndex);
+    if (!found.ok()) {
+        return RecipeResult::failure(found.problem.isEmpty()
+                                     ? QStringLiteral("the note lookup failed without saying why "
+                                                      "(internal) - nothing was changed")
+                                     : found.problem);
+    }
+
+    mu::engraving::Chord* chord = found.chord;
+    //! `hasArticulation` takes an articulation to compare against, so one is built to ask the question. It
+    //! is not added - `EditChord::toggleArticulation` builds its own - so it is deleted immediately;
+    //! leaking it here would be a leak per call.
+    mu::engraving::Articulation* probe =
+        mu::engraving::Factory::createArticulation(score->dummy()->chord());
+    probe->setSymId(symbol);
+    const bool wasThere = chord->hasArticulation(probe) != nullptr;
+    delete probe;
+
+    //! ⛔ `EditChord::toggleArticulation`, upstream's own primitive. It adds when absent and removes when
+    //! present, both through the undo stack. Writing the add by hand would leave the "already there" case
+    //! producing a SECOND articulation - two staccato dots stacked on one notehead, which is what a
+    //! caller asking twice would get.
+    mu::engraving::Articulation* articulation =
+        mu::engraving::Factory::createArticulation(score->dummy()->chord());
+    articulation->setSymId(symbol);
+    if (!mu::engraving::EditChord::toggleArticulation(score, found.note, articulation)) {
+        //! ⚠️ `toggleArticulation` returns false in TWO different situations - it removed one, and it
+        //! could not act at all - so the return value alone cannot be reported. The state read before the
+        //! call is what tells them apart, and getting this wrong would report a removal as a failure.
+        delete articulation;
+        if (wasThere) {
+            return RecipeResult::success(QStringLiteral("%1: removed %2").arg(formatAddress(address), name));
+        }
+        return RecipeResult::failure(QStringLiteral("the articulation could not be added at %1")
+                                     .arg(formatAddress(address)));
+    }
+
+    return RecipeResult::success(QStringLiteral("%1: added %2").arg(formatAddress(address), name));
+}
+
 RecipeResult muse::agentharness::moveNote(mu::engraving::Score* score, const ScoreAddress& from,
                                           int noteIndex, const ScoreAddress& to)
 {

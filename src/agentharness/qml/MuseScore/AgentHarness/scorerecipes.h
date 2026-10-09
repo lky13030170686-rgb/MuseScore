@@ -228,6 +228,22 @@ RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int
 RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, int numerator,
                               int denominator);
 
+//! ── Articulations ─────────────────────────────────────────────────────────────────────────────
+//! Staccato, accent, tenuto and the rest. These attach to a NOTE, and they change how it is played -
+//! which makes them the third thing after ties and slurs that a model can confuse with the other two.
+
+//! Add an articulation to the note at an address, or remove it if it is already there.
+//!
+//! @param name the SMuFL symbol name, e.g. `articStaccatoAbove`. The names are the score format's own, so
+//!             the accepted set is what the format accepts rather than a list kept here.
+//!
+//! ⛔ TOGGLE, NOT ADD. An articulation is on or off - "add a staccato" to a note that already has one
+//! should not produce two dots stacked on top of each other, and `EditChord::toggleArticulation` is
+//! upstream's own answer to that. The result says which way it went, so a caller that asked to add and
+//! got a removal is told rather than left to discover it.
+RecipeResult toggleArticulation(mu::engraving::Score* score, const ScoreAddress& address, int voice,
+                                int noteIndex, const QString& name);
+
 //! ── Moving a note ─────────────────────────────────────────────────────────────────────────────
 //! ⛔⛔ THIS IS A DELETE PLUS AN ADD, AND THAT SHAPE IS THE WHOLE PROBLEM. Done naively - remove from the
 //! source, then add to the target - a failure in the second half leaves the note GONE: the score is

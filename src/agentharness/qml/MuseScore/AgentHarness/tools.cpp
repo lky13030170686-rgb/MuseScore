@@ -1147,6 +1147,45 @@ ToolResult muse::agentharness::toolNoteMove(const QJsonObject& args, const ToolC
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolNoteArticulation(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    const QString name = args.value(QStringLiteral("articulation")).toString();
+    if (name.isEmpty()) {
+        return ToolResult::failure(QStringLiteral("`articulation` is required, e.g. `articStaccatoAbove`"));
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Articulation"), [&](mu::engraving::Score* score) {
+        return toggleArticulation(score, address, voice, noteIndex, name);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1720,6 +1759,26 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             toolNoteMove,
         },
         ToolSpec{
+            QStringLiteral("note_articulation"),
+            QStringLiteral("Add an articulation (staccato, accent, tenuto, marcato, ...) to a note, or "
+                           "remove it if it is already there. The names are the score format's own SMuFL "
+                           "names. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                QJsonObject articProp;
+                articProp.insert(QStringLiteral("type"), QStringLiteral("string"));
+                articProp.insert(QStringLiteral("description"), QStringLiteral(
+                                                                   "The SMuFL symbol name, e.g. `articStaccatoAbove`, `articAccentAbove`, "
+                                                                   "`articTenutoAbove`, `articMarcatoAbove`, `articStaccatissimoAbove`. "
+                                                                   "`Above` or `Below` picks the side."));
+                props.insert(QStringLiteral("articulation"), articProp);
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("articulation") }),
+            toolNoteArticulation,
+        },
+        ToolSpec{
             QStringLiteral("note_tie"),
             QStringLiteral("Tie the note at an address to the next note of the SAME PITCH, remove that "
                            "tie, or toggle it. A tie changes how the notes SOUND (one longer note); a "
@@ -1811,6 +1870,7 @@ bool muse::agentharness::isBatchableTool(const QString& name)
         QStringLiteral("note_remove"), QStringLiteral("note_to_rest"),
         QStringLiteral("note_tie"), QStringLiteral("note_slur"),
         QStringLiteral("note_move"), QStringLiteral("chord_set_pitches"),
+        QStringLiteral("note_articulation"),
         //! notation elements
         QStringLiteral("text_add"), QStringLiteral("dynamic_add"),
         QStringLiteral("hairpin_add"),

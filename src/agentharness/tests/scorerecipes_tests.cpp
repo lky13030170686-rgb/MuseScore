@@ -25,6 +25,7 @@
 
 #include "engraving/dom/chord.h"
 #include "engraving/dom/masterscore.h"
+#include "engraving/dom/articulation.h"
 #include "engraving/dom/dynamic.h"
 #include "engraving/dom/hairpin.h"
 #include "engraving/dom/measure.h"
@@ -1667,4 +1668,101 @@ TEST(AgentHarness_ScoreRecipes, MoveNoteFromAMultiNoteChordLeavesTheRestOfTheCho
     ASSERT_TRUE(source.found());
     EXPECT_TRUE(source.chord->findNote(60) != nullptr) << "the C4 must have stayed on beat 2";
     EXPECT_TRUE(source.chord->findNote(62) == nullptr) << "the D4 must have gone";
+}
+//! ── Articulations ─────────────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_ScoreRecipes, ArticulationIsAddedThenToggledOff)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult added = runRecipe(score.get(), [&] {
+        return toggleArticulation(score.get(), address(1, 1), 0, -1, QStringLiteral("articStaccatoAbove"));
+    });
+    EXPECT_TRUE(added.ok) << added.problem.toStdString();
+    EXPECT_TRUE(added.detail.contains(QStringLiteral("added"))) << added.detail.toStdString();
+
+    const NoteLookup afterAdd = noteAt(score.get(), address(1, 1), 0, -1);
+    ASSERT_TRUE(afterAdd.ok());
+    ASSERT_FALSE(afterAdd.chord->articulations().empty()) << "the articulation must exist";
+
+    //! ⛔ TOGGLE, NOT ADD. Asking twice must take it away rather than stack a second dot on the same
+    //! notehead - and the RESULT has to say which way it went, or a caller that asked to add and got a
+    //! removal has no way to know.
+    const RecipeResult removed = runRecipe(score.get(), [&] {
+        return toggleArticulation(score.get(), address(1, 1), 0, -1, QStringLiteral("articStaccatoAbove"));
+    });
+    EXPECT_TRUE(removed.ok) << removed.problem.toStdString();
+    EXPECT_TRUE(removed.detail.contains(QStringLiteral("removed"))) << removed.detail.toStdString();
+
+    const NoteLookup afterRemove = noteAt(score.get(), address(1, 1), 0, -1);
+    ASSERT_TRUE(afterRemove.ok());
+    EXPECT_TRUE(afterRemove.chord->articulations().empty()) << "the articulation must be gone";
+}
+
+TEST(AgentHarness_ScoreRecipes, ArticulationRejectsANameItDoesNotKnow)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔⛔ `SymNames::symIdByName` RETURNS A DEFAULT RATHER THAN FAILING - `SymId::noSym`. Without the
+    //! check, an unknown name would create an articulation with no symbol: an object in the score that
+    //! draws as nothing and cannot be selected. This is the same "the lookup does not report failure"
+    //! shape as the dynamic marking's `OTHER` fallback.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return toggleArticulation(score.get(), address(1, 1), 0, -1, QStringLiteral("staccato"));
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("articStaccatoAbove")))
+        << "it must show a valid name: " << result.problem.toStdString();
+
+    const NoteLookup after = noteAt(score.get(), address(1, 1), 0, -1);
+    ASSERT_TRUE(after.ok());
+    EXPECT_TRUE(after.chord->articulations().empty()) << "nothing may have been added";
+}
+
+TEST(AgentHarness_ScoreRecipes, ArticulationAcceptsTheCommonNames)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    for (const char* name : { "articStaccatoAbove", "articAccentAbove", "articTenutoAbove",
+                              "articMarcatoAbove", "articStaccatissimoAbove", "articStaccatoBelow" }) {
+        const auto fresh = loadScore(NOTE_SCORE);
+        ASSERT_TRUE(fresh);
+        const RecipeResult result = runRecipe(fresh.get(), [&] {
+            return toggleArticulation(fresh.get(), address(1, 1), 0, -1, QString::fromLatin1(name));
+        });
+        EXPECT_TRUE(result.ok) << name << ": " << result.problem.toStdString();
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, ArticulationOnARestIsRefused)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⚠️ An articulation hangs off a NOTE, unlike a dynamic or a rehearsal mark which hang off the
+    //! segment - so bar 2's rest has nothing to attach one to, and the refusal comes from the note
+    //! lookup rather than from a null dereference.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return toggleArticulation(score.get(), address(2, 1), 0, -1, QStringLiteral("articStaccatoAbove"));
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(result.problem.isEmpty()) << "a refusal must say why";
+}
+
+TEST(AgentHarness_ScoreRecipes, ArticulationOnAMultiNoteChordNeedsAnIndex)
+{
+    const auto score = loadScore(CHORD_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A chord of three notes and no index: the locator refuses, and the refusal must survive the
+    //! articulation path rather than being turned into "added" by the toggle.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return toggleArticulation(score.get(), address(1, 1), 0, -1, QStringLiteral("articStaccatoAbove"));
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("3 notes"))) << result.problem.toStdString();
 }
