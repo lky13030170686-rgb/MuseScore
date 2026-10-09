@@ -27,6 +27,7 @@
 #include "fieldcontroller.h"
 #include "scoreactiongateway.h"
 #include "scoredigest.h"
+#include "scorerecipes.h"
 #include "semanticderive.h"
 
 using namespace muse::agentharness;
@@ -231,6 +232,176 @@ ToolResult muse::agentharness::toolCommandDispatch(const QJsonObject& args, cons
     meta.insert(QStringLiteral("command"), command);
     meta.insert(QStringLiteral("revision"), ctx.field->revision());
     return ToolResult::success(QStringLiteral("dispatched %1").arg(command), meta);
+}
+
+namespace {
+//! Read the address arguments shared by the note recipes.
+//!
+//! `staff` and `beat` default to 1 because that is what a caller who did not think about them means,
+//! and because the tools' own descriptions say "staff 1 is the top staff" - so a missing value should
+//! behave like the value a reader would assume. `measure` has no sensible default and is required by
+//! the schema.
+bool readAddress(const QJsonObject& args, ScoreAddress& out, QString& problem)
+{
+    int measure = 0;
+    if (!readInt(args, QStringLiteral("measure"), measure)) {
+        problem = QStringLiteral("`measure` is required (1-based)");
+        return false;
+    }
+    if (measure < 1) {
+        problem = QStringLiteral("`measure` is 1-based, so %1 is not a measure").arg(measure);
+        return false;
+    }
+
+    int staff = 1;
+    if (args.contains(QStringLiteral("staff")) && !readInt(args, QStringLiteral("staff"), staff)) {
+        problem = QStringLiteral("`staff` must be an integer");
+        return false;
+    }
+    if (staff < 1) {
+        problem = QStringLiteral("`staff` is 1-based (staff 1 is the top staff), so %1 is not a staff")
+                   .arg(staff);
+        return false;
+    }
+
+    int beat = 1;
+    if (args.contains(QStringLiteral("beat")) && !readInt(args, QStringLiteral("beat"), beat)) {
+        problem = QStringLiteral("`beat` must be an integer");
+        return false;
+    }
+    if (beat < 1) {
+        problem = QStringLiteral("`beat` is 1-based, so %1 is not a beat").arg(beat);
+        return false;
+    }
+
+    //! ⛔ The address struct stores `staff` 0-BASED (addressing.h), so the conversion happens HERE, at
+    //! the boundary where the model's 1-based numbers arrive. Doing it in each recipe would be four
+    //! places to get it wrong, and getting it wrong edits the wrong staff.
+    out.measure = measure;
+    out.staff = staff - 1;
+    out.beat = beat;
+    return true;
+}
+
+//! Read the optional voice/note selectors.
+void readVoiceAndNote(const QJsonObject& args, int& voice, int& noteIndex)
+{
+    voice = 0;
+    noteIndex = -1;
+    readInt(args, QStringLiteral("voice"), voice);
+    readInt(args, QStringLiteral("note"), noteIndex);
+}
+
+QJsonObject addressProperties()
+{
+    return {
+        { QStringLiteral("measure"), intProperty(QStringLiteral("Measure number, 1-based.")) },
+        { QStringLiteral("beat"), intProperty(QStringLiteral("Beat within the measure, 1-based. Defaults to 1.")) },
+        { QStringLiteral("staff"), intProperty(QStringLiteral("Staff number, 1-based; staff 1 is the top staff. Defaults to 1.")) },
+        { QStringLiteral("voice"), intProperty(QStringLiteral("Voice number, 1-based. Omit to use whichever voice has a note on this beat.")) },
+        { QStringLiteral("note"), intProperty(QStringLiteral("Which note of the chord, 0-based from the lowest. Required when the beat holds more than one note.")) },
+    };
+}
+} // namespace
+
+ToolResult muse::agentharness::toolNoteSetPitch(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    int midiPitch = 0;
+    if (!readInt(args, QStringLiteral("pitch"), midiPitch)) {
+        return ToolResult::failure(QStringLiteral("`pitch` is required (a MIDI note number, 60 = middle C)"));
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    //! Same fence as the command tools, for the same reason - see the note in `toolCommandDispatch` on
+    //! why it is optional rather than required.
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Set pitch"), [&](mu::engraving::Score* score) {
+        return setNotePitch(score, address, voice, noteIndex, midiPitch);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
+
+ToolResult muse::agentharness::toolNoteTranspose(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    int semitones = 0;
+    if (!readInt(args, QStringLiteral("semitones"), semitones)) {
+        return ToolResult::failure(QStringLiteral("`semitones` is required (use a negative number to go down)"));
+    }
+
+    int voice = 0;
+    int noteIndex = -1;
+    readVoiceAndNote(args, voice, noteIndex);
+
+    if (args.contains(QStringLiteral("expectRevision"))) {
+        int expected = 0;
+        if (!readInt(args, QStringLiteral("expectRevision"), expected)) {
+            return ToolResult::failure(QStringLiteral("`expectRevision` must be an integer"));
+        }
+        const int actual = ctx.field->scoreRevision();
+        if (expected != actual) {
+            return ToolResult::failure(
+                QStringLiteral("the score has changed since you read it (you expected revision %1, it is "
+                               "now %2), so this edit was NOT applied. Read the score again and redo the "
+                               "edit against what is there now.").arg(expected).arg(actual));
+        }
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Transpose note"), [&](mu::engraving::Score* score) {
+        return transposeNote(score, address, voice, noteIndex, semitones);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
 }
 
 ToolResult muse::agentharness::toolScoreRevision(const QJsonObject&, const ToolContext& ctx)
@@ -444,6 +615,35 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                                                                    "score has changed since.")) },
             }, QJsonArray{ QStringLiteral("ops") }),
             toolPatchApply,
+        },
+        ToolSpec{
+            QStringLiteral("note_set_pitch"),
+            QStringLiteral("Set the pitch of one note, addressed by measure and beat. The spelling "
+                           "(sharp or flat) is chosen from the key signature, so you give a pitch and "
+                           "the score writes it the way a musician would. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                props.insert(QStringLiteral("pitch"), intProperty(QStringLiteral(
+                                                           "MIDI note number: 60 is middle C, 61 is C#, 69 is A440.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("pitch") }),
+            toolNoteSetPitch,
+        },
+        ToolSpec{
+            QStringLiteral("note_transpose"),
+            QStringLiteral("Move one note up or down by a number of semitones, keeping its spelling where "
+                           "the key allows. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                props.insert(QStringLiteral("semitones"), intProperty(QStringLiteral(
+                                                              "How far to move the note; negative goes down. 12 is an octave.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("semitones") }),
+            toolNoteTranspose,
         },
     };
     return table;

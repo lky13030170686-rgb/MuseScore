@@ -149,4 +149,16 @@ ToolResult toolScoreRevision(const QJsonObject& args, const ToolContext& ctx);
 //! fence exists to catch.
 ToolResult toolPatchApply(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: set one note's pitch, addressed as measure/beat rather than by command URI.
+//!
+//! WHY THIS IS NOT A COMMAND: the command layer is the right shape when the action is "what the user
+//! does" and the target is implied by the selection ("insert a measure"). It is the wrong shape when
+//! the action NAMES a note - there is no command URI for "set the note at m3 b2 to C#5", and minting
+//! one per recipe would be a table of near-duplicates. This goes through a recipe instead, which is
+//! still an `UndoableCommand` on the same stack, so Ctrl+Z behaves identically.
+ToolResult toolNoteSetPitch(const QJsonObject& args, const ToolContext& ctx);
+
+//! Write: move one note by a number of semitones.
+ToolResult toolNoteTranspose(const QJsonObject& args, const ToolContext& ctx);
+
 } // namespace muse::agentharness

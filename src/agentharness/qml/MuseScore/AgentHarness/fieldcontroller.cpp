@@ -966,8 +966,56 @@ void FieldController::mergeTransactionsFrom(size_t startIdx)
     undoStack->mergeTransactions(startIdx);
 }
 
-int FieldController::undoToRevision(int targetRevision)
+mu::engraving::Score* FieldController::currentScore() const
 {
+    INotationPtr notation = context()->currentNotation();
+    return notation ? notation->score() : nullptr;
+}
+
+RecipeResult FieldController::runNoteRecipe(const QString& actionName,
+                                            const std::function<RecipeResult(mu::engraving::Score*)>& recipe)
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return RecipeResult::failure(QStringLiteral("no score is open"));
+    }
+
+    INotationUndoStackPtr undoStack = notation->undoStack();
+    if (!undoStack) {
+        return RecipeResult::failure(QStringLiteral("the score has no undo stack, so nothing can be "
+                                                    "edited safely"));
+    }
+
+    mu::engraving::Score* score = notation->score();
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score is open"));
+    }
+
+    RecipeResult outcome;
+
+    //! `prepareChanges`/`commitChanges` rather than `transaction()`: the recipe is a plain function, and
+    //! the pair is the shape that lets the outcome be read before deciding to commit. A recipe that
+    //! failed must ROLL BACK rather than commit an empty transaction - an empty commit still moves the
+    //! revision, which would make a no-op look like an edit to anything watching the fence.
+    undoStack->prepareChanges(muse::TranslatableString::untranslatable(muse::String(actionName)));
+    outcome = recipe(score);
+
+    if (outcome.ok) {
+        undoStack->commitChanges();
+    } else {
+        undoStack->rollbackChanges();
+    }
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-write] recipe" << actionName
+               << (outcome.ok ? "OK" : "FAILED")
+               << "revision=" << scoreRevision()
+               << (outcome.ok ? outcome.detail : outcome.problem);
+    }
+
+    return outcome;
+}
+int FieldController::undoToRevision(int targetRevision){
     INotationPtr notation = context()->currentNotation();
     if (!notation) {
         return 0;

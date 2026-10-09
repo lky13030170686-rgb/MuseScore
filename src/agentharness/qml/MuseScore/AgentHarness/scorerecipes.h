@@ -1,0 +1,86 @@
+/*
+ * SPDX-License-Identifier: GPL-3.0-only
+ * MuseScore-Studio-CLA-applies
+ *
+ * MuseScore Studio
+ * Music Composition & Notation
+ *
+ * Copyright (C) 2026 MuseScore Limited and others
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 3 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <QString>
+
+namespace mu::engraving {
+class Score;
+}
+
+namespace muse::agentharness {
+struct ScoreAddress;
+
+//! The outcome of one recipe. `problem` is empty on success.
+//!
+//! ⛔ A RECIPE REPORTS, IT DOES NOT THROW OR ASSERT. Every one of these can fail for reasons the
+//! caller can act on (no note there, a pitch outside the staff, an unspellable pitch), and the message
+//! is what the model reads. A crash or a silent no-op would both be worse than a sentence.
+struct RecipeResult
+{
+    bool ok = false;
+    QString problem;
+    //! What actually happened, for the model to confirm against. Empty when nothing changed.
+    QString detail;
+
+    static RecipeResult success(const QString& detail)
+    {
+        RecipeResult r;
+        r.ok = true;
+        r.detail = detail;
+        return r;
+    }
+
+    static RecipeResult failure(const QString& problem)
+    {
+        RecipeResult r;
+        r.ok = false;
+        r.problem = problem;
+        return r;
+    }
+};
+
+//! ── Note recipes ──────────────────────────────────────────────────────────────────────────────
+//! These are the writes the user can make to a note, expressed as operations on an addressed note
+//! rather than as command URIs. WHY BOTH EXIST: the command layer is right when the action is "what
+//! the user does" (insert a measure, toggle a rest) and the note is implied by the selection. It is
+//! the wrong shape when the action names a note - there is no command URI for "set the note at m3 b2
+//! to C#5", and inventing one per recipe would be a table of near-duplicates.
+//!
+//! ⛔ ALL OF THESE MUST RUN INSIDE A TRANSACTION. They push `UndoableCommand`s; outside a transaction
+//! `currentOrDummyTransaction()` hands back a dummy that discards them, so the change would appear and
+//! then vanish - the "it worked and nothing happened" shape this project keeps meeting.
+
+//! Set one note's pitch (MIDI number, 0-127). The spelling (tpc) is derived from the staff's key at
+//! that position, which is what a musician means by "make it a C#" - not "make it pitch 61 with the
+//! spelling I chose".
+RecipeResult setNotePitch(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex,
+                          int midiPitch);
+
+//! Move one note by `semitones`, keeping its spelling where the key allows. 0 is refused rather than
+//! treated as a no-op: a model that asks to transpose by nothing has misunderstood something, and
+//! saying so is more useful than a silent success.
+RecipeResult transposeNote(mu::engraving::Score* score, const ScoreAddress& address, int voice, int noteIndex,
+                           int semitones);
+
+} // namespace muse::agentharness

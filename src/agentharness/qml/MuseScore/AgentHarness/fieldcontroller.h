@@ -45,6 +45,7 @@
 #include "rcommand/icommandsregister.h"
 
 #include "addressing.h"
+#include "scorerecipes.h"
 #include "sessionlog.h"
 //! `ToolResult` is a parameter type on the tool entry points below, so it must be a COMPLETE type here
 //! - a forward declaration would satisfy the compiler for a pointer but not for a by-value callback
@@ -54,6 +55,11 @@
 namespace muse::agentharness {
 class AgentLoop;
 class LlmTransport;
+struct RecipeResult;
+}
+
+namespace mu::engraving {
+class Score;
 }
 
 namespace mu::engraving {
@@ -335,6 +341,21 @@ public:
     //! Undoing to the recorded revision is the only way to make "nothing was applied" true after the
     //! fact. Returns the number of transactions undone.
     int undoToRevision(int targetRevision);
+
+    //! Run a note recipe against the current score, inside a transaction.
+    //!
+    //! ⛔ The transaction is opened HERE and not by the caller. A recipe pushes `UndoableCommand`s, and
+    //! outside a transaction `currentOrDummyTransaction()` hands back a dummy that DISCARDS them - the
+    //! change would appear and then vanish. Making the transaction the controller's job means a recipe
+    //! cannot be called without one.
+    //!
+    //! `recipe` receives the score and returns what happened. It must not be stored: the score pointer
+    //! is only valid for the duration of the call (the "never cache an EngravingObject*" invariant).
+    RecipeResult runNoteRecipe(const QString& actionName, const std::function<RecipeResult(mu::engraving::Score*)>& recipe);
+
+    //! The score behind the current notation, or null. For recipes - everything else should go through
+    //! the notation interface.
+    mu::engraving::Score* currentScore() const;
 
     //! Dispatch and hand back the promise, so the caller can continue when the handler has run.
     //! `dispatchCommand` is the synchronous-looking face of this; it cannot tell you when the work
