@@ -70,6 +70,13 @@ Item {
     readonly property string streaming: root.field ? root.field.agentStreamingText : ""
     readonly property string lastError: root.field ? root.field.agentLastError : ""
     readonly property string keySource: root.field ? root.field.agentApiKeySource : "none"
+    //! Whether the timeline section is open. Starts OPEN: it is the answer to "what just happened to my
+    //! score", which is the question a user opens this panel with, and a section that starts collapsed
+    //! is one nobody finds.
+    property bool timelineExpanded: true
+    //! How many operations the field has recorded, for the toggle's label. Read through the field rather
+    //! than `recentOps.length`, because `recentOps` is capped for display while this is the real total.
+    readonly property int opCount: root.field ? root.field.eventCount : 0
 
     NavigationPanel {
         id: navPanel
@@ -95,6 +102,58 @@ Item {
             horizontalAlignment: Text.AlignLeft
             wrapMode: Text.WordWrap
             text: root.field ? root.field.statusText : ""
+        }
+
+        //! ── The information field's timeline ──────────────────────────────────────────────
+        //! ⛔ THIS WAS LOST when the panel was rebuilt around the conversation, and its absence is not
+        //! cosmetic: the transcript is what was SAID, this is what HAPPENED. An edit the user made with
+        //! the mouse appears here and nowhere in the conversation, and a refused tool call appears in
+        //! the conversation and nowhere here. Without this the panel cannot answer "what just happened
+        //! to my score", which is half of what the panel is for.
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 4
+
+            //! A real `FlatButton` with an accessible name, for the same reason as the others: a
+            //! hand-drawn toggle cannot be reached by UI Automation, so the panel could not be verified
+            //! from a script (维护手册.md §7.6).
+            FlatButton {
+                id: timelineToggle
+
+                Layout.fillWidth: true
+                accessible.name: qsTrc("agentharness", "Show or hide the score timeline")
+                text: root.timelineExpanded
+                      ? qsTrc("agentharness", "Hide what happened")
+                      : qsTrc("agentharness", "What happened (%1)").arg(root.opCount)
+
+                onClicked: {
+                    root.timelineExpanded = !root.timelineExpanded
+                }
+            }
+        }
+
+        StyledListView {
+            id: timelineView
+
+            Layout.fillWidth: true
+            //! Expanded shows a fixed number of rows rather than filling: the timeline is a reference
+            //! you glance at, and letting it take the panel would push the conversation - the thing you
+            //! are actually working in - down to nothing.
+            Layout.preferredHeight: root.timelineExpanded ? Math.min(6, Math.max(1, root.opCount)) * 30 : 0
+            visible: root.timelineExpanded
+            clip: true
+
+            model: root.field ? root.field.recentOps : []
+            spacing: 0
+
+            delegate: AgentTimelineRow {
+                required property var modelData
+
+                width: timelineView.width
+                line: modelData.line
+                isUndo: modelData.isUndo === true
+                isRedo: modelData.isRedo === true
+            }
         }
 
         //! ── The conversation ──────────────────────────────────────────────────────────────

@@ -73,6 +73,7 @@ qt_add_qml_module(agentharness_qml
     QML_FILES
         AgentPanel.qml
         AgentTranscriptRow.qml
+        AgentTimelineRow.qml
 
     IMPORTS
         TARGET muse_ui_qml
