@@ -225,24 +225,48 @@ public:
     //! Number of events in the session log.
     Q_INVOKABLE int sessionEventCount() const;
 
-    //! ── The agent loop ────────────────────────────────────────────────────────────────────────
+    //! ── The agent loop, as QML sees it ────────────────────────────────────────────────────────
+    //! ⛔ These are Q_PROPERTIES, not Q_INVOKABLE getters, and that is load-bearing: a QML binding to
+    //! an invokable function is evaluated ONCE and never re-evaluated, because QML has nothing to
+    //! connect to. The first version exposed them as `Q_INVOKABLE QString agentTranscript() const`
+    //! and the panel stayed empty forever while the loop ran perfectly - the log showed twelve
+    //! events and the transcript showed none. A read-only view of changing state must be a property.
+    Q_PROPERTY(QVariantList agentTranscript READ agentTranscript NOTIFY fieldChanged)
+    Q_PROPERTY(QString agentStreamingText READ agentStreamingText NOTIFY fieldChanged)
+    Q_PROPERTY(QString agentStreamingReasoning READ agentStreamingReasoning NOTIFY fieldChanged)
+    Q_PROPERTY(bool agentRunning READ agentRunning NOTIFY fieldChanged)
+    Q_PROPERTY(bool agentConfigured READ agentConfigured NOTIFY fieldChanged)
+    Q_PROPERTY(QString agentLastError READ agentLastError NOTIFY fieldChanged)
+    Q_PROPERTY(QString agentApiKeySource READ agentApiKeySource NOTIFY fieldChanged)
+
     //! Send a user message and run a turn. Returns immediately: the loop is asynchronous, and
     //! blocking here would freeze the editor for the length of a model response.
     Q_INVOKABLE void sendToAgent(const QString& text);
     Q_INVOKABLE void abortAgent();
-    //! Whether a turn is currently running (the panel disables its input while it is).
-    Q_INVOKABLE bool agentRunning() const;
-    //! Whether an API key is available. The panel says "not configured" rather than letting the user
-    //! send a message that will fail on the wire.
-    Q_INVOKABLE bool agentConfigured() const;
-    //! The assistant's text so far in the running turn - the panel renders this live.
-    Q_INVOKABLE QString agentStreamingText() const;
-    Q_INVOKABLE QString agentStreamingReasoning() const;
-    Q_INVOKABLE QString agentLastError() const;
     Q_INVOKABLE QString agentModel() const;
     Q_INVOKABLE void setAgentModel(const QString& model);
     //! Override the API base URL (a gateway, or a local mock for verification).
     Q_INVOKABLE void setAgentBaseUrl(const QString& url);
+    //! Store an API key for this run. Held in memory only - see `agentApiKeySource()` for why it is
+    //! not written to settings yet.
+    Q_INVOKABLE void setAgentApiKey(const QString& key);
+
+    //! Whether a turn is currently running.
+    bool agentRunning() const;
+    //! Whether an API key is available. The panel says "not configured" rather than letting the user
+    //! send a message that will fail on the wire.
+    bool agentConfigured() const;
+    //! The assistant's text so far in the running turn - the panel renders this live.
+    QString agentStreamingText() const;
+    QString agentStreamingReasoning() const;
+    QString agentLastError() const;
+    //! Where the key came from, for the panel to display: "environment" / "set" / "none".
+    //! Reported rather than guessed at, because "it works on my machine" is usually an environment
+    //! variable someone forgot they set.
+    QString agentApiKeySource() const;
+    //! The conversation so far, oldest first, as `{ role, text, kind }` maps for the panel.
+    //! Built from the LOG, so what the panel shows and what the model was sent cannot diverge.
+    QVariantList agentTranscript() const;
 
     //! ── The write path ───────────────────────────────────────────────────────────────────────
     //! ⛔ Ask before writing. A disabled notation command is *silently skipped* by the controller's

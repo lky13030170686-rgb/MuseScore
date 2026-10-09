@@ -847,6 +847,100 @@ void FieldController::setAgentBaseUrl(const QString& url)
     m_transport->setBaseUrl(url);
 }
 
+void FieldController::setAgentApiKey(const QString& key)
+{
+    ensureAgentLoop();
+    m_transport->setApiKey(key);
+
+    if (fieldTraceEnabled()) {
+        //! Never log the key itself, not even a prefix. A log line is the easiest way for a secret to
+        //! end up somewhere it should not be.
+        LOGW() << "[agent-llm] api key set by the user (length" << key.size() << ")";
+    }
+}
+
+QString FieldController::agentApiKeySource() const
+{
+    FieldController* self = const_cast<FieldController*>(this);
+    self->ensureAgentLoop();
+
+    if (!m_transport->apiKey().isEmpty()) {
+        //! `LlmTransport::apiKey()` resolves the environment on first ask, so by this point a
+        //! non-empty key may have come from either place. The distinction is reported by asking the
+        //! environment directly - the transport does not need to remember where it got it.
+        return qEnvironmentVariableIsEmpty("DEEPSEEK_API_KEY")
+               ? QStringLiteral("set")
+               : QStringLiteral("environment");
+    }
+
+    return QStringLiteral("none");
+}
+
+QVariantList FieldController::agentTranscript() const
+{
+    //! Derived from the log, in the same spirit as the model history: the panel's transcript and the
+    //! model's messages are two projections of one record, so they cannot disagree about what was
+    //! said. Tool calls and results are shown because a user watching an agent work needs to see
+    //! *what it did*, not just what it said.
+    QVariantList out;
+
+    for (const SessionEvent& e : m_session.events()) {
+        if (e.type == SessionEvent::USER_MESSAGE) {
+            QVariantMap m;
+            m.insert(QStringLiteral("kind"), QStringLiteral("user"));
+            m.insert(QStringLiteral("role"), QStringLiteral("you"));
+            m.insert(QStringLiteral("text"), e.data.value(QStringLiteral("content")).toString());
+            out.append(m);
+            continue;
+        }
+
+        if (e.type == SessionEvent::ASSISTANT_MESSAGE) {
+            const QString text = e.data.value(QStringLiteral("content")).toString();
+            if (!text.isEmpty()) {
+                QVariantMap m;
+                m.insert(QStringLiteral("kind"), QStringLiteral("assistant"));
+                m.insert(QStringLiteral("role"), QStringLiteral("agent"));
+                m.insert(QStringLiteral("text"), text);
+                out.append(m);
+            }
+
+            const QJsonArray calls = e.data.value(QStringLiteral("toolCalls")).toArray();
+            for (const QJsonValue& v : calls) {
+                const QJsonObject fn = v.toObject().value(QStringLiteral("function")).toObject();
+                QVariantMap m;
+                m.insert(QStringLiteral("kind"), QStringLiteral("toolCall"));
+                m.insert(QStringLiteral("role"), QStringLiteral("tool"));
+                m.insert(QStringLiteral("text"), QStringLiteral("%1 %2")
+                         .arg(fn.value(QStringLiteral("name")).toString(),
+                              fn.value(QStringLiteral("arguments")).toString()));
+                out.append(m);
+            }
+            continue;
+        }
+
+        if (e.type == SessionEvent::TOOL_RESULT) {
+            QVariantMap m;
+            m.insert(QStringLiteral("kind"), QStringLiteral("toolResult"));
+            m.insert(QStringLiteral("role"), QStringLiteral("tool"));
+            m.insert(QStringLiteral("text"), e.data.value(QStringLiteral("content")).toString());
+            m.insert(QStringLiteral("isError"), e.data.value(QStringLiteral("isError")).toBool());
+            out.append(m);
+            continue;
+        }
+
+        if (e.type == SessionEvent::ASSISTANT_ATTEMPT) {
+            QVariantMap m;
+            m.insert(QStringLiteral("kind"), QStringLiteral("attempt"));
+            m.insert(QStringLiteral("role"), QStringLiteral("error"));
+            m.insert(QStringLiteral("text"), e.data.value(QStringLiteral("problem")).toString());
+            out.append(m);
+            continue;
+        }
+    }
+
+    return out;
+}
+
 QString FieldController::statusText() const
 {
     if (!m_score) {

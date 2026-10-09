@@ -20,6 +20,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 import QtQuick
+import QtQuick.Layouts
 
 import Muse.Ui
 import Muse.UiComponents
@@ -28,15 +29,26 @@ import MuseScore.AgentHarness
 /*!
     The Agent panel: a side dock on the notation page.
 
-    \b Why a side dock and not a page. The whole point of the agent is that its edits land in the
-    score the user is looking at. A separate main page would hide the score while the agent works,
-    so the user would have to take the result on faith.
+    \b What it is. Two halves, and they are the two halves of the whole subsystem:
 
-    \b What it shows today (M0/M1). The information field, live: one row per recorded operation,
-    with the undo-stack's own name for it. This is not decoration - it is the visible half of the
-    M1 acceptance criterion ("change a few notes by hand and the field's operations line up with
-    what you did"). The chat half arrives with the agent loop in M2; the panel is laid out to take
-    it without restructuring.
+      1. **The conversation** - talk to the agent, watch it call tools, see what came back. This is the
+         "write" side's face: every tool call here goes through the tool table and lands on the score.
+      2. **The information field** - what has happened to this score, newest first, as the undo
+         stack's own names. This is the "read" side's face.
+
+    They are in one panel on purpose. The point of the agent is that its edits land in the score the
+    user is looking at, and the point of the timeline is to see those edits *as* edits - together they
+    answer "what is it doing, and what did it just do".
+
+    \b Why the transcript comes from the log. `agentTranscript()` is derived from the session log, the
+    same record the model's history is derived from. A panel that kept its own message list would be a
+    second truth, and the first symptom of drift would be the user reading a transcript that does not
+    match what the agent actually saw.
+
+    \b Accessibility is a build requirement, not a nicety. Controls are real `FlatButton`s with
+    `accessible.name`, and the input is a real `TextInputField`. A hand-drawn `Rectangle` +
+    `MouseArea` cannot be reached by UI Automation, which would make this panel impossible to verify
+    from a script (维护手册.md §7.6 - synthetic mouse input cannot reach a Qt Quick canvas at all).
 */
 Item {
     id: root
@@ -50,6 +62,15 @@ Item {
     //! the panel - i.e. it would be missing exactly the history they opened it to ask about.
     property var field
 
+    readonly property bool configured: root.field ? root.field.agentConfigured : false
+    readonly property bool running: root.field ? root.field.agentRunning : false
+    //! Live streaming text. Held here rather than appended to the transcript: the transcript is the
+    //! durable record and is rebuilt only when an event is logged, whereas this changes on every
+    //! token. Mixing them would rebuild the whole list per token.
+    readonly property string streaming: root.field ? root.field.agentStreamingText : ""
+    readonly property string lastError: root.field ? root.field.agentLastError : ""
+    readonly property string keySource: root.field ? root.field.agentApiKeySource : "none"
+
     NavigationPanel {
         id: navPanel
         name: "AgentHarnessSection"
@@ -57,71 +78,183 @@ Item {
         enabled: root.enabled && root.visible
     }
 
-    Column {
+    //! ⛔ A `ColumnLayout`, not a `Column` with hand-computed heights.
+    //! The first version gave the transcript `parent.height - y - inputArea.height`, which looked
+    //! right and was not: the streaming label and the error line sit between them, so the input area
+    //! was pushed past the bottom of the panel and its buttons were clipped - the panel showed a
+    //! conversation and no way to continue it. A layout that allocates the flexible child LAST cannot
+    //! get that wrong, and does not need updating when a row is added.
+    ColumnLayout {
         anchors.fill: parent
         anchors.margins: 8
-        spacing: 8
+        spacing: 6
 
-        //! ── Header: what the field is looking at right now ────────────────────────────
+        //! ── Header: what the field is looking at right now ────────────────────────────────
         StyledTextLabel {
-            width: parent.width
+            Layout.fillWidth: true
             horizontalAlignment: Text.AlignLeft
             wrapMode: Text.WordWrap
             text: root.field ? root.field.statusText : ""
         }
 
-        //! ── The record itself, newest first ───────────────────────────────────────────
-        //! Shows the SEMANTIC layer (`recentOps`), not the raw one. The raw layer is what makes the
-        //! derivation re-runnable; this is what a reader actually wants - the undo stack's own name
-        //! for the operation, plus where it happened in bars and beats rather than ticks.
+        //! ── The conversation ──────────────────────────────────────────────────────────────
+        //! `Layout.fillHeight` with a low minimum: it takes the space nobody else needs, and yields
+        //! when the controls below grow.
         StyledListView {
-            id: eventsView
+            id: transcriptView
 
-            width: parent.width
-            height: parent.height - y - hintLabel.height - parent.spacing
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 60
 
-            model: root.field ? root.field.recentOps : []
-            spacing: 2
+            model: root.field ? root.field.agentTranscript : []
+            spacing: 6
             clip: true
 
-            delegate: ListItemBlank {
-                id: eventDelegate
-
+            delegate: AgentTranscriptRow {
                 required property var modelData
-                required property int index
 
-                width: eventsView.width
-                height: 34
+                width: transcriptView.width
+                kind: modelData.kind
+                roleLabel: modelData.role
+                body: modelData.text
+                isError: modelData.isError === true
+            }
 
-                //! Undo and redo are marked by colour, not by a filled row: the text colour is
-                //! what carries the meaning, and it keeps the list readable when several rows
-                //! in a row are undos. NOTE: only colours verified to exist on `ui.theme` are
-                //! used here - a typo in a theme property fails at runtime, not at build time.
-                StyledTextLabel {
-                    anchors.fill: parent
-                    anchors.leftMargin: 6
-                    anchors.rightMargin: 6
-                    horizontalAlignment: Text.AlignLeft
-                    elide: Text.ElideRight
-                    color: eventDelegate.modelData.isUndo ? ui.theme.buttonColor
-                           : eventDelegate.modelData.isRedo ? ui.theme.accentColor
-                           : ui.theme.fontPrimaryColor
-                    //! `line` is SemanticOp::toString() computed in C++ - one place decides how an
-                    //! operation reads, so the panel and the log cannot describe it differently.
-                    text: eventDelegate.modelData.line
+            //! Follow the tail while the agent is working. Only while running: scrolling a finished
+            //! transcript out from under a reader who is scrolling it is worse than not following.
+            onCountChanged: {
+                if (root.running) {
+                    positionViewAtEnd()
                 }
             }
         }
 
+        //! ── Live stream, so the panel is not silent while the model is thinking ───────────
         StyledTextLabel {
-            id: hintLabel
-            width: parent.width
+            id: streamingLabel
+
+            Layout.fillWidth: true
             horizontalAlignment: Text.AlignLeft
             wrapMode: Text.WordWrap
-            opacity: 0.7
-            text: root.field && root.field.hasScore
-                  ? qsTrc("agentharness", "Recording every change to this score. Set MUSE_AGENT_FIELD_TRACE=1 to also write each one to the log.")
-                  : qsTrc("agentharness", "Open a score to start recording.")
+            visible: root.streaming.length > 0 || root.running
+            opacity: 0.8
+            //! Capped: this is a liveness indicator, and an unbounded label would grow the panel's
+            //! fixed content until the transcript had nothing left.
+            text: root.streaming.length > 0
+                  ? (root.streaming.length > 300 ? "…" + root.streaming.slice(-300) : root.streaming)
+                  : qsTrc("agentharness", "thinking…")
         }
+
+        //! ── Errors are shown, not swallowed ───────────────────────────────────────────────
+        StyledTextLabel {
+            Layout.fillWidth: true
+            horizontalAlignment: Text.AlignLeft
+            wrapMode: Text.WordWrap
+            visible: root.lastError.length > 0
+            color: ui.theme.buttonColor
+            text: root.lastError
+        }
+
+        //! ── Input ─────────────────────────────────────────────────────────────────────────
+        ColumnLayout {
+            id: inputArea
+
+            Layout.fillWidth: true
+            spacing: 4
+
+            TextInputField {
+                id: promptField
+
+                Layout.fillWidth: true
+                //! The accessible name is what a screen reader announces and what a UI-automation
+                //! script looks the field up by; without it the panel cannot be driven at all.
+                accessible.name: qsTrc("agentharness", "Message to the agent")
+                hint: root.configured
+                      ? qsTrc("agentharness", "Ask about this score, or tell it what to change")
+                      : qsTrc("agentharness", "Set an API key first")
+                enabled: root.configured && !root.running
+
+                onAccepted: {
+                    root.submit()
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
+
+                //! Real `FlatButton`s, not drawn ones: these are the controls a verification script
+                //! has to be able to press, and a `Rectangle` + `MouseArea` is unreachable
+                //! (维护手册.md §7.6 - synthetic mouse input cannot reach a Qt Quick canvas at all).
+                FlatButton {
+                    id: sendButton
+
+                    Layout.fillWidth: true
+                    accessible.name: qsTrc("agentharness", "Send to agent")
+                    text: qsTrc("agentharness", "Send")
+                    enabled: root.configured && !root.running && promptField.currentText.length > 0
+
+                    onClicked: {
+                        root.submit()
+                    }
+                }
+
+                FlatButton {
+                    id: keyButton
+
+                    accessible.name: qsTrc("agentharness", "Set API key")
+                    //! The source is shown because "it works on my machine" is usually an environment
+                    //! variable someone forgot they set - and a key that came from the environment
+                    //! cannot be cleared from here.
+                    text: root.keySource === "none"
+                          ? qsTrc("agentharness", "Set key")
+                          : qsTrc("agentharness", "Key: %1").arg(root.keySource)
+                    enabled: !root.running
+
+                    onClicked: {
+                        keyField.visible = !keyField.visible
+                    }
+                }
+            }
+
+            //! ── Key entry, revealed on demand ─────────────────────────────────────────────
+            //! Hidden by default so the panel does not look like it is asking for a secret the user
+            //! has already provided.
+            TextInputField {
+                id: keyField
+
+                Layout.fillWidth: true
+                visible: false
+                accessible.name: qsTrc("agentharness", "API key")
+                hint: qsTrc("agentharness", "Paste an API key (kept in memory for this session)")
+
+                onAccepted: {
+                    if (root.field && keyField.currentText.length > 0) {
+                        root.field.setAgentApiKey(keyField.currentText)
+                        keyField.currentText = ""
+                        keyField.visible = false
+                    }
+                }
+            }
+        }
+    }
+
+    //! One place that decides "can this be sent", so the button's enabled state and the Enter key
+    //! cannot disagree about it.
+    function submit() {
+        if (!root.field || !root.configured || root.running) {
+            return
+        }
+
+        const text = promptField.currentText
+        if (text.length === 0) {
+            return
+        }
+
+        //! Cleared BEFORE sending: if the turn fails immediately the text is gone, which is the honest
+        //! outcome - it was sent, and the transcript shows what happened to it.
+        promptField.currentText = ""
+        root.field.sendToAgent(text)
     }
 }
