@@ -947,6 +947,52 @@ bool FieldController::endUndoTransaction(bool commit)
     return after != before;
 }
 
+void FieldController::mergeTransactionsFrom(size_t startIdx)
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return;
+    }
+    INotationUndoStackPtr undoStack = notation->undoStack();
+    if (!undoStack) {
+        return;
+    }
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-write] merging transactions from index" << int(startIdx)
+               << "(current" << int(undoStack->currentStateIndex()) << ")";
+    }
+
+    undoStack->mergeTransactions(startIdx);
+}
+
+int FieldController::undoToRevision(int targetRevision)
+{
+    INotationPtr notation = context()->currentNotation();
+    if (!notation) {
+        return 0;
+    }
+    INotationUndoStackPtr undoStack = notation->undoStack();
+    if (!undoStack) {
+        return 0;
+    }
+
+    int undone = 0;
+    //! Bounded by the number of transactions available, so a stack that refuses to move cannot spin.
+    while (int(undoStack->currentStateIndex()) > targetRevision && undoStack->canUndo()) {
+        undoStack->undo(nullptr);
+        ++undone;
+    }
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-write] undoToRevision" << targetRevision
+               << "undid" << undone
+               << "now at" << int(undoStack->currentStateIndex());
+    }
+
+    return undone;
+}
+
 muse::async::Promise<muse::rcommand::Response> FieldController::dispatchCommandPromise(const QString& command,
                                                                                        const QJsonObject& args)
 {

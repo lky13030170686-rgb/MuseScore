@@ -270,27 +270,6 @@ ToolResult muse::agentharness::toolPatchApply(const QJsonObject& args, const Too
         return ToolResult::success(QStringLiteral("no operations requested"));
     }
 
-    //! ⛔ TEMPORARY GUARD, and it must stay until the sequencing is fixed.
-    //!
-    //! The multi-operation path does not work yet: the transaction opens and commits as ONE undo step
-    //! (that part is verified), but only the FIRST operation is applied - the chain that should start
-    //! each dispatch after the previous handler completes stalls after one. A single-operation batch is
-    //! correct end to end (verified: `append-measures {count:2}` inside `patch_apply` gives
-    //! `ticks=0..5760` and one undo step).
-    //!
-    //! Refusing is the right call while that is true. A tool that silently applies one of eight
-    //! requested edits is the worst thing in this table: the model believes the score changed, the
-    //! user sees a partial result, and the per-operation report would even look plausible. Refusing
-    //! with the reason is recoverable; a silent under-application is not.
-    if (opsArray.size() > 1) {
-        return ToolResult::failure(
-            QStringLiteral("patch_apply currently accepts only ONE operation per call (this build): the "
-                           "sequencing that makes several operations land as one undo step is not "
-                           "finished, and applying only the first of %1 would silently do part of what "
-                           "you asked. Use separate command_dispatch calls for now, and say so if you "
-                           "need them grouped.").arg(opsArray.size()));
-    }
-
     //! Same fence as `command_dispatch`, for the same reason - see the note there on why it is
     //! optional.
     if (args.contains(QStringLiteral("expectRevision"))) {

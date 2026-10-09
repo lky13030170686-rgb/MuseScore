@@ -36,6 +36,8 @@ struct BatchState {
     bool allOk = true;
     bool opened = false;
     QString failure;
+    //! The transaction index the merge starts from, captured before the first dispatch.
+    size_t startIndex = 0;
 };
 } // namespace
 
@@ -102,18 +104,32 @@ void ScoreActionGateway::performBatch(const QVector<WriteOp>& ops, const QString
     auto state = std::make_shared<BatchState>();
     FieldController* field = m_field;
 
-    //! ⛔⛔ THE TRANSACTION IS OPENED AND CLOSED INSIDE THE PROMISE CHAIN, and that is the whole
-    //! design. `dispatch()` only QUEUES the command handler (`make_promise` goes through
-    //! `Async::call`), so a transaction opened and closed around the dispatch calls commits BEFORE
-    //! any handler runs. The measured symptom was three commands producing three undo steps while the
-    //! transaction reported `committed=0` and the dispatches reported `txActive=1` - both true,
-    //! because nothing had run yet. Opening the transaction before the first dispatch and closing it
-    //! in the last dispatch's continuation is what puts the handlers inside it.
+    //! ⛔⛔ HOW A BATCH BECOMES ONE UNDO STEP, and it is not by opening a transaction.
+    //!
+    //! The obvious approach - open a transaction, dispatch, commit - does not work here, and the
+    //! reason is worth stating because two earlier versions got it wrong in different ways:
+    //!
+    //!   1. `dispatch()` is ASYNCHRONOUS (`make_promise` goes through `Async::call`), so a transaction
+    //!      opened and closed around the dispatch calls commits BEFORE any handler runs.
+    //!   2. Even with the transaction held open across the completions, `append-measures` does not use
+    //!      it: that command reaches `Score::startCmd`, which calls `beginTransaction` DIRECTLY on the
+    //!      transaction manager, bypassing the notation undo stack. Measured: three appends produced
+    //!      `stateIndex 1→2→3→4` with the batch's transaction open the whole time, and the batch's
+    //!      `commitChanges` then found no active transaction at all.
+    //!
+    //! So the transaction cannot be IMPOSED from outside for these commands; it has to be
+    //! RECONSTRUCTED afterwards with `mergeTransactions`, which folds a range of transactions into the
+    //! first one - keeping its name, which is why the batch's action name is applied to the FIRST
+    //! command. That is what the rest of the application does, and it is the only lever that works for
+    //! commands that open their own.
+    //!
+    //! The batch's own transaction is still opened, because for commands that DO use `prepareChanges`
+    //! it is what groups them - and merging is then a no-op.
     auto chain = std::make_shared<std::function<void(int)>>();
 
     *chain = [field, ops, state, chain, actionName, done](int index) {
         if (index == 0) {
-            //! Refusals are checked BEFORE the transaction opens: a disabled command would be silently
+            //! Refusals are checked BEFORE anything is dispatched: a disabled command would be silently
             //! skipped by the controller's outer wrapper, so catching it here is the only chance
             //! (维护手册.md §4.8, 第 594 条). Nothing has been opened, so nothing needs rolling back.
             for (const WriteOp& op : ops) {
@@ -132,28 +148,44 @@ void ScoreActionGateway::performBatch(const QVector<WriteOp>& ops, const QString
                 state->results.append(r);
             }
 
+            //! Where the merge will start. Read BEFORE the first dispatch, so it is the index of the
+            //! transaction the first command is about to create.
+            state->startIndex = size_t(field->scoreRevision());
             field->beginUndoTransaction(actionName);
             state->opened = true;
         }
 
         if (index >= ops.size()) {
-            //! Every dispatch has completed. The handlers ran while the transaction was open, so
-            //! `Score::undo()` pushed into it and one Ctrl+Z takes the whole batch back.
+            //! Every dispatch has completed. Close the batch's own transaction first: for commands
+            //! that DO use `prepareChanges` it is what grouped them, and for the ones that open their
+            //! own it is a no-op (measured: `stateIndex 4 -> 4, committed=0`).
+            field->endUndoTransaction(true);
+            state->opened = false;
+
             for (const WriteResult& r : state->results) {
                 if (!r.ok && state->failure.isEmpty()) {
                     state->failure = QStringLiteral("%1: %2").arg(r.command, r.error);
                 }
             }
 
-            if (!state->allOk) {
-                //! ⛔ ROLLED BACK, and the results say so. A half-applied instruction is the worst
-                //! available outcome - the model believes it did the whole thing, the user sees part
-                //! of it, and neither can tell which part.
-                //!
+            if (state->allOk) {
+                //! Fold the per-command transactions into one, so the batch is a single undo step.
+                if (ops.size() > 1) {
+                    field->mergeTransactionsFrom(state->startIndex);
+                }
+            } else {
+                //! ⛔ UNDO BACK, do not merely "not merge". The commands that ran committed themselves
+                //! before the batch could decide, so by now the earlier ones are already on the undo
+                //! stack - closing the batch's transaction with `rollback` would roll back nothing.
+                //! Measured: a three-operation batch with a bad third operation left the first two
+                //! applied while the report said "rolled back". Undoing to the recorded revision is
+                //! the only way to make "NOTHING was applied" true after the fact.
+                LOGW() << "[agent-write] batch rolled back:" << state->failure;
+                field->undoToRevision(int(state->startIndex));
+
                 //! ⚠️ Only the SUCCESSFUL entries are relabelled. The failing one keeps its own
                 //! reason: it is the cause, and overwriting it with "rolled back with the rest" hides
                 //! the only line that says what to fix.
-                LOGW() << "[agent-write] batch rolled back:" << state->failure;
                 for (WriteResult& r : state->results) {
                     if (r.ok) {
                         r.ok = false;
@@ -161,47 +193,42 @@ void ScoreActionGateway::performBatch(const QVector<WriteOp>& ops, const QString
                                   .arg(state->failure);
                     }
                 }
-                field->endUndoTransaction(false);
-                state->opened = false;
-                done(state->results, false);
-                return;
             }
 
-            const bool committed = field->endUndoTransaction(true);
-            state->opened = false;
-
+            const int revision = field->scoreRevision();
             LOGW() << "[agent-write] batch done: ops=" << state->results.size()
-                   << "committed=" << committed
-                   << "revision=" << field->scoreRevision();
+                   << "ok=" << state->allOk
+                   << "revision=" << revision;
 
-            if (!committed) {
-                //! Every command was accepted but the transaction did not advance, which means the
-                //! framework rolled it back (a read-only score, or an error a command set). Saying so
-                //! is the difference between "the edit happened" and "the edit silently did not".
-                for (WriteResult& r : state->results) {
-                    r.ok = false;
-                    r.error = QStringLiteral("the transaction was rolled back by the framework");
-                }
-            }
-
-            done(state->results, committed);
+            done(state->results, state->allOk);
             return;
         }
 
         const WriteOp op = ops[index];
 
-        //! Serial, in model order: the next dispatch waits for the previous handler to finish. Every
-        //! tool in the table touches the same `Score`, and two writers at once is not a concurrency
-        //! problem worth having.
+        //! ⛔⛔ ONE `onResolve` PER PROMISE, and the reason is a trap worth naming: the callback
+        //! registry is keyed by RECEIVER, and `onResolve` registers with `Mode::SetOnce` - which
+        //! REPLACES an existing callback from the same receiver rather than adding a second one
+        //! (`channelimpl.h`: `if (mode == Asyncable::Mode::SetOnce) { return needIncrement; }`).
+        //!
+        //! The first version registered twice on the same promise with the same receiver: once to read
+        //! the response, once to advance the chain. The second call SILENTLY REPLACED the first, so
+        //! the error was never recorded - and the chain still looked like it worked, because the
+        //! surviving callback was the one that advanced. That is why the batch reported success while
+        //! only the first operation had been applied: the results were never filled in, so nothing
+        //! could fail.
+        //!
+        //! Serial, in model order: the next dispatch starts from this one's completion. Every tool in
+        //! the table touches the same `Score`, and two writers at once is not a concurrency problem
+        //! worth having.
         field->dispatchCommandPromise(op.command, op.params)
-        .onResolve(field, [state, index](const muse::rcommand::Response& res) {
+        .onResolve(field, [state, chain, index](const muse::rcommand::Response& res) {
             if (!res.ret) {
                 state->results[index].ok = false;
                 state->results[index].error = QString::fromStdString(res.ret.toString());
                 state->allOk = false;
             }
-        })
-        .onResolve(field, [chain, index](const muse::rcommand::Response&) {
+
             (*chain)(index + 1);
         });
     };

@@ -307,6 +307,35 @@ public:
     //! read-only score, or an error a command set) is reported as `false` rather than assumed.
     bool endUndoTransaction(bool commit);
 
+    //! Fold every transaction committed since `startIdx` into the one AT `startIdx`, so a batch of
+    //! commands becomes a single undo step under the first command's name.
+    //!
+    //! ⛔ WHY THIS IS NEEDED AT ALL, after `beginUndoTransaction` was supposed to do the job:
+    //! not every notation command opens its transaction through `prepareChanges`. `append-measures`
+    //! goes `NotationActionController::addBoxes` → `NotationInteraction::addBoxes` →
+    //! `Score::insertMeasure` → `Score::startCmd`, which calls `beginTransaction` DIRECTLY on the
+    //! transaction manager - bypassing the notation undo stack and therefore ignoring an already-open
+    //! transaction. Measured: three appends produced three transactions (`stateIndex 1→2→3→4`) even
+    //! though the batch's own transaction was open, and the batch's `commitChanges` then found no
+    //! active transaction at all.
+    //!
+    //! So the transaction cannot be imposed from outside for these commands; it has to be
+    //! RECONSTRUCTED afterwards. `UndoStack::mergeTransactions` exists for exactly this and is what the
+    //! rest of the application uses (`NotationUndoStack::mergeTransactions`).
+    void mergeTransactionsFrom(size_t startIdx);
+
+    //! Undo back to `targetRevision`, undoing one transaction at a time.
+    //!
+    //! ⛔ WHY A ROLLBACK IS NOT ENOUGH ON ITS OWN: the commands in a batch commit THEMSELVES
+    //! (`Score::startCmd` opens its own transaction), so by the time the batch discovers that one of
+    //! them failed, the earlier ones are already on the undo stack. Closing the batch's transaction
+    //! with `rollback` therefore rolls back nothing - measured: a three-operation batch with a bad
+    //! third operation left the first two applied while reporting "rolled back".
+    //!
+    //! Undoing to the recorded revision is the only way to make "nothing was applied" true after the
+    //! fact. Returns the number of transactions undone.
+    int undoToRevision(int targetRevision);
+
     //! Dispatch and hand back the promise, so the caller can continue when the handler has run.
     //! `dispatchCommand` is the synchronous-looking face of this; it cannot tell you when the work
     //! actually happened.
