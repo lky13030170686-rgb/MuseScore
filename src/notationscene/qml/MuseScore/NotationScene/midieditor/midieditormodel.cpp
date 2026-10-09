@@ -186,10 +186,12 @@ void MidiEditorModel::init()
     //! 上游的 `IF_ASSERT_FAILED(currentPlayer())` 上留一条断言（看起来像回归，其实只是太早）。
     m_demoPlaybackPending = qEnvironmentVariableIsSet("MUSE_MIDIEDITOR_DEMO_PLAYBACK");
     m_demoRecordPending = qEnvironmentVariableIsSet("MUSE_MIDIEDITOR_DEMO_RECORD");
+    m_demoAuditionPending = qEnvironmentVariableIsSet("MUSE_MIDIEDITOR_DEMO_AUDITION");
     playbackController()->playbackInitedChanged().onReceive(this, [this](bool inited) {
         if (inited) {
             applyDemoPlaybackIfPending();
             applyDemoRecordingIfPending();
+            applyDemoAuditionIfPending();
         }
     });
 
@@ -224,6 +226,7 @@ void MidiEditorModel::init()
 
     applyDemoPlaybackIfPending();
     applyDemoRecordingIfPending();
+    applyDemoAuditionIfPending();
 }
 
 void MidiEditorModel::applyDemoPlaybackIfPending()
@@ -1798,6 +1801,58 @@ void MidiEditorModel::applyDemoRecordingIfPending()
     }
 
     runDemoRecording();
+}
+
+//! 试听版的验证钩子（`MUSE_MIDIEDITOR_DEMO_AUDITION=1`，**有意保留**）：**不录制**，只弹三个音
+//! （走电脑键盘那条 `playVirtualKey()` 路 ⇒ 与硬件键盘**同一个发声调用**）。
+//! 为什么需要它：要判的是"**试听在"停止"与"播放中"两种状态下各能不能出声**"（2026-10-09 用户报
+//! 「按下有音符，没有声音」—— 录制中 = 播放中），而合成字母键需要焦点（只有起录才会
+//! `forceActiveFocus()`）、合成鼠标又到不了画布 ⇒ "停止状态下的试听"本来没法用脚本驱动。
+//! 不设这个环境变量时一行都不会执行。
+void MidiEditorModel::applyDemoAuditionIfPending()
+{
+    if (!m_demoAuditionPending || !m_hasScore || !playbackController()->isPlaybackInited()) {
+        return;
+    }
+
+    m_demoAuditionPending = false;
+
+    //! 与录制那个钩子共用同一个延时变量（页面切过来要十几秒，不留这段时间就拍不到）。
+    const int delayMs = qEnvironmentVariableIntValue("MUSE_MIDIEDITOR_DEMO_RECORD_DELAY");
+    if (delayMs > 0) {
+        QTimer::singleShot(delayMs, this, [this]() { runDemoAudition(); });
+        return;
+    }
+
+    runDemoAudition();
+}
+
+void MidiEditorModel::runDemoAudition()
+{
+    if (!m_hasScore) {
+        return;
+    }
+
+    struct Step {
+        int delayMs;
+        int note;
+        bool pressed;
+    };
+
+    //! C4 E4 G4：每个音按住 400ms、间隔 100ms（与录制那个钩子的手感一致）。
+    static const std::vector<Step> steps {
+        { 200, 60, true }, { 600, 60, false },
+        { 700, 64, true }, { 1100, 64, false },
+        { 1200, 67, true }, { 1600, 67, false },
+    };
+
+    LOGW() << "[midi-record] demo audition: 3 notes, no recording (see [midi-lat])";
+
+    for (const Step& step : steps) {
+        QTimer::singleShot(step.delayMs, this, [this, step]() {
+            playVirtualKey(step.note, step.pressed);
+        });
+    }
 }
 
 void MidiEditorModel::runDemoRecording()

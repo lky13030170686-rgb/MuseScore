@@ -532,6 +532,20 @@ private:
     //! 上面那个钩子的正体（延时到点之后才跑）。
     void runDemoRecording();
 
+    //! 试听版的验证钩子（`MUSE_MIDIEDITOR_DEMO_AUDITION`）：**不录制**，只走电脑键盘那条
+    //! `playVirtualKey()` 路弹三个音（C4/E4/G4，每个 400ms）。存在的理由：要判的是
+    //! 「**试听在"停止"与"播放中"两种状态下各能不能出声**」，而合成字母键需要焦点
+    //! （只有起录才会 `forceActiveFocus()`）、合成鼠标又到不了画布 ⇒ "停止状态下的试听"
+    //! 本来没法用脚本驱动。有了它两种状态都能跑：
+    //!   * `MUSE_MIDIEDITOR_DEMO_AUDITION=1` ⇒ 停止中试听
+    //!   * `MUSE_MIDIEDITOR_DEMO_RECORD=1` + `MUSE_MIDIEDITOR_DEMO_RECORD_KEYS=1` ⇒ 播放中（录制中）试听
+    //! 延时同样读 `MUSE_MIDIEDITOR_DEMO_RECORD_DELAY`（页面打开后推后多少毫秒）。
+    void applyDemoAuditionIfPending();
+
+    bool m_demoAuditionPending = false;
+
+    void runDemoAudition();
+
     //! ── 实时录制 ────────────────────────────────────────────────────────────────────
 
     //! 一条待处理的 MIDI 事件。**只有这三个字段 + 到达时刻**：音高/力度是整数，时间戳是墙钟毫秒。
