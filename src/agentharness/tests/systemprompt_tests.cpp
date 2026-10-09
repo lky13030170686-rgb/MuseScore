@@ -25,6 +25,7 @@
 #include <QJsonObject>
 
 #include "agentharness/qml/MuseScore/AgentHarness/systemprompt.h"
+#include "agentharness/qml/MuseScore/AgentHarness/tools.h"
 
 using namespace muse::agentharness;
 
@@ -58,6 +59,57 @@ TEST(AgentHarness_SystemPrompt, PromptDoesNotDuplicateToolDescriptions)
         //! description is not.
         EXPECT_FALSE(prompt.contains(spec.description))
             << "the prompt restates the description of " << spec.name.toStdString();
+    }
+}
+
+TEST(AgentHarness_SystemPrompt, EveryNoteToolIsDiscoverable)
+{
+    //! ⛔⛔ THE GUARD FOR A DRIFT THAT ALREADY HAPPENED ONCE. `note_capabilities` is the one place that
+    //! tells the model what the note vocabulary is, and it was a hand-written list - so when `note_tie`
+    //! was added the tool existed, was callable, and was NOT mentioned. Nothing failed: the capability
+    //! was simply invisible, which is the failure mode this whole project keeps meeting.
+    //
+    //! The list now derives from the table, and this test pins the invariant so a future tool cannot
+    //! silently fall out of it.
+    QStringList noteTools;
+    for (const ToolSpec& spec : toolTable()) {
+        if (spec.name.startsWith(QLatin1String("note_")) && spec.name != QLatin1String("note_capabilities")) {
+            noteTools.append(spec.name);
+        }
+    }
+
+    ASSERT_FALSE(noteTools.isEmpty()) << "there should be note tools to discover";
+
+    ToolContext ctx;   //! No field needed: the capabilities tool reads nothing.
+    const ToolResult result = toolNoteCapabilities(QJsonObject(), ctx);
+    ASSERT_TRUE(result.ok);
+
+    for (const QString& name : noteTools) {
+        EXPECT_TRUE(result.text.contains(name))
+            << name.toStdString() << " is in the tool table but not listed by note_capabilities, "
+            << "so the model has no way to learn it exists";
+    }
+}
+
+TEST(AgentHarness_SystemPrompt, NoteCapabilitiesDoesNotRestateToolDescriptions)
+{
+    //! The list reuses each tool's own `description` verbatim rather than paraphrasing it. A paraphrase
+    //! would be a SECOND description of the same tool, and the two would drift - which is the mistake
+    //! the capabilities tool was rewritten to stop making. So: whatever it prints about a tool must be
+    //! text that tool already publishes.
+    ToolContext ctx;
+    const ToolResult result = toolNoteCapabilities(QJsonObject(), ctx);
+    ASSERT_TRUE(result.ok);
+
+    for (const ToolSpec& spec : toolTable()) {
+        if (!spec.name.startsWith(QLatin1String("note_")) || spec.name == QLatin1String("note_capabilities")) {
+            continue;
+        }
+
+        QString description = spec.description;
+        description.replace(QLatin1Char('\n'), QLatin1Char(' '));
+        EXPECT_TRUE(result.text.contains(description))
+            << spec.name.toStdString() << "'s own description should appear verbatim";
     }
 }
 

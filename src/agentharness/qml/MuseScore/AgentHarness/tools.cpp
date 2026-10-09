@@ -606,30 +606,49 @@ ToolResult muse::agentharness::toolNoteTie(const QJsonObject& args, const ToolCo
 }
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
-    //! Written as prose with the argument names in it, because that is what the model needs in order to
-    //! call the tools: a bare list of tool names would still leave it guessing which argument carries
-    //! the pitch and which the position.
+    //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
+    //!
+    //! The first version was a hand-written list, and it went stale the moment `note_tie` was added:
+    //! the tool existed, the model could call it, and this tool - the one place that says what the
+    //! vocabulary is - did not mention it. Nothing failed; the capability was simply invisible.
+    //!
+    //! Deriving it means a new `note_*` tool appears here automatically. The invariant is enforced by a
+    //! check rather than by remembering: see the drift guard below.
     QStringList lines;
     lines.append(QStringLiteral("Operations that address a note or chord by position "
                                 "(measure/beat, both 1-based; `staff` defaults to 1; `note` is 0-based "
                                 "from the lowest and is required when a beat holds several notes):"));
     lines.append(QString());
-    lines.append(QStringLiteral("  note_set_pitch    measure, beat, pitch (MIDI, 60 = middle C)"));
-    lines.append(QStringLiteral("                    -> set one note's pitch; spelling comes from the key"));
-    lines.append(QStringLiteral("  note_transpose    measure, beat, semitones (negative goes down)"));
-    lines.append(QStringLiteral("                    -> move one note; 0 is refused"));
-    lines.append(QStringLiteral("  note_add          measure, beat, pitch"));
-    lines.append(QStringLiteral("                    -> add a pitch to the chord on that beat"));
-    lines.append(QStringLiteral("  note_remove       measure, beat, note"));
-    lines.append(QStringLiteral("                    -> remove one note; refuses to empty the chord"));
-    lines.append(QStringLiteral("  note_set_duration measure, beat, duration"));
-    lines.append(QStringLiteral("                    -> how long the beat lasts; all notes on the beat change"));
+
+    for (const ToolSpec& spec : toolTable()) {
+        if (!spec.name.startsWith(QLatin1String("note_")) || spec.name == QLatin1String("note_capabilities")) {
+            continue;
+        }
+
+        //! The tool's own `description` is reused verbatim, which is deliberate: it is the same text the
+        //! model already receives in the request's `tools` array, so the two cannot describe the same
+        //! tool differently. Restating it here would be a second description to keep in sync - the
+        //! exact mistake this function was rewritten to stop making.
+        QString description = spec.description;
+        description.replace(QLatin1Char('\n'), QLatin1Char(' '));
+
+        lines.append(QStringLiteral("  %1").arg(spec.name));
+        lines.append(QStringLiteral("      %1").arg(description));
+        lines.append(QStringLiteral("      arguments: %1")
+                     .arg(spec.parameters.value(QStringLiteral("properties")).toObject().keys()
+                          .join(QStringLiteral(", "))));
+    }
+
     lines.append(QString());
     lines.append(QStringLiteral("Duration names: %1 - optionally dotted, e.g. `dotted-quarter`, `quarter.`")
                  .arg(durationNames().join(QStringLiteral(", "))));
     lines.append(QString());
+    lines.append(QStringLiteral("Every one of these takes an optional `expectRevision`: pass the number "
+                                "`score_revision` gave you and the edit is refused if the score changed "
+                                "first, instead of landing on a score you have not seen."));
+    lines.append(QString());
     lines.append(QStringLiteral("For anything else, use command_list and command_dispatch: the score's own "
-                                "editing commands (insert measures, rests, ties, dynamics, and so on) are "
+                                "editing commands (insert measures, rests, dynamics, and so on) are "
                                 "reached that way. The two sets are complementary - a command URI cannot "
                                 "name a note, and a note recipe cannot insert a measure."));
 
