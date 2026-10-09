@@ -146,6 +146,39 @@ void ScoreActionGateway::performBatch(const QVector<WriteOp>& ops, const QString
                 if (ops.size() > 1) {
                     field->mergeTransactionsFrom(state->startIndex);
                 }
+
+                //! ── G3: THE SCORE MUST STILL MAKE SENSE ────────────────────────────────────────────
+                //!
+                //! ⛔⛔ WHY A WHOLE-SCORE CHECK IS NEEDED ON TOP OF PER-OPERATION VALIDATION. Every recipe
+                //! checks its own inputs, but a batch COMPOSES them, and composition is where invariants
+                //! that hold one at a time stop holding: two operations that are each legal can leave a bar
+                //! with more beats than its signature, or a voice whose contents exceed the measure.
+                //! `MasterScore::sanityCheck()` is upstream's own answer and the only check that sees the
+                //! document as a whole.
+                //!
+                //! ⚠️ The rollback is `undoToRevision`, NOT `rollbackChanges` - measured earlier (第 86 条):
+                //! a command that opens its OWN transaction has committed by the time the batch ends, so
+                //! rolling back the batch's transaction rolls back nothing.
+                //!
+                //! ⚠️ This is the last line of defence and it is expected to be SILENT in normal use. If it
+                //! ever fires, that is a bug in a recipe's validation, not a score the user made - and the
+                //! message says so rather than blaming the request.
+                const QString broken = field->sanityProblem();
+                if (!broken.isEmpty()) {
+                    LOGW() << "[agent-write] batch produced an unsound score, rolling back:" << broken;
+                    field->undoToRevision(int(state->startIndex));
+
+                    state->allOk = false;
+                    state->failure = QStringLiteral(
+                        "the %1 operation(s) would have left the score in a state that does not check out "
+                        "(%2), so NOTHING was applied. This is a bug in the tool, not in your request - "
+                        "please report it.").arg(ops.size()).arg(broken);
+                    for (WriteResult& r : state->results) {
+                        r.ok = false;
+                        r.error = QStringLiteral("rolled back: the score did not pass its own consistency "
+                                                 "check");
+                    }
+                }
             } else {
                 //! ⛔ UNDO BACK, do not merely "not merge". The commands that ran committed themselves
                 //! before the batch could decide, so by now the earlier ones are already on the undo

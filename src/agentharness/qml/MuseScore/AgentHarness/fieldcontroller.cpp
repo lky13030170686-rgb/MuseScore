@@ -1039,6 +1039,27 @@ RecipeResult FieldController::runNoteRecipe(const QString& actionName,
 
     return outcome;
 }
+QString FieldController::sanityProblem() const
+{
+    mu::engraving::Score* score = currentScore();
+    if (!score) {
+        return QString();
+    }
+
+    //! ⚠️ `masterScore()` and not the score itself: `sanityCheck` is declared on `MasterScore` and it walks
+    //! `scoreList()` - every part as well as the full score - which is what makes it a check of the WHOLE
+    //! document rather than of the part the user happens to be looking at.
+    mu::engraving::MasterScore* master = score->masterScore();
+    if (!master) {
+        return QString();
+    }
+
+    const muse::Ret result = master->sanityCheck();
+    if (result) {
+        return QString();
+    }
+    return QString::fromStdString(result.text());
+}
 int FieldController::undoToRevision(int targetRevision){
     INotationPtr notation = context()->currentNotation();
     if (!notation) {

@@ -1766,3 +1766,47 @@ TEST(AgentHarness_ScoreRecipes, ArticulationOnAMultiNoteChordNeedsAnIndex)
     EXPECT_FALSE(result.ok);
     EXPECT_TRUE(result.problem.contains(QStringLiteral("3 notes"))) << result.problem.toStdString();
 }
+//! ── The score-level consistency check (G3) ────────────────────────────────────────────────────
+//!
+//! ⛔⛔ WHAT THIS IS FOR, AND WHAT IT IS NOT. Every recipe validates its own inputs, but a BATCH composes
+//! them, and composition is where invariants that hold one at a time stop holding. `MasterScore::
+//! sanityCheck()` is upstream's own whole-document check and the only thing that sees the score as a
+//! whole. These tests pin the PREDICATE - that it accepts a sound score and reports a broken one - so the
+//! gate's silence in normal use means something.
+
+TEST(AgentHarness_ScoreRecipes, SanityCheckAcceptsTheTestScores)
+{
+    //! ⛔ THE MOST IMPORTANT CASE IS THE QUIET ONE. A gate that fires on healthy input is worse than no
+    //! gate: it turns every batch into a refusal, and the refusal blames the tool. So every fixture the
+    //! suite uses is run through it, because those are exactly the scores the tools are exercised on.
+    for (const muse::String& name : { NOTE_SCORE, CHORD_SCORE, TIE_SCORE, EMPTY_SCORE }) {
+        const auto score = loadScore(name);
+        ASSERT_TRUE(score) << "fixture missing";
+        const muse::Ret result = score->sanityCheck();
+        EXPECT_TRUE(result) << "the fixture should be sound, but: " << result.text();
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, SanityCheckReportsAMeasureThatDoesNotAddUp)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ AND THE DETECTION IS WORTH PINNING TOO, or the gate would pass its tests by never firing.
+    //! `undoChangeChordRestLen` is used deliberately here INSTEAD of `setChordDuration`: the recipe has a
+    //! gate that refuses a duration which does not fit, and this test needs to actually produce the broken
+    //! state to prove `sanityCheck` sees it. Using the raw upstream call is the only way to make a score
+    //! that is wrong on purpose.
+    score->startCmd(muse::TranslatableString::untranslatable("agentharness test"));
+    const NoteLookup found = chordAt(score.get(), address(1, 4), 0);
+    ASSERT_TRUE(found.found());
+    //! A whole note starting on beat 4 of a 4/4 bar: one beat of room, four beats of content.
+    mu::engraving::TDuration tooLong;
+    tooLong.setType(mu::engraving::DurationType::V_WHOLE);
+    score->undoChangeChordRestLen(found.chord, tooLong);
+    score->endCmd();
+
+    const muse::Ret result = score->sanityCheck();
+    EXPECT_FALSE(result) << "a bar holding more beats than its signature must be reported";
+    EXPECT_FALSE(result.text().empty()) << "and the report must say something";
+}

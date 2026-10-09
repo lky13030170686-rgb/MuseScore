@@ -342,6 +342,24 @@ public:
     //! fact. Returns the number of transactions undone.
     int undoToRevision(int targetRevision);
 
+    //! Whether the score still makes sense - the G3 gate of the plan.
+    //!
+    //! ⛔⛔ WHY THIS IS THE LAST LINE OF DEFENCE AND NOT A NICETY. Every recipe validates its own inputs, but
+    //! a BATCH composes them, and composition is where invariants that hold one at a time stop holding: two
+    //! operations that are each legal can leave a bar with more beats than its signature, or a voice whose
+    //! contents exceed the measure. `MasterScore::sanityCheck()` is upstream's own answer - it walks every
+    //! measure and reports "Incomplete measure" and friends - and it is the only check that sees the score
+    //! as a whole rather than one edit at a time.
+    //!
+    //! ⚠️ The plan calls this "事务内 sanity 回滚", and the ROLLBACK is by `undoToRevision` rather than by
+    //! `rollbackChanges`, for a reason measured earlier (第 86 条): a command that opens its OWN transaction
+    //! has already committed by the time the batch ends, so rolling back the batch's transaction rolls back
+    //! nothing. Undoing to the recorded revision is the only way to make "nothing was applied" true after
+    //! the fact.
+    //!
+    //! @return an empty string when the score is sound, or what is wrong with it
+    QString sanityProblem() const;
+
     //! Run a note recipe against the current score, inside a transaction.
     //!
     //! ⛔ The transaction is opened HERE and not by the caller. A recipe pushes `UndoableCommand`s, and
