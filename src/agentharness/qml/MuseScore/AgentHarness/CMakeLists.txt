@@ -32,6 +32,14 @@ qt_add_qml_module(agentharness_qml
         fieldcontroller.h
         panelconfig.cpp
         panelconfig.h
+        # The information field's other two layers. Both are deliberately pure functions of plain
+        # data (a measure grid and the raw event list) - no score, no context, no clock - so they are
+        # unit-testable without an application, which is what makes "the derivation is correct" a
+        # checkable claim rather than an opinion.
+        addressing.cpp
+        addressing.h
+        semanticderive.cpp
+        semanticderive.h
     QML_FILES
         AgentPanel.qml
 

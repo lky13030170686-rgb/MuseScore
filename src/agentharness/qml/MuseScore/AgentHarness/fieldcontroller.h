@@ -35,6 +35,8 @@
 #include "context/iglobalcontext.h"
 #include "interactive/iinteractive.h"
 
+#include "addressing.h"
+
 namespace mu::engraving {
 class Score;
 struct ScoreChanges;
@@ -140,6 +142,9 @@ class FieldController : public QObject, public muse::Contextable, public muse::a
     Q_PROPERTY(bool hasScore READ hasScore NOTIFY fieldChanged)
     //! The most recent events, newest first, as plain maps for QML.
     Q_PROPERTY(QVariantList recentEvents READ recentEvents NOTIFY fieldChanged)
+    //! The most recent operations as a reader should see them (semantic layer), newest first.
+    //! Derived from the raw events on demand - see semanticderive.h for why it is not stored.
+    Q_PROPERTY(QVariantList recentOps READ recentOps NOTIFY fieldChanged)
     //! Human-readable one-line status, for the panel header.
     Q_PROPERTY(QString statusText READ statusText NOTIFY fieldChanged)
 
@@ -170,10 +175,25 @@ public:
     int staffCount() const { return m_staffCount; }
     bool hasScore() const { return m_score != nullptr; }
     QVariantList recentEvents() const;
+    //! Semantic layer, newest first. Pure derivation from `events()` + the measure grid.
+    QVariantList recentOps() const;
     QString statusText() const;
 
     //! Test/diagnostic seam: the raw events themselves, oldest first.
     const std::deque<RawFieldEvent>& events() const { return m_events; }
+    //! Test/diagnostic seam: the measure grid the semantic layer addresses against.
+    const MeasureGrid& measureGrid() const { return m_grid; }
+
+    //! The field this many raw events deep is plenty; older ones are dropped (and counted).
+    static constexpr size_t MAX_EVENTS = 512;
+    //! How many events the QML panel is shown at once.
+    static constexpr int PANEL_EVENT_LIMIT = 30;
+    //! Command types and element types share one histogram; this keeps them from colliding.
+    //! Sized well above the number of `CommandType` values (see undoablecommand.h).
+    //! PUBLIC because the packing is done here and the unpacking is done in `semanticderive.cpp`:
+    //! both sides must read the same number, and a private constant would force the other side to
+    //! repeat the literal - which is how two halves of one rule drift apart.
+    static constexpr int TYPE_BUCKET_OFFSET = 1000;
 
 signals:
     void fieldChanged();
@@ -189,12 +209,12 @@ private:
     void record(RawFieldEvent event);
     void noteActionFromUndoStack(RawFieldEvent& event) const;
 
-    //! The field this many raw events deep is plenty; older ones are dropped (and counted).
-    static constexpr size_t MAX_EVENTS = 512;
-    //! How many events the QML panel is shown at once.
-    static constexpr int PANEL_EVENT_LIMIT = 30;
-
     mu::engraving::Score* m_score = nullptr;
+
+    //! Flattened measure grid, rebuilt whenever the score changes. Kept as a value (never pointers)
+    //! for the same reason nothing else here caches engraving objects: a stale grid means the model
+    //! is told the wrong bar, which is the most expensive failure this subsystem can have.
+    MeasureGrid m_grid;
 
     std::deque<RawFieldEvent> m_events;
     quint64 m_nextSeq = 1;

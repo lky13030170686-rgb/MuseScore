@@ -35,6 +35,9 @@
 #include "notation/inotationelements.h"
 #include "notation/inotationundostack.h"
 
+#include "addressing.h"
+#include "semanticderive.h"
+
 using namespace muse;
 using namespace muse::agentharness;
 //! NOTE `INotationPtr` / `INotationUndoStackPtr` live in `mu::notation`, not `muse::notation` -
@@ -54,8 +57,8 @@ static bool fieldTraceEnabled()
 }
 
 //! Command types and element types share one histogram; this keeps them from colliding.
-//! Sized well above the number of `CommandType` values (see undoablecommand.h).
-static constexpr int TYPE_BUCKET_OFFSET = 1000;
+//! The value itself lives on FieldController so `semanticderive.cpp` can use the same one.
+static constexpr int TYPE_BUCKET_OFFSET = FieldController::TYPE_BUCKET_OFFSET;
 
 FieldController::FieldController(QObject* parent)
     //! `Contextable` has NO default constructor: it must be handed the context it will resolve
@@ -175,12 +178,19 @@ void FieldController::refreshScoreFacts()
         m_scoreName.clear();
         m_measureCount = 0;
         m_staffCount = 0;
+        m_grid = MeasureGrid();
         return;
     }
 
     m_scoreName = m_score->name().toQString();
     m_measureCount = int(m_score->nmeasures());
     m_staffCount = int(m_score->nstaves());
+
+    //! The grid is rebuilt from the score on every change. It is a flat copy of numbers, so the cost
+    //! is one pass over the measures - cheap next to the layout work the same edit already triggered,
+    //! and it keeps the addresses honest. Caching it across edits would be the one thing that could
+    //! silently point at the wrong bar after a measure is inserted.
+    m_grid = buildMeasureGrid(m_score);
 }
 
 void FieldController::noteActionFromUndoStack(RawFieldEvent& event) const
@@ -349,6 +359,43 @@ QVariantList FieldController::recentEvents() const
         item.insert(QStringLiteral("staffTo"), e.staffTo);
         item.insert(QStringLiteral("objectCount"), e.objectCount);
         item.insert(QStringLiteral("kindCount"), int(e.typeCounts.size()));
+        out.append(item);
+    }
+
+    return out;
+}
+
+QVariantList FieldController::recentOps() const
+{
+    //! Derived on demand rather than kept in sync: `deriveSemanticOps` is pure, the raw ring is at
+    //! most a few hundred entries, and a stored copy would be one more thing that can disagree with
+    //! the facts it came from. The panel asks for 30 rows, so the derivation is truncated after the
+    //! fact - not before, because truncating the input would change what the newest ops are.
+    QVector<RawFieldEvent> raw;
+    raw.reserve(int(m_events.size()));
+    for (const RawFieldEvent& e : m_events) {
+        raw.append(e);
+    }
+
+    const QVector<SemanticOp> ops = deriveSemanticOps(raw, m_grid);
+
+    QVariantList out;
+    int taken = 0;
+    for (auto it = ops.crbegin(); it != ops.crend() && taken < PANEL_EVENT_LIMIT; ++it, ++taken) {
+        const SemanticOp& op = *it;
+        QVariantMap item;
+        item.insert(QStringLiteral("seq"), QVariant::fromValue(qulonglong(op.seq)));
+        item.insert(QStringLiteral("time"), op.wallClock);
+        item.insert(QStringLiteral("source"), op.source);
+        item.insert(QStringLiteral("action"), op.action);
+        item.insert(QStringLiteral("isUndo"), op.isUndo);
+        item.insert(QStringLiteral("isRedo"), op.isRedo);
+        item.insert(QStringLiteral("where"), op.where);
+        item.insert(QStringLiteral("tickFrom"), op.tickFrom);
+        item.insert(QStringLiteral("tickTo"), op.tickTo);
+        item.insert(QStringLiteral("objectCount"), op.objectCount);
+        item.insert(QStringLiteral("kinds"), op.kinds.join(QLatin1Char('+')));
+        item.insert(QStringLiteral("line"), op.toString());
         out.append(item);
     }
 

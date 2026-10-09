@@ -71,13 +71,16 @@ Item {
         }
 
         //! ── The record itself, newest first ───────────────────────────────────────────
+        //! Shows the SEMANTIC layer (`recentOps`), not the raw one. The raw layer is what makes the
+        //! derivation re-runnable; this is what a reader actually wants - the undo stack's own name
+        //! for the operation, plus where it happened in bars and beats rather than ticks.
         StyledListView {
             id: eventsView
 
             width: parent.width
             height: parent.height - y - hintLabel.height - parent.spacing
 
-            model: root.field ? root.field.recentEvents : []
+            model: root.field ? root.field.recentOps : []
             spacing: 2
             clip: true
 
@@ -103,14 +106,9 @@ Item {
                     color: eventDelegate.modelData.isUndo ? ui.theme.buttonColor
                            : eventDelegate.modelData.isRedo ? ui.theme.accentColor
                            : ui.theme.fontPrimaryColor
-                    text: {
-                        const e = eventDelegate.modelData
-                        const tag = e.isUndo ? "[undo] " : e.isRedo ? "[redo] " : ""
-                        const where = e.tickFrom >= 0
-                            ? " @tick " + e.tickFrom + (e.tickTo > e.tickFrom ? ".." + e.tickTo : "")
-                            : ""
-                        return "#" + e.seq + "  " + tag + e.action + where
-                    }
+                    //! `line` is SemanticOp::toString() computed in C++ - one place decides how an
+                    //! operation reads, so the panel and the log cannot describe it differently.
+                    text: eventDelegate.modelData.line
                 }
             }
         }
