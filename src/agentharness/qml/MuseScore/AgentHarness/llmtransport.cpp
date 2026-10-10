@@ -187,10 +187,24 @@ void LlmTransport::start(const QJsonObject& requestBody,
     //! own endpoint that means nothing there - harmless today, and exactly the kind of "harmless" that
     //! becomes a 400 the day the other gateway starts validating unknown headers.
     //!
+    //! ⛔ "AN OPENCODE ROUTE" IS NOT THE SAME AS "A URL CONTAINING opencode". The user's own OpenCodex
+    //! proxy answers on loopback and forwards to that same upstream - measured 2026-10-10:
+    //! `POST http://127.0.0.1:10100/v1/chat/completions` with a good key and the model this route serves
+    //! comes back `400 Provider error 400: Request is missing x-opencode-session and cannot be routed
+    //! efficiently.` Sending the header turns the same call into a 200 with a normal SSE stream
+    //! (`.../v1/models` lists the ids as `opencode-go/<model>`). So loopback counts as an opencode route:
+    //! a local OpenAI-compatible endpoint in this project's world IS the proxy in front of that gateway.
+    //! ⚠️ A generic local server (llama.cpp, ollama) ignores the header, which is why this is safe to
+    //! widen; the thing that must not happen is sending it to a NON-loopback third party.
+    //!
     //! ⚠️ The value is the harness's own session id when one was supplied, so retries and resumed turns
     //! keep the same routing identity; otherwise a fresh UUID, because an EMPTY value is not the same as
     //! an absent one and would fail the same check.
-    if (m_baseUrl.contains(QStringLiteral("opencode"))) {
+    const bool opencodeRoute = m_baseUrl.contains(QStringLiteral("opencode"))
+                               || m_baseUrl.contains(QStringLiteral("127.0.0.1"))
+                               || m_baseUrl.contains(QStringLiteral("localhost"))
+                               || m_baseUrl.contains(QStringLiteral("[::1]"));
+    if (opencodeRoute) {
         const QString session = m_sessionId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces)
                                                       : m_sessionId;
         request.setRawHeader("x-opencode-session", session.toUtf8());
