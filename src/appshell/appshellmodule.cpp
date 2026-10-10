@@ -73,6 +73,11 @@ void AppShellModule::resolveImports()
         ir->registerPageUri(Uri("musescore://home"));
         ir->registerPageUri(Uri("musescore://notation"));
         ir->registerPageUri(Uri("musescore://midi"));
+        //! NOTE: our addition - the Agent page (agent harness workspace). Registered HERE and mounted
+        //! in WindowContent.qml + listed in MainToolBarModel: three places, and a missing one is not a
+        //! compile error. Registering the URI without the toolbar entry = a page nobody can reach
+        //! (维护手册.md §4.9, 第 123 条).
+        ir->registerPageUri(Uri("musescore://agent"));
         ir->registerPageUri(Uri("musescore://sequencer"));
         ir->registerPageUri(Uri("musescore://publish"));
         ir->registerPageUri(Uri("musescore://devtools"));

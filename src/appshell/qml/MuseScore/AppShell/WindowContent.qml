@@ -34,6 +34,7 @@ import MuseScore.AgentHarness
 import "./HomePage"
 import "./NotationPage"
 import "./MidiEditorPage"
+import "./AgentPage"
 import "./PublishPage"
 import "./DevTools"
 
@@ -127,6 +128,15 @@ DockWindow {
 
         MidiEditorPage {
             topToolbarKeyNavSec: topToolbarKeyNavSec
+        },
+
+        //! The agent harness's own page - a sibling of MIDI, not a replacement for the notation
+        //! page's Agent panel. Both are windows onto the SAME field: this one is created here (the
+        //! field already lives at window level, see above) and is handed to the page, so switching
+        //! pages never starts a second record of the same score.
+        AgentPage {
+            topToolbarKeyNavSec: topToolbarKeyNavSec
+            agentField: agentField
         },
 
         PublishPage {

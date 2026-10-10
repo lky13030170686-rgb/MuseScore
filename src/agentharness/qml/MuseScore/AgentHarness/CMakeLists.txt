@@ -76,6 +76,17 @@ qt_add_qml_module(agentharness_qml
         AgentPanel.qml
         AgentTranscriptRow.qml
         AgentTimelineRow.qml
+        # The three pieces the panel and the Agent page share. They are separate files because both
+        # surfaces must show the same conversation, timeline and composer: a second hand-written list
+        # or input row would be a second place to get "can this be sent" right.
+        AgentConversationView.qml
+        AgentTimelineList.qml
+        AgentComposer.qml
+        # The Agent page's own parts. The page shell itself lives in appshell (AgentPage/AgentPage.qml)
+        # next to the other pages; what it arranges is here, with the agent.
+        AgentWorkbench.qml
+        AgentFactsPanel.qml
+        AgentToolInspector.qml
 
     IMPORTS
         TARGET muse_ui_qml

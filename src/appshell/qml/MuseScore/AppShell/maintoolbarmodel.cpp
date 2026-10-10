@@ -29,6 +29,9 @@ using namespace mu::appshell;
 static const QString HOME_PAGE("musescore://home");
 static const QString NOTATION_PAGE("musescore://notation");
 static const QString MIDI_PAGE("musescore://midi");
+//! NOTE: our addition - the Agent page, the agent harness's own workspace (see WindowContent.qml).
+//! It sits next to MIDI deliberately: both are "the same project, shown as something else".
+static const QString AGENT_PAGE("musescore://agent");
 static const QString PUBLISH_PAGE("musescore://publish");
 static const QString DEVTOOLS_PAGE("musescore://devtools");
 
@@ -92,6 +95,11 @@ void MainToolBarModel::load()
     m_items << buildItem(muse::qtrc("appshell", "Score"), NOTATION_PAGE);
     //! NOTE: our addition - the MIDI (piano roll) page, a sibling of Score, sharing its data.
     m_items << buildItem(muse::qtrc("appshell", "MIDI"), MIDI_PAGE);
+    //! NOTE: our addition - the Agent page. ⚠️ Position is load-bearing: it goes between MIDI and
+    //! Publish so the tab order stays 主页|乐谱|MIDI|Agent|发布 (MIDI编辑页/README.md documents the
+    //! first three). The entry is a PAGE, not a dock panel - the notation page's Agent panel is a
+    //! separate, smaller window onto the same information field and stays where it is.
+    m_items << buildItem(muse::qtrc("appshell", "Agent"), AGENT_PAGE);
     m_items << buildItem(muse::qtrc("appshell", "Publish"), PUBLISH_PAGE);
 
     if (globalConfiguration()->devModeEnabled()) {

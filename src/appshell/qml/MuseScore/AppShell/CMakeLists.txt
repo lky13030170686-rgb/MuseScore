@@ -51,6 +51,7 @@ qt_add_qml_module(appshell_qml
     QML_FILES
         AboutDialog.qml
         AboutMusicXMLDialog.qml
+        AgentPage/AgentPage.qml
         AppWindow.qml
         DevTools/CorruptScore/CorruptScoreDevTools.qml
         DevTools/CrashHandler/CrashHandlerDevTools.qml

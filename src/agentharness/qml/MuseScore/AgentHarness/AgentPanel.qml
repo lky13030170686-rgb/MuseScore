@@ -40,6 +40,12 @@ import MuseScore.AgentHarness
     user is looking at, and the point of the timeline is to see those edits *as* edits - together they
     answer "what is it doing, and what did it just do".
 
+    \b Why the three pieces are separate files. The Agent page (`AgentPage.qml`) shows the same
+    conversation, timeline and composer with more room. A second hand-written list or input row would
+    be a second place to get "can this be sent" right, and the symptom would be a Send button that
+    looks enabled and quietly does nothing - so both surfaces are built from `AgentConversationView`,
+    `AgentTimelineList` and `AgentComposer`, and this file is only the layout that arranges them.
+
     \b Why the transcript comes from the log. `agentTranscript()` is derived from the session log, the
     same record the model's history is derived from. A panel that kept its own message list would be a
     second truth, and the first symptom of drift would be the user reading a transcript that does not
@@ -62,14 +68,6 @@ Item {
     //! the panel - i.e. it would be missing exactly the history they opened it to ask about.
     property var field
 
-    readonly property bool configured: root.field ? root.field.agentConfigured : false
-    readonly property bool running: root.field ? root.field.agentRunning : false
-    //! Live streaming text. Held here rather than appended to the transcript: the transcript is the
-    //! durable record and is rebuilt only when an event is logged, whereas this changes on every
-    //! token. Mixing them would rebuild the whole list per token.
-    readonly property string streaming: root.field ? root.field.agentStreamingText : ""
-    readonly property string lastError: root.field ? root.field.agentLastError : ""
-    readonly property string keySource: root.field ? root.field.agentApiKeySource : "none"
     //! Whether the timeline section is open. Starts OPEN: it is the answer to "what just happened to my
     //! score", which is the question a user opens this panel with, and a section that starts collapsed
     //! is one nobody finds.
@@ -132,188 +130,30 @@ Item {
             }
         }
 
-        StyledListView {
-            id: timelineView
-
+        AgentTimelineList {
             Layout.fillWidth: true
-            //! Expanded shows a fixed number of rows rather than filling: the timeline is a reference
-            //! you glance at, and letting it take the panel would push the conversation - the thing you
-            //! are actually working in - down to nothing.
-            Layout.preferredHeight: root.timelineExpanded ? Math.min(6, Math.max(1, root.opCount)) * 30 : 0
-            visible: root.timelineExpanded
-            clip: true
-
-            model: root.field ? root.field.recentOps : []
-            spacing: 0
-
-            delegate: AgentTimelineRow {
-                required property var modelData
-
-                width: timelineView.width
-                line: modelData.line
-                isUndo: modelData.isUndo === true
-                isRedo: modelData.isRedo === true
-            }
+            field: root.field
+            expanded: root.timelineExpanded
+            //! A fixed number of rows rather than filling: in a side panel the timeline is a reference
+            //! you glance at, and letting it take the space would push the conversation - the thing you
+            //! are actually working in - down to nothing. The page passes 0 and lets it fill.
+            visibleRows: 6
         }
 
         //! ── The conversation ──────────────────────────────────────────────────────────────
         //! `Layout.fillHeight` with a low minimum: it takes the space nobody else needs, and yields
         //! when the controls below grow.
-        StyledListView {
-            id: transcriptView
-
+        AgentConversationView {
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.minimumHeight: 60
-
-            model: root.field ? root.field.agentTranscript : []
-            spacing: 6
-            clip: true
-
-            delegate: AgentTranscriptRow {
-                required property var modelData
-
-                width: transcriptView.width
-                kind: modelData.kind
-                roleLabel: modelData.role
-                body: modelData.text
-                isError: modelData.isError === true
-            }
-
-            //! Follow the tail while the agent is working. Only while running: scrolling a finished
-            //! transcript out from under a reader who is scrolling it is worse than not following.
-            onCountChanged: {
-                if (root.running) {
-                    positionViewAtEnd()
-                }
-            }
-        }
-
-        //! ── Live stream, so the panel is not silent while the model is thinking ───────────
-        StyledTextLabel {
-            id: streamingLabel
-
-            Layout.fillWidth: true
-            horizontalAlignment: Text.AlignLeft
-            wrapMode: Text.WordWrap
-            visible: root.streaming.length > 0 || root.running
-            opacity: 0.8
-            //! Capped: this is a liveness indicator, and an unbounded label would grow the panel's
-            //! fixed content until the transcript had nothing left.
-            text: root.streaming.length > 0
-                  ? (root.streaming.length > 300 ? "…" + root.streaming.slice(-300) : root.streaming)
-                  : qsTrc("agentharness", "thinking…")
-        }
-
-        //! ── Errors are shown, not swallowed ───────────────────────────────────────────────
-        StyledTextLabel {
-            Layout.fillWidth: true
-            horizontalAlignment: Text.AlignLeft
-            wrapMode: Text.WordWrap
-            visible: root.lastError.length > 0
-            color: ui.theme.buttonColor
-            text: root.lastError
+            field: root.field
         }
 
         //! ── Input ─────────────────────────────────────────────────────────────────────────
-        ColumnLayout {
-            id: inputArea
-
+        AgentComposer {
             Layout.fillWidth: true
-            spacing: 4
-
-            TextInputField {
-                id: promptField
-
-                Layout.fillWidth: true
-                //! The accessible name is what a screen reader announces and what a UI-automation
-                //! script looks the field up by; without it the panel cannot be driven at all.
-                accessible.name: qsTrc("agentharness", "Message to the agent")
-                hint: root.configured
-                      ? qsTrc("agentharness", "Ask about this score, or tell it what to change")
-                      : qsTrc("agentharness", "Set an API key first")
-                enabled: root.configured && !root.running
-
-                onAccepted: {
-                    root.submit()
-                }
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 4
-
-                //! Real `FlatButton`s, not drawn ones: these are the controls a verification script
-                //! has to be able to press, and a `Rectangle` + `MouseArea` is unreachable
-                //! (维护手册.md §7.6 - synthetic mouse input cannot reach a Qt Quick canvas at all).
-                FlatButton {
-                    id: sendButton
-
-                    Layout.fillWidth: true
-                    accessible.name: qsTrc("agentharness", "Send to agent")
-                    text: qsTrc("agentharness", "Send")
-                    enabled: root.configured && !root.running && promptField.currentText.length > 0
-
-                    onClicked: {
-                        root.submit()
-                    }
-                }
-
-                FlatButton {
-                    id: keyButton
-
-                    accessible.name: qsTrc("agentharness", "Set API key")
-                    //! The source is shown because "it works on my machine" is usually an environment
-                    //! variable someone forgot they set - and a key that came from the environment
-                    //! cannot be cleared from here.
-                    text: root.keySource === "none"
-                          ? qsTrc("agentharness", "Set key")
-                          : qsTrc("agentharness", "Key: %1").arg(root.keySource)
-                    enabled: !root.running
-
-                    onClicked: {
-                        keyField.visible = !keyField.visible
-                    }
-                }
-            }
-
-            //! ── Key entry, revealed on demand ─────────────────────────────────────────────
-            //! Hidden by default so the panel does not look like it is asking for a secret the user
-            //! has already provided.
-            TextInputField {
-                id: keyField
-
-                Layout.fillWidth: true
-                visible: false
-                accessible.name: qsTrc("agentharness", "API key")
-                hint: qsTrc("agentharness", "Paste an API key (kept in memory for this session)")
-
-                onAccepted: {
-                    if (root.field && keyField.currentText.length > 0) {
-                        root.field.setAgentApiKey(keyField.currentText)
-                        keyField.currentText = ""
-                        keyField.visible = false
-                    }
-                }
-            }
+            field: root.field
         }
-    }
-
-    //! One place that decides "can this be sent", so the button's enabled state and the Enter key
-    //! cannot disagree about it.
-    function submit() {
-        if (!root.field || !root.configured || root.running) {
-            return
-        }
-
-        const text = promptField.currentText
-        if (text.length === 0) {
-            return
-        }
-
-        //! Cleared BEFORE sending: if the turn fails immediately the text is gone, which is the honest
-        //! outcome - it was sent, and the transcript shows what happened to it.
-        promptField.currentText = ""
-        root.field.sendToAgent(text)
     }
 }
