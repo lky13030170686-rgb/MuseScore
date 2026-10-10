@@ -63,6 +63,8 @@ qt_add_qml_module(agentharness_qml
         llmtransport.h
         # The write side's single entry point: enabled-gate + batch-as-one-undo-step.
         scoreactiongateway.cpp
+    spill.cpp
+    spill.h
         scoreactiongateway.h
         # Note-level writes: locating the note to edit, and the recipes that edit it. Separate from the
         # command layer because a command URI cannot name a note - see scorerecipes.h.

@@ -47,6 +47,7 @@
 #include "llmtransport.h"
 #include "semanticderive.h"
 #include "scoredigest.h"
+#include "spill.h"
 #include "systemprompt.h"
 #include "tools.h"
 
@@ -667,14 +668,20 @@ void FieldController::runToolAsync(const QString& name, const QString& argsJson,
         *answered = true;
         m_lastToolOk = r.ok;
 
+        //! ⛔ THE SPILL POINT, AND THERE IS EXACTLY ONE OF THEM. Both the synchronous and the asynchronous
+        //! return paths funnel through `done`, so putting the check here means a tool cannot forget it and
+        //! a new tool gets it for free. A per-tool check would be seventeen places to keep in step.
+        ToolResult shaped = r;
+        shaped.text = spillIfLarge(name, r.text);
+
         if (fieldTraceEnabled()) {
             LOGW() << "[agent-tool]" << name
                    << (r.ok ? "OK" : "FAILED")
                    << "(async) args=" << argsJson
-                   << "->" << r.text.left(200);
+                   << "->" << shaped.text.left(200);
         }
 
-        done(r);
+        done(shaped);
     };
 
     const ToolResult result = spec->execute(args, ctx);
@@ -696,7 +703,12 @@ void FieldController::runToolAsync(const QString& name, const QString& argsJson,
         }
 
         *answered = true;
-        done(result);
+        //! The other funnel: a tool that returned its result directly rather than through `ctx.complete`.
+        //! Both paths must shape the result, or a tool that happens to be synchronous would bypass the
+        //! spill - and which tools are synchronous is not something a caller can see.
+        ToolResult shaped = result;
+        shaped.text = spillIfLarge(name, result.text);
+        done(shaped);
         return;
     }
 
