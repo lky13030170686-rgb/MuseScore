@@ -1303,6 +1303,21 @@ void FieldController::ensureAgentLoop()
 
     m_loop = std::make_unique<AgentLoop>(&m_session, m_transport.get(), this);
 
+    //! ⛔ THE MODEL IS OVERRIDABLE FOR THE SAME REASON THE BASE URL IS, AND LEAVING IT FIXED MADE THE
+    //! HARNESS LOOK BROKEN AGAINST ANY OTHER GATEWAY.
+    //!
+    //! Measured: pointed at `https://opencode.ai/zen/go/v1` with a valid key, the first live turn came back
+    //! `HTTP 400` - because the loop asked for `deepseek-chat`, which that route does not serve (it serves
+    //! `deepseek-v4-flash` and friends). The harness had no way to say otherwise, so a working key, a
+    //! working URL and a working route all produced a failure that looked like a broken agent.
+    //!
+    //! ⚠️ The DEFAULT is unchanged (`AgentLoop`'s own `deepseek-chat`), so pointing at DeepSeek's own
+    //! endpoint still needs no configuration at all.
+    const QString modelOverride = qEnvironmentVariable("MUSE_AGENT_MODEL");
+    if (!modelOverride.isEmpty()) {
+        m_loop->setModel(modelOverride);
+    }
+
     connect(m_loop.get(), &AgentLoop::assistantText, this, [this](const QString&) {
         emit fieldChanged();
     });

@@ -56,6 +56,9 @@ public:
 
     //! Where to send. `baseUrl` is the API root, e.g. "https://api.deepseek.com".
     void setBaseUrl(const QString& baseUrl);
+
+    //! The conversation id for routes that require one. See the note where it is used in the request.
+    void setSessionId(const QString& sessionId) { m_sessionId = sessionId; }
     QString baseUrl() const { return m_baseUrl; }
 
     //! The bearer token. Read from the environment on first use (see `apiKey()`), never written to
@@ -107,6 +110,10 @@ private:
     QByteArray m_buffer;
 
     QString m_baseUrl;
+
+    //! The per-conversation id sent to OpenCode routes as `x-opencode-session`. Empty means "make one up
+    //! per request", which is what a caller that has no conversation identity of its own should get.
+    QString m_sessionId;
     //! `mutable` because `apiKey()` is const but resolves the environment lazily on first ask. The
     //! alternative - resolving in the constructor - would read the environment before a caller can
     //! override it, and would make the class untestable without touching the process environment.

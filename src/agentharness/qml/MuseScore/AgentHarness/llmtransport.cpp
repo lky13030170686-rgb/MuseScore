@@ -27,6 +27,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QTimer>
+#include <QUuid>
 #include <QUrl>
 
 #include "log.h"
@@ -170,6 +171,30 @@ void LlmTransport::start(const QJsonObject& requestBody,
     //! and the stream arrives as one lump at the end, which looks exactly like "the model is slow".
     request.setRawHeader("accept", "text/event-stream");
     request.setRawHeader("authorization", QByteArray("Bearer ") + key.toUtf8());
+
+    //! ⛔⛔ THE OPENCODE ROUTES REQUIRE A PER-CONVERSATION SESSION HEADER, AND WITHOUT IT *EVERY* REQUEST
+    //! IS REFUSED - with a message that does not name the header.
+    //!
+    //! Measured against `https://opencode.ai/zen/go/v1`: a well-formed request with a valid key and a
+    //! model id that route really serves comes back
+    //! `400 {"type":"MissingSessionID","message":"Request is missing x-opencode-session and cannot be
+    //! routed efficiently."}`. ⚠️ And an earlier probe that also omitted the field produced
+    //! `{"type":"ModelError","message":"Model  is not supported"}` - **with an empty name where the model
+    //! should be** - which reads like a bad model id and sends a caller off to try other names. That is
+    //! how this cost time: the real problem was a missing HEADER, and the error pointed at the BODY.
+    //!
+    //! ⚠️ It is sent ONLY to opencode routes. Adding it unconditionally would put a header on DeepSeek's
+    //! own endpoint that means nothing there - harmless today, and exactly the kind of "harmless" that
+    //! becomes a 400 the day the other gateway starts validating unknown headers.
+    //!
+    //! ⚠️ The value is the harness's own session id when one was supplied, so retries and resumed turns
+    //! keep the same routing identity; otherwise a fresh UUID, because an EMPTY value is not the same as
+    //! an absent one and would fail the same check.
+    if (m_baseUrl.contains(QStringLiteral("opencode"))) {
+        const QString session = m_sessionId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces)
+                                                      : m_sessionId;
+        request.setRawHeader("x-opencode-session", session.toUtf8());
+    }
 
     const QByteArray body = QJsonDocument(requestBody).toJson(QJsonDocument::Compact);
 
