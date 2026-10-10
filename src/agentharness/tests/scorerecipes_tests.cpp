@@ -29,6 +29,7 @@
 #include "engraving/dom/dynamic.h"
 #include "engraving/dom/hairpin.h"
 #include "engraving/dom/measure.h"
+#include "engraving/dom/part.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/rest.h"
@@ -1809,4 +1810,105 @@ TEST(AgentHarness_ScoreRecipes, SanityCheckReportsAMeasureThatDoesNotAddUp)
     const muse::Ret result = score->sanityCheck();
     EXPECT_FALSE(result) << "a bar holding more beats than its signature must be reported";
     EXPECT_FALSE(result.text().empty()) << "and the report must say something";
+}
+//! ── Parts and staves ──────────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_ScoreRecipes, AppendStaffAddsAStaffToThePart)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+    ASSERT_EQ(score->parts().size(), 1u) << "test.mscx has one part";
+    ASSERT_EQ(score->parts()[0]->nstaves(), 1u);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return appendStaff(score.get(), 0);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ COUNTED, not trusted to the return value - the same shape as the measure insert. `appendStaff`
+    //! returns a pointer, and a non-null pointer is not evidence that the part grew.
+    EXPECT_EQ(score->parts()[0]->nstaves(), 2u);
+
+    //! ⛔ AND THE SCORE MUST KNOW ABOUT IT TOO, not just the part. A staff that the part counts but the
+    //! score does not is a staff with no measures - it would draw as an empty line, or not at all.
+    EXPECT_EQ(score->nstaves(), 2u);
+}
+
+TEST(AgentHarness_ScoreRecipes, AppendStaffGivesTheNewStaffThePartsKeySignature)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Put the part in a key first, so "the new staff inherited it" is a fact rather than a coincidence of
+    //! both being C major.
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setKeySignature(score.get(), 1, -3);
+    }).ok);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return appendStaff(score.get(), 0);
+    }).ok);
+
+    //! ⛔ THIS IS THE PART OF `EditPart::appendStaff` THAT IS EASY TO LOSE. Wiring a `Staff` in by hand
+    //! (which `MasterScore` does internally) skips `adjustKeySigs`, and the result is a staff that reads in
+    //! a DIFFERENT KEY from the one above it - visible only by looking at the accidentals.
+    const NoteLookup at = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(at.found());
+    const mu::engraving::Staff* second = score->staff(1);
+    ASSERT_TRUE(second != nullptr);
+    EXPECT_EQ(int(second->key(at.chord->tick())), -3)
+        << "the new staff must inherit the part's key signature";
+}
+
+TEST(AgentHarness_ScoreRecipes, RemoveLastStaffTakesItAway)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return appendStaff(score.get(), 0);
+    }).ok);
+    ASSERT_EQ(score->parts()[0]->nstaves(), 2u);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return removeLastStaff(score.get(), 0);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_EQ(score->parts()[0]->nstaves(), 1u);
+    EXPECT_EQ(score->nstaves(), 1u);
+}
+
+TEST(AgentHarness_ScoreRecipes, RemoveLastStaffRefusesToLeaveThePartEmpty)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+    ASSERT_EQ(score->parts()[0]->nstaves(), 1u);
+
+    //! ⛔ A PART WITH NO STAVES IS NOT A SMALL PART, IT IS A BROKEN ONE - the same reasoning as "a score
+    //! needs at least one measure". The part's instrument is still there claiming a staff that does not
+    //! exist. Removing it is a request to remove the PART, which this tool deliberately does not do - and
+    //! the message says so rather than just refusing.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return removeLastStaff(score.get(), 0);
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("only one staff"))) << result.problem.toStdString();
+    EXPECT_EQ(score->parts()[0]->nstaves(), 1u) << "nothing may have been removed";
+}
+
+TEST(AgentHarness_ScoreRecipes, StaffToolsRefuseAPartThatDoesNotExist)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⚠️ The range is in the message. "No such part" without it leaves the caller guessing whether parts
+    //! are 0-based, 1-based, or counted per staff.
+    for (int bad : { -1, 1, 99 }) {
+        const RecipeResult result = runRecipe(score.get(), [&] {
+            return appendStaff(score.get(), bad);
+        });
+        EXPECT_FALSE(result.ok) << bad << " must be refused";
+        EXPECT_TRUE(result.problem.contains(QStringLiteral("0 to 0"))) << result.problem.toStdString();
+    }
 }

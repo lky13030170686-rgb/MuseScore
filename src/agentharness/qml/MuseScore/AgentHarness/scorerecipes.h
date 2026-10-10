@@ -228,6 +228,24 @@ RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int
 RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, int numerator,
                               int denominator);
 
+//! ── Parts and staves ──────────────────────────────────────────────────────────────────────────
+//! Adding and removing whole staves. These change how many lines the score is read on, which is a
+//! different kind of edit from anything else here: every other operation touches CONTENT, and this one
+//! touches the shape of the page.
+
+//! Append a staff to a part.
+//!
+//! @param partIndex 0-based index into `Score::parts()`
+//! @return a description of what was added, including the staff's new 1-based number
+RecipeResult appendStaff(mu::engraving::Score* score, int partIndex);
+
+//! Remove the last staff of a part.
+//!
+//! ⛔ REFUSED WHEN IT IS THE PART'S ONLY STAFF. A part with no staves is not a small part - it is a broken
+//! one, and the same reasoning as "a score needs at least one measure" applies here. Removing the last
+//! staff of a part is a request to remove the PART, which is a different operation this tool does not do.
+RecipeResult removeLastStaff(mu::engraving::Score* score, int partIndex);
+
 //! ── Articulations ─────────────────────────────────────────────────────────────────────────────
 //! Staccato, accent, tenuto and the rest. These attach to a NOTE, and they change how it is played -
 //! which makes them the third thing after ties and slurs that a model can confuse with the other two.

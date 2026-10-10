@@ -203,6 +203,10 @@ ToolResult toolMeasureInsert(const QJsonObject& args, const ToolContext& ctx);
 //! Write: remove a range of measures.
 ToolResult toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: add or remove a staff on a part.
+ToolResult toolStaffAdd(const QJsonObject& args, const ToolContext& ctx);
+ToolResult toolStaffRemove(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: add or remove an articulation on the note at an address.
 ToolResult toolNoteArticulation(const QJsonObject& args, const ToolContext& ctx);
 

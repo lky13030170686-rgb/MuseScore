@@ -1186,6 +1186,96 @@ ToolResult muse::agentharness::toolNoteArticulation(const QJsonObject& args, con
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+namespace {
+//! The part index a staff tool was given, or a failure that says what the valid range is.
+//! Shared by both directions, because "there is no part 3" must read the same either way.
+bool readPartIndex(const QJsonObject& args, const ToolContext& ctx, int& partIndex, ToolResult& failure)
+{
+    if (!readInt(args, QStringLiteral("part"), partIndex)) {
+        failure = ToolResult::failure(QStringLiteral("`part` is required: the 0-based index of the part"));
+        return false;
+    }
+
+    mu::engraving::Score* score = ctx.field->currentScore();
+    if (!score) {
+        failure = ToolResult::failure(QStringLiteral("no score is open"));
+        return false;
+    }
+
+    const int count = int(score->parts().size());
+    if (partIndex < 0 || partIndex >= count) {
+        //! ⚠️ The range is in the message. "No such part" without it leaves the caller guessing whether
+        //! parts are 0-based, 1-based, or counted per staff.
+        failure = ToolResult::failure(QStringLiteral("there is no part %1; the score has %2 part(s), "
+                                                     "numbered 0 to %3")
+                                      .arg(partIndex).arg(count).arg(count - 1));
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+ToolResult muse::agentharness::toolStaffAdd(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int partIndex = 0;
+    ToolResult failure;
+    if (!readPartIndex(args, ctx, partIndex, failure)) {
+        return failure;
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Add staff"), [&](mu::engraving::Score* score) {
+        return appendStaff(score, partIndex);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
+
+ToolResult muse::agentharness::toolStaffRemove(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int partIndex = 0;
+    ToolResult failure;
+    if (!readPartIndex(args, ctx, partIndex, failure)) {
+        return failure;
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Remove staff"), [&](mu::engraving::Score* score) {
+        return removeLastStaff(score, partIndex);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1779,6 +1869,35 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             toolNoteArticulation,
         },
         ToolSpec{
+            QStringLiteral("staff_add"),
+            QStringLiteral("Add a staff to a part - e.g. give a piano part a third staff. The new staff gets "
+                           "the part's key signature, joins its brace and barline group, and gets its own "
+                           "clef. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("part"), intProperty(QStringLiteral(
+                                                             "0-based index of the part, in the order the parts appear in the score.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("part") }),
+            toolStaffAdd,
+        },
+        ToolSpec{
+            QStringLiteral("staff_remove"),
+            QStringLiteral("Remove the last staff of a part. Refused when it is the part's only staff, "
+                           "because a part cannot have none. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("part"), intProperty(QStringLiteral(
+                                                             "0-based index of the part, in the order the parts appear in the score.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("part") }),
+            toolStaffRemove,
+        },
+        ToolSpec{
             QStringLiteral("note_tie"),
             QStringLiteral("Tie the note at an address to the next note of the SAME PITCH, remove that "
                            "tie, or toggle it. A tie changes how the notes SOUND (one longer note); a "
@@ -1874,6 +1993,8 @@ bool muse::agentharness::isBatchableTool(const QString& name)
         //! notation elements
         QStringLiteral("text_add"), QStringLiteral("dynamic_add"),
         QStringLiteral("hairpin_add"),
+        //! parts and staves
+        QStringLiteral("staff_add"), QStringLiteral("staff_remove"),
         //! signatures and structure
         QStringLiteral("key_signature_set"), QStringLiteral("time_signature_set"),
         QStringLiteral("measure_insert"), QStringLiteral("measure_remove"),

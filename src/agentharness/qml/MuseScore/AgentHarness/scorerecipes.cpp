@@ -36,11 +36,14 @@
 #include "engraving/dom/factory.h"
 #include "engraving/editing/editkeysig.h"
 #include "engraving/editing/editchord.h"
+#include "engraving/editing/editpart.h"
 #include "engraving/editing/edithairpin.h"
 #include "engraving/editing/edittimesig.h"
 #include "engraving/editing/transaction/transaction.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/measurebase.h"
+#include "engraving/dom/part.h"
+#include "engraving/dom/staff.h"
 #include "engraving/dom/timesig.h"
 #include "engraving/types/symnames.h"
 #include "engraving/dom/segment.h"
@@ -781,6 +784,96 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
     }
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
 }
+RecipeResult muse::agentharness::appendStaff(mu::engraving::Score* score, int partIndex)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const std::vector<mu::engraving::Part*>& parts = score->parts();
+    if (partIndex < 0 || partIndex >= int(parts.size())) {
+        return RecipeResult::failure(
+            QStringLiteral("there is no part %1; the score has %2 (0 to %3)")
+            .arg(partIndex).arg(parts.size()).arg(int(parts.size()) - 1));
+    }
+
+    mu::engraving::Part* part = parts[size_t(partIndex)];
+    const size_t before = part->nstaves();
+
+    //! ⛔ `EditPart::appendStaff`, upstream's own primitive. It does the wiring this would otherwise have
+    //! to repeat - and each piece of that wiring is a way to produce a staff that EXISTS but does not work:
+    //!   - `undoInsertStaff` puts it on the undo stack (a hand-linked `Staff` would not be undoable);
+    //!   - `adjustKeySigs` gives it the part's key signature (without it the new staff has none, so it
+    //!     reads in a different key from the staff above it);
+    //!   - `updateBracesAndBarlines` joins it to the part's brace and barline group (without it the staff
+    //!     hangs outside the bracket, which reads as a separate instrument);
+    //!   - and the instrument's clef list is extended (without it the staff has no clef of its own).
+    mu::engraving::Staff* added = mu::engraving::EditPart::appendStaff(score, part);
+    if (!added) {
+        return RecipeResult::failure(QStringLiteral("the staff could not be added to part %1")
+                                     .arg(partIndex));
+    }
+
+    //! ⚠️ VERIFIED BY EFFECT: `appendStaff` returns a pointer, and a non-null pointer is not evidence that
+    //! the part grew - the same shape as the measure insert. Counting is.
+    if (part->nstaves() != before + 1) {
+        return RecipeResult::failure(QStringLiteral("the part still has %1 staff/staves after the call, so "
+                                                    "nothing was added").arg(part->nstaves()));
+    }
+
+    return RecipeResult::success(QStringLiteral("added a staff to part %1, which now has %2 (the new one is "
+                                                "staff %3 of the score)")
+                                 .arg(partIndex).arg(part->nstaves()).arg(added->idx() + 1));
+}
+
+RecipeResult muse::agentharness::removeLastStaff(mu::engraving::Score* score, int partIndex)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const std::vector<mu::engraving::Part*>& parts = score->parts();
+    if (partIndex < 0 || partIndex >= int(parts.size())) {
+        return RecipeResult::failure(
+            QStringLiteral("there is no part %1; the score has %2 (0 to %3)")
+            .arg(partIndex).arg(parts.size()).arg(int(parts.size()) - 1));
+    }
+
+    mu::engraving::Part* part = parts[size_t(partIndex)];
+
+    //! ⛔ REFUSED WHEN IT IS THE ONLY STAFF, for the same reason the score refuses to lose its last
+    //! measure: a part with no staves is not a small part, it is a broken one - the notation layer has
+    //! nowhere to put the cursor for that part, and the part's instrument is still there claiming a staff
+    //! that does not exist. Removing it is a request to remove the PART, which is a different operation
+    //! this tool deliberately does not do.
+    if (part->nstaves() <= 1) {
+        return RecipeResult::failure(
+            QStringLiteral("part %1 has only one staff, and a part cannot have none. To remove the whole "
+                           "part, use the score's own staff/part dialog - this tool does not remove "
+                           "parts.").arg(partIndex));
+    }
+
+    const size_t before = part->nstaves();
+    mu::engraving::Staff* last = part->staff(before - 1);
+    if (!last) {
+        return RecipeResult::failure(QStringLiteral("the part's last staff could not be found"));
+    }
+
+    //! `EditPart::removeStaves` rather than `Score::undoRemoveStaff`: the plural form is the one upstream's
+    //! own part dialog calls, and it is the one that also fixes up the braces, the barlines and the
+    //! instrument's clef list - so the remaining staves are left in a consistent group rather than a group
+    //! with a hole in it.
+    mu::engraving::EditPart::removeStaves(score, { last });
+
+    if (part->nstaves() != before - 1) {
+        return RecipeResult::failure(QStringLiteral("the part still has %1 staff/staves after the call, so "
+                                                    "nothing was removed").arg(part->nstaves()));
+    }
+
+    return RecipeResult::success(QStringLiteral("removed the last staff of part %1, which now has %2")
+                                 .arg(partIndex).arg(part->nstaves()));
+}
+
 RecipeResult muse::agentharness::toggleArticulation(mu::engraving::Score* score, const ScoreAddress& address,
                                                    int voice, int noteIndex, const QString& name)
 {
