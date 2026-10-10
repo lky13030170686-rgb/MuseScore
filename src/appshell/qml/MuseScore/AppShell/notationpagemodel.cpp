@@ -169,6 +169,25 @@ QString NotationPageModel::percussionPanelName() const
     return PERCUSSION_PANEL_NAME;
 }
 
+QString NotationPageModel::agentPanelName() const
+{
+    //! Added by this fork - see the declaration for why this is a model accessor rather than a
+    //! literal repeated in the QML.
+    return AGENT_PANEL_NAME;
+}
+
+void NotationPageModel::openAgentPanel()
+{
+    //! ⛔⛔ WHY THIS IS NOT `DockPanel.open()`, WHICH IS WHAT THE FIRST TWO ATTEMPTS USED: `open()`
+    //! sets the item's `visible` and calls `m_dockWidget->open()`, and the page's persisted layout
+    //! then puts it back to closed. Measured - the switch was set, the process environment was
+    //! confirmed to carry it, and the panel never appeared, with nothing in the log.
+    //!
+    //! This dispatches the SAME action the View menu and the toolbar go through, i.e. the case that
+    //! is known to work (第 123 条).
+    dispatcher()->dispatch("dock-set-open", ActionData::make_arg2<QString, bool>(AGENT_PANEL_NAME, true));
+}
+
 QString NotationPageModel::statusBarName() const
 {
     return NOTATION_STATUSBAR_NAME;

@@ -218,6 +218,18 @@ static const std::vector<CommandInfo> s_commandInfos = {
         InputSchema(),
         Decoration(rcommand::Checkable::Yes)
         ),
+    //! Added by this fork. ⛔ REGISTERING THE UiAction IS NOT ENOUGH: the View menu builds its items
+    //! from COMMANDS, and a command that is not declared here is reported as
+    //! `AbstractMenuModel::makeMenuItem | not found command: command://app/dock/toggle-agent-panel`
+    //! and the menu item silently does not appear. That warning is the only symptom - measured while
+    //! adding the Agent panel entry (第 123 条).
+    CommandInfo(
+        DOCK_TOGGLE_AGENT_PANEL_COMMAND,
+        TranslatableString("action", "A&gent"),
+        TranslatableString("action", "Show/hide agent panel"),
+        InputSchema(),
+        Decoration(rcommand::Checkable::Yes)
+        ),
 };
 
 std::string AppshellCommandsRegister::moduleName() const

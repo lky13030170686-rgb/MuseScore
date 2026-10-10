@@ -496,10 +496,10 @@ DockPage {
         DockPanel {
             id: agentPanel
 
-            //! A plain name, not `pageModel.xxxPanelName()`: the dock name only has to be unique
-            //! (the MIDI page's mixer panel is `Midi_mixerPanel` for the same reason). Nothing in
-            //! the page model needs to know about this panel yet.
-            objectName: "AgentHarnessPanel"
+            //! ⚠️ THE NAME COMES FROM THE MODEL, and that is not tidiness - the View-menu entry
+            //! (`toggle-agent-panel`) is matched to this panel BY THIS NAME, so a second copy of the
+            //! literal would drift into "the menu item is there and clicking it does nothing".
+            objectName: root.pageModel.agentPanelName()
             title: qsTrc("appshell", "Agent")
 
             width: root.verticalPanelDefaultWidth
@@ -515,12 +515,24 @@ DockPage {
             //! opt-in; a panel that is always there would take score width away from every user
             //! who never opens it.
             //!
-            //! MUSE_AGENT_PANEL=1 forces it open (read in C++ by `PanelConfig`).
-            //! That is the verification hook, and it exists for the same reason the MIDI page has
-            //! its MUSE_MIDIEDITOR_DEMO_* family: the panel is invisible by default, and a
-            //! screenshot of an invisible panel proves nothing. One environment lookup, no rebuild
-            //! needed to toggle it.
-            visible: PanelConfig.forceOpen
+            //! ⛔⛔ DO NOT TRY TO OPEN IT FROM IN HERE. Two things are true at once and both bite:
+            //!   1. `DockBase::init()` calls `setVisible(m_dockWidget->isOpen())`, and a C++
+            //!      assignment to a QML property DESTROYS the binding - so `visible: PanelConfig
+            //!      .forceOpen` documents the default but cannot open anything by itself;
+            //!   2. anything written inside this block is content, not a live object (see the Timer
+            //!      note at the bottom of this file).
+            //! The panel is opened through the View menu (`toggle-agent-panel`) or, for scripted
+            //! verification, by the `MUSE_AGENT_PANEL` timer at the bottom of this file.
+            visible: false
+
+
+            Component.onCompleted: {
+                agentPanel.contextMenuModel = contextMenuModel
+            }
+
+            Component.onDestruction: {
+                agentPanel.contextMenuModel = null
+            }
 
             location: Location.Right
 
@@ -644,6 +656,29 @@ DockPage {
         NotationStatusBar {
             id: content
         }
+    }
+
+    //! ── MUSE_AGENT_PANEL: open the Agent panel without clicking ────────────────────────────────────
+    //!
+    //! ⛔⛔ THIS TIMER CANNOT LIVE INSIDE THE `DockPanel` ABOVE, AND PUTTING IT THERE COST A ROUND.
+    //! `DockPanel.qml` declares its children as `default property alias contentComponent :
+    //! contentLoader.sourceComponent` - so anything written inside the `DockPanel { }` block is NOT
+    //! created; it is stashed as the panel's content and only instantiated when the panel becomes
+    //! visible. A `Timer` in there is therefore never constructed and never fires, silently: the
+    //! panel stays hidden, nothing is logged, and the switch looks broken.
+    //!
+    //! ⚠️ And the reason it must retry rather than fire once: the panel's visible state is restored
+    //! from the persisted layout after the dock is inited, so an early open is simply overwritten.
+    //! `running` turns itself off the moment the dock reports open.
+    //!
+    //! ⚠️ It calls `openAgentPanel()` (→ the `dock-set-open` action the View menu also uses) and NOT
+    //! `agentPanel.open()`: `open()` sets the item's `visible` and calls the dock widget's `open()`,
+    //! which the layout restore undoes. Both were measured (第 123 条).
+    Timer {
+        running: PanelConfig.forceOpen && !agentPanel.isOpen()
+        interval: 150
+        repeat: true
+        onTriggered: root.pageModel.openAgentPanel()
     }
 
     tours: [

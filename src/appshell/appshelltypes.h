@@ -43,6 +43,14 @@ static const DockName PIANO_KEYBOARD_PANEL_NAME("pianoKeyboardPanel");
 static const DockName TIMELINE_PANEL_NAME("timelinePanel");
 static const DockName PERCUSSION_PANEL_NAME("percussionPanel");
 
+//! The built-in Agent harness panel (`src/agentharness/`). Added by this fork: the panel existed on
+//! the notation page from M0, but nothing could OPEN it - the View-menu entries are built from the
+//! toggle actions below, which this panel was never registered in. It was reachable only through a
+//! QML `visible:` binding that `DockBase::init()` overwrites, so in practice it was unreachable
+//! (第 123 条). ⚠️ Defined ONCE here and read through `NotationPageModel::agentPanelName()` - a
+//! second copy of the literal would drift and the failure would be a menu entry that does nothing.
+static const DockName AGENT_PANEL_NAME("AgentHarnessPanel");
+
 // Toolbars:
 static const DockName NOTATION_TOOLBAR_NAME("notationToolBar");
 static const DockName UNDO_REDO_TOOLBAR_NAME("undoRedoToolBar");

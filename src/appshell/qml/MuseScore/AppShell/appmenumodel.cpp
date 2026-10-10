@@ -289,6 +289,8 @@ MenuItem* AppMenuModel::makeViewMenu()
         makeMenuItem(DOCK_TOGGLE_MIXER_COMMAND),
         makeMenuItem(DOCK_TOGGLE_PIANO_KEYBOARD_COMMAND),
         makeMenuItem(DOCK_TOGGLE_PERCUSSION_COMMAND),
+        //! Added by this fork: the entry this panel never had (第 123 条).
+        makeMenuItem(DOCK_TOGGLE_AGENT_PANEL_COMMAND),
         makeMenuItem(OPEN_PLAYBACK_SETUP_COMMAND),
         makeSeparator(),
         makeMenu(TranslatableString("appshell/menu/view", "&Toolbars"), {

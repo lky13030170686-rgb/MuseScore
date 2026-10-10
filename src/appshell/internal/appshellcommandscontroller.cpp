@@ -62,6 +62,8 @@ static const std::map<rcommand::Command, DockName> s_dockToggleCommands = {
     { DOCK_TOGGLE_PIANO_KEYBOARD_COMMAND, PIANO_KEYBOARD_PANEL_NAME },
     { DOCK_TOGGLE_PERCUSSION_COMMAND, PERCUSSION_PANEL_NAME },
     { DOCK_TOGGLE_STATUSBAR_COMMAND, NOTATION_STATUSBAR_NAME },
+    //! Added by this fork: the Agent panel (see AGENT_PANEL_NAME).
+    { DOCK_TOGGLE_AGENT_PANEL_COMMAND, AGENT_PANEL_NAME },
 };
 
 void AppshellCommandsController::preInit()
@@ -124,6 +126,7 @@ void AppshellCommandsController::init()
             { "toggle-piano-keyboard", DOCK_TOGGLE_PIANO_KEYBOARD_COMMAND, {} },
             { "toggle-percussion-panel", DOCK_TOGGLE_PERCUSSION_COMMAND, {} },
             { "toggle-statusbar", DOCK_TOGGLE_STATUSBAR_COMMAND, {} },
+            { "toggle-agent-panel", DOCK_TOGGLE_AGENT_PANEL_COMMAND, {} },
         };
 
         rcommand::registerActionToCommand(this, actionToCommands, commandDispatcher(), dispatcher());

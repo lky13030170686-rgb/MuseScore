@@ -207,6 +207,16 @@ const UiActionList ApplicationUiActions::m_actions = {
              TranslatableString("action", "Show/hide percussion panel"),
              ui::Checkable::Yes
              ),
+    //! Added by this fork. ⚠️ `CTX_NOTATION_OPENED` and not `CTX_ANY`: the Agent panel lives on the
+    //! notation page, so an entry offered while no score is open would be a menu item that does
+    //! nothing - the failure this registration exists to remove (第 123 条).
+    UiAction("toggle-agent-panel",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_OPENED,
+             TranslatableString("action", "A&gent"),
+             TranslatableString("action", "Show/hide agent panel"),
+             ui::Checkable::Yes
+             ),
     UiAction("toggle-scorecmp-tool",
              mu::context::UiCtxProjectOpened,
              mu::context::CTX_NOTATION_OPENED,
@@ -342,6 +352,10 @@ const QMap<ActionCode, DockName>& ApplicationUiActions::toggleDockActions()
         { "toggle-mixer", MIXER_PANEL_NAME },
         { "toggle-piano-keyboard", PIANO_KEYBOARD_PANEL_NAME },
         { TOGGLE_PERCUSSION_PANEL_ACTION_CODE, PERCUSSION_PANEL_NAME },
+        //! Added by this fork: this mapping is what makes the action TOGGLE a dock rather than do
+        //! nothing. Registering the UiAction without this line gives a View-menu entry that is
+        //! clickable, appears in the menu, and has no effect.
+        { "toggle-agent-panel", AGENT_PANEL_NAME },
 
         { "toggle-statusbar", NOTATION_STATUSBAR_NAME },
     };

@@ -80,6 +80,15 @@ public:
     Q_INVOKABLE QString timelinePanelName() const;
     Q_INVOKABLE QString percussionPanelName() const;
 
+    //! Added by this fork: the Agent panel's dock name, so the literal lives in ONE place
+    //! (`appshelltypes.h`). The View-menu entry is matched to the panel BY THIS NAME, so two copies
+    //! of it would fail as a menu entry that toggles nothing.
+    Q_INVOKABLE QString agentPanelName() const;
+
+    //! Added by this fork: opens the Agent panel. Exists for the `MUSE_AGENT_PANEL` verification
+    //! switch, which cannot use `DockPanel.open()` - see the note in the .cpp.
+    Q_INVOKABLE void openAgentPanel();
+
     Q_INVOKABLE QString statusBarName() const;
 
 signals:
