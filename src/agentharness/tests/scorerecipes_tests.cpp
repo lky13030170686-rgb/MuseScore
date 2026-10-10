@@ -30,6 +30,7 @@
 #include "engraving/dom/hairpin.h"
 #include "engraving/dom/measure.h"
 #include "engraving/dom/part.h"
+#include "engraving/dom/rest.h"
 #include "engraving/dom/staff.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/rest.h"
@@ -1930,4 +1931,117 @@ TEST(AgentHarness_ScoreRecipes, SetDurationOnARestMustNotCrash)
     //! Whether it succeeds or refuses, it must not crash - and on a REST, changing the duration is a
     //! legitimate request, so it should succeed.
     EXPECT_TRUE(result.ok) << result.problem.toStdString();
+}
+//! ── Filling a measure ─────────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_ScoreRecipes, FillMeasureCompletesABarThatWasLeftShort)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔⛔ THE SHAPE MATTERS, AND THE FIRST THREE VERSIONS OF THIS TOOL DID NOT KNOW THAT.
+    //!
+    //! A bar can be short in two ways:
+    //!   - a GAP - content removed, so there is free space;
+    //!   - a SHORT PIECE - a beat that is simply too brief.
+    //!
+    //! `Score::setRest` creates rests in FREE SPACE, so it fixes the first and does nothing for the second:
+    //! measured, a bar shortened to 7/8 stayed at 7/8 while the tool reported "filled the last 1/8". So this
+    //! test uses the shape the tool can actually serve - the last beat turned into a rest, leaving the
+    //! eighth-note's worth of space genuinely empty - and the limitation is recorded in the tool's
+    //! description rather than left for a caller to discover.
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 4), 0, QStringLiteral("eighth"));
+    }).ok);
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return changeToRest(score.get(), address(1, 4), 0);
+    }).ok);
+
+    Measure* first = score->tick2measure(Fraction(0, 1));
+    ASSERT_TRUE(first != nullptr);
+    const Fraction contentBefore = first->ticks();
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return fillMeasureWithRests(score.get(), 1);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ VERIFIED BY `sanityCheck`, which is the only thing that answers "does this bar add up" - the same
+    //! gate the batch path uses. Counting rests would only prove that SOMETHING was added.
+    EXPECT_TRUE(score->sanityCheck()) << score->sanityCheck().text();
+    //! And the bar must still be as long as its signature - filling adds content, never length.
+    Measure* after = score->tick2measure(Fraction(0, 1));
+    ASSERT_TRUE(after != nullptr);
+    EXPECT_EQ(after->ticks(), contentBefore);
+}
+
+TEST(AgentHarness_ScoreRecipes, FillMeasureOnACompleteBarSucceedsAndSaysSo)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Not an error: the bar already adds up. A model told "failed" would go looking for another way to do
+    //! what is already done - the rule the duration and key-signature recipes follow.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return fillMeasureWithRests(score.get(), 1);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("already complete"))) << result.detail.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, FillMeasureOnAnEmptyBarMakesItAFullMeasureRest)
+{
+    const auto score = loadScore(EMPTY_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return fillMeasureWithRests(score.get(), 1);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ A FULL-MEASURE REST, not a rest per beat. The difference is what the bar READS as: one centred
+    //! symbol saying "this bar is empty" versus four rests saying "four beats of rest". `setRest`'s
+    //! `useFullMeasureRest` argument is the only thing that decides it.
+    const NoteLookup at = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(at.found());
+    ASSERT_TRUE(at.isRest());
+    EXPECT_TRUE(mu::engraving::toRest(at.rest)->isFullMeasureRest())
+        << "an empty bar should read as one full-measure rest";
+}
+
+TEST(AgentHarness_ScoreRecipes, FillMeasureRefusesABarThatIsAlreadyTooLong)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ REFUSED, NOT PATCHED. Build a bar whose content runs past the barline by going around the
+    //! duration gate (which exists precisely to prevent this) - the point is that the fill tool must not
+    //! paper over a breakage it did not cause. Adding a rest to a bar with no room would make the problem
+    //! harder to see, not smaller.
+    score->startCmd(muse::TranslatableString::untranslatable("agentharness test"));
+    const NoteLookup found = chordAt(score.get(), address(1, 4), 0);
+    ASSERT_TRUE(found.found());
+    mu::engraving::TDuration tooLong;
+    tooLong.setType(mu::engraving::DurationType::V_WHOLE);
+    score->undoChangeChordRestLen(found.chordOrNull(), tooLong);
+    score->endCmd();
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return fillMeasureWithRests(score.get(), 1);
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("more than it can"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, FillMeasureRefusesAMeasureThatDoesNotExist)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return fillMeasureWithRests(score.get(), 99);
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("no measure 99"))) << result.problem.toStdString();
 }

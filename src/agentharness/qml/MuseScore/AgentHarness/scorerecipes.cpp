@@ -224,6 +224,34 @@ int spellingFor(mu::engraving::Note* note, int pitch)
     const mu::engraving::Key key = note->staff()->concertKey(note->chord()->tick());
     return mu::engraving::pitch2tpc(pitch, key, mu::engraving::Prefer::NEAREST);
 }
+namespace {
+//! The measure at a 1-based number, or null. Also reports how many there are, for the message.
+mu::engraving::Measure* measureAt(mu::engraving::Score* score, int number, int* total)
+{
+    int index = 0;
+    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure(), ++index) {
+        if (index + 1 == number) {
+            if (total) {
+                *total = index + 1;
+            }
+            return m;
+        }
+    }
+    if (total) {
+        *total = index;
+    }
+    return nullptr;
+}
+
+int measureCount(mu::engraving::Score* score)
+{
+    int n = 0;
+    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure()) {
+        ++n;
+    }
+    return n;
+}
+} // namespace
 } // namespace
 
 RecipeResult muse::agentharness::setNotePitch(mu::engraving::Score* score, const ScoreAddress& address,
@@ -807,6 +835,105 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
     }
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
 }
+RecipeResult muse::agentharness::fillMeasureWithRests(mu::engraving::Score* score, int measureNumber)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    int total = 0;
+    mu::engraving::Measure* measure = measureAt(score, measureNumber, &total);
+    if (!measure) {
+        return RecipeResult::failure(QStringLiteral("there is no measure %1; the score has %2")
+                                     .arg(measureNumber).arg(total));
+    }
+
+    //! ⛔⛔ THE SHORTFALL IS A TOTAL, NOT A GAP, AND THE FIRST TWO VERSIONS OF THIS GOT IT WRONG.
+    //!
+    //! A bar can be short in two shapes and they need different reasoning:
+    //!   - a GAP - nothing between two things, e.g. after a note was removed;
+    //!   - a SHORT PIECE - a beat that is simply too brief, e.g. after `note_set_duration` shortened it.
+    //!
+    //! ⚠️ A short piece leaves NO GAP. The first version filled "from the end of the last thing", which does
+    //! nothing at all here. The second walked for the first uncovered tick - and a shortened beat IS covered,
+    //! it is just too short, so that did nothing either. Measured both times: the bar stayed at
+    //! `Found: 7/8. Expected: 4/4` while the tool reported success.
+    //!
+    //! ⛔ What both shapes have in common is the thing that actually matters: **how much is missing**. So
+    //! this counts what the fullest voice holds and fills the difference at the end - which fixes a gap and
+    //! a short piece with the same arithmetic, and cannot be fooled by which shape it happens to be.
+    //!
+    //! ⚠️ Per voice, and the FULLEST one decides: a bar is complete when every voice reaches the barline, so
+    //! the voice holding the most is the one whose shortfall is smallest - and filling that one brings the
+    //! bar to its length without overfilling a voice that already held less.
+    mu::engraving::Fraction fullest;
+    mu::engraving::Fraction fullestEnd = measure->tick();
+    bool anyContent = false;
+    for (mu::engraving::track_idx_t track = 0; track < score->ntracks(); ++track) {
+        mu::engraving::Fraction held;
+        mu::engraving::Fraction end = measure->tick();
+        for (mu::engraving::Segment* segment = measure->first(mu::engraving::SegmentType::ChordRest); segment;
+             segment = segment->next(mu::engraving::SegmentType::ChordRest)) {
+            mu::engraving::EngravingItem* item = segment->element(track);
+            if (!item || !item->isChordRest()) {
+                continue;
+            }
+            const mu::engraving::ChordRest* chordRest = mu::engraving::toChordRest(item);
+            held += chordRest->ticks();
+            end = chordRest->endTick();
+            anyContent = true;
+        }
+        if (held > fullest) {
+            fullest = held;
+            fullestEnd = end;
+        }
+    }
+
+    const mu::engraving::Fraction measureEnd = measure->endTick();
+
+    if (!anyContent) {
+        //! An empty measure: fill the whole bar, and say so as a FULL-MEASURE rest - `useFullMeasureRest`
+        //! is what makes it draw as the single centred symbol rather than a rest per beat. That distinction
+        //! is the difference between a bar that reads "empty" and a bar that reads "four rests".
+        score->setRest(measure->tick(), 0, measure->ticks(), false, nullptr, /* useFullMeasureRest */ true);
+        return RecipeResult::success(QStringLiteral("measure %1 was empty; filled it with a full-measure "
+                                                    "rest").arg(measureNumber));
+    }
+
+    if (fullest == measureEnd - measure->tick()) {
+        //! Not an error: the measure already adds up. Reported as success so a caller does not go looking
+        //! for another way to do what is already done - the same rule the duration and key-signature
+        //! recipes follow.
+        return RecipeResult::success(QStringLiteral("measure %1 is already complete")
+                                     .arg(measureNumber));
+    }
+
+    if (fullest > measureEnd - measure->tick()) {
+        //! ⛔ REFUSED, NOT PATCHED. A measure whose content runs past the barline is already broken, and
+        //! adding a rest would not fix it - it would add a rest to a bar that has no room for one, making
+        //! the breakage harder to see. The caller needs to know the bar is over-full, which is a different
+        //! problem from the one this tool solves.
+        return RecipeResult::failure(
+            QStringLiteral("measure %1 already holds more than it can (%2 of %3), so there is no room for "
+                           "rests. Something else made this bar too long; filling it would hide that.")
+            .arg(measureNumber)
+            .arg(fullest.toString(), measure->ticks().toString()));
+    }
+
+    const mu::engraving::Fraction gap = (measureEnd - measure->tick()) - fullest;
+    LOGW() << "[agent-fill] m" << measureNumber << "measureTicks=" << measure->ticks().toString()
+           << "fullest=" << fullest.toString() << "fullestEnd=" << fullestEnd.ticks()
+           << "gap=" << gap.toString() << "any=" << anyContent;
+
+    //! ⚠️ One `setRest` for the whole gap, and `useDots` FALSE: `setRest` splits the gap into the fewest
+    //! rests that add up to it, which is what a musician writes. Asking for dots as well would produce a
+    //! dotted rest where two plain ones are conventional.
+    score->setRest(fullestEnd, 0, gap, /* useDots */ false, nullptr, /* useFullMeasureRest */ false);
+
+    return RecipeResult::success(QStringLiteral("measure %1: filled the last %2 of the bar with rests")
+                                 .arg(measureNumber).arg(gap.toString()));
+}
+
 RecipeResult muse::agentharness::appendStaff(mu::engraving::Score* score, int partIndex)
 {
     if (!score) {
@@ -1056,34 +1183,6 @@ RecipeResult muse::agentharness::moveNote(mu::engraving::Score* score, const Sco
                                  .arg(pitchName(pitch), formatAddress(from), formatAddress(to)));
 }
 
-namespace {
-//! The measure at a 1-based number, or null. Also reports how many there are, for the message.
-mu::engraving::Measure* measureAt(mu::engraving::Score* score, int number, int* total)
-{
-    int index = 0;
-    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure(), ++index) {
-        if (index + 1 == number) {
-            if (total) {
-                *total = index + 1;
-            }
-            return m;
-        }
-    }
-    if (total) {
-        *total = index;
-    }
-    return nullptr;
-}
-
-int measureCount(mu::engraving::Score* score)
-{
-    int n = 0;
-    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure()) {
-        ++n;
-    }
-    return n;
-}
-} // namespace
 
 RecipeResult muse::agentharness::insertMeasures(mu::engraving::Score* score, int beforeMeasure, int count)
 {

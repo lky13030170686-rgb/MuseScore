@@ -203,6 +203,9 @@ ToolResult toolMeasureInsert(const QJsonObject& args, const ToolContext& ctx);
 //! Write: remove a range of measures.
 ToolResult toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: fill the rest of a measure with rests.
+ToolResult toolMeasureFill(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: add or remove a staff on a part.
 ToolResult toolStaffAdd(const QJsonObject& args, const ToolContext& ctx);
 ToolResult toolStaffRemove(const QJsonObject& args, const ToolContext& ctx);

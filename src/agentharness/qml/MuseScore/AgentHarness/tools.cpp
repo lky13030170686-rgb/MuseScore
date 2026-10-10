@@ -1276,6 +1276,35 @@ ToolResult muse::agentharness::toolStaffRemove(const QJsonObject& args, const To
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolMeasureFill(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int measureNumber = 0;
+    if (!readInt(args, QStringLiteral("measure"), measureNumber)) {
+        return ToolResult::failure(QStringLiteral("`measure` is required and must be an integer"));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Fill measure"), [&](mu::engraving::Score* score) {
+        return fillMeasureWithRests(score, measureNumber);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1898,6 +1927,24 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             toolStaffRemove,
         },
         ToolSpec{
+            QStringLiteral("measure_fill"),
+            QStringLiteral("Fill the EMPTY SPACE in a measure with rests, so the bar is as long as its "
+                           "time signature says. Use it after content was removed and left a hole. NOTE: "
+                           "this fills free space, so it does NOT lengthen a beat that is merely too short "
+                           "- if a bar is short because a note was shortened, set that note's duration "
+                           "instead. Refused when the bar already holds more than it can. Undoable with "
+                           "Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("measure"), intProperty(QStringLiteral(
+                                                              "1-based measure number to complete.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure") }),
+            toolMeasureFill,
+        },
+        ToolSpec{
             QStringLiteral("note_tie"),
             QStringLiteral("Tie the note at an address to the next note of the SAME PITCH, remove that "
                            "tie, or toggle it. A tie changes how the notes SOUND (one longer note); a "
@@ -1998,6 +2045,7 @@ bool muse::agentharness::isBatchableTool(const QString& name)
         //! signatures and structure
         QStringLiteral("key_signature_set"), QStringLiteral("time_signature_set"),
         QStringLiteral("measure_insert"), QStringLiteral("measure_remove"),
+        QStringLiteral("measure_fill"),
     };
     return kBatchable.contains(name);
 }

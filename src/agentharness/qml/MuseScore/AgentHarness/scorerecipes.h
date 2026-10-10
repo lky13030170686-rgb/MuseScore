@@ -228,6 +228,22 @@ RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int
 RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, int numerator,
                               int denominator);
 
+//! ── Filling a measure ─────────────────────────────────────────────────────────────────────────
+//! The one operation whose job is to make a measure ADD UP. Everything else here changes what a bar
+//! contains; this one changes whether it is complete.
+
+//! Fill the rest of a measure with rests, so the measure is as long as its time signature says.
+//!
+//! ⛔ WHY THIS EXISTS AT ALL: a score whose measures do not add up is the state `sanityCheck` reports as
+//! "Incomplete measure", and it is reachable through ordinary edits - `note_to_rest` on a beat, removing a
+//! note that was holding a bar together, or a paste that did not fill. A caller that has just made a bar
+//! short needs one call that says "make this bar whole again", not a sequence of duration guesses.
+//!
+//! ⚠️ It fills from the END of the last thing in the measure, not from a beat the caller names. "Fill this
+//! measure" is about the measure, and asking for a start position would invite a caller to name a beat
+//! inside existing content - where the honest answer is that there is nothing to fill.
+RecipeResult fillMeasureWithRests(mu::engraving::Score* score, int measureNumber);
+
 //! ── Parts and staves ──────────────────────────────────────────────────────────────────────────
 //! Adding and removing whole staves. These change how many lines the score is read on, which is a
 //! different kind of edit from anything else here: every other operation touches CONTENT, and this one
