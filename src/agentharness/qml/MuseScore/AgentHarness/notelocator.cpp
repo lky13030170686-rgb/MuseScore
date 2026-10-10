@@ -221,6 +221,27 @@ NoteLookup muse::agentharness::chordAt(mu::engraving::Score* score, const ScoreA
     return result;
 }
 
+NoteLookup muse::agentharness::NoteLookup::asChord(const QString& address) const
+{
+    if (chord) {
+        return *this;
+    }
+
+    NoteLookup failed;
+    //! ⚠️ "there is a rest here" and "there is nothing here" are different answers, and a caller told the
+    //! wrong one goes looking in the wrong place. That mistake has been made once already (第 93 条).
+    failed.problem = rest
+                     ? QStringLiteral("%1 is a rest, so there is no chord to work on").arg(address)
+                     : QStringLiteral("%1 holds no chord%2")
+                       .arg(address, problem.isEmpty() ? QString()
+                                                       : QStringLiteral(": ") + problem);
+    return failed;
+}
+
+mu::engraving::ChordRest* muse::agentharness::NoteLookup::chordRest() const
+{
+    return chord ? static_cast<mu::engraving::ChordRest*>(chord) : rest;
+}
 NoteLookup muse::agentharness::noteAt(mu::engraving::Score* score, const ScoreAddress& address, int voice, int index)
 {
     NoteLookup result = chordAt(score, address, voice);

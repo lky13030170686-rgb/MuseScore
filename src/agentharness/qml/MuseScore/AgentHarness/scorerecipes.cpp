@@ -364,8 +364,10 @@ RecipeResult muse::agentharness::setChordDuration(mu::engraving::Score* score, c
     //! ⚠️ And it is not a case to refuse: "make this rest a half rest" is an ordinary request, and
     //! `undoChangeChordRestLen` takes a `ChordRest` - it was always able to do it. The old code simply
     //! never got that far.
-    mu::engraving::ChordRest* target = found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
-                                                   : static_cast<mu::engraving::ChordRest*>(found.rest);
+    //! ⚠️ `chordRest()` AND NOT `found.chord`. The distinction used to be spelled out here as a
+    //! hand-written ternary, and the identical null dereference was written twice anyway (第 94/112 条) -
+    //! so it now lives on `NoteLookup`, where a caller cannot forget it.
+    mu::engraving::ChordRest* target = found.chordRest();
     if (!target) {
         return RecipeResult::failure(QStringLiteral("%1 holds nothing whose length can be set")
                                      .arg(formatAddress(address)));
@@ -433,7 +435,10 @@ RecipeResult muse::agentharness::removeNote(mu::engraving::Score* score, const S
                                      : found.problem);
     }
 
-    mu::engraving::Chord* chord = found.chord;
+    mu::engraving::Chord* chord = found.asChord(formatAddress(address)).chordOrNull();
+    if (!chord) {
+        return RecipeResult::failure(found.asChord(formatAddress(address)).problem);
+    }
     mu::engraving::Note* note = found.note;
 
     //! ⛔ REFUSED when it is the last note. A chord with no notes is not a rest - it is a broken chord
@@ -478,7 +483,10 @@ RecipeResult muse::agentharness::addNoteToChord(mu::engraving::Score* score, con
                                      : found.problem);
     }
 
-    mu::engraving::Chord* chord = found.chord;
+    mu::engraving::Chord* chord = found.asChord(formatAddress(address)).chordOrNull();
+    if (!chord) {
+        return RecipeResult::failure(found.asChord(formatAddress(address)).problem);
+    }
 
     //! ⛔ A duplicate pitch is not a chord, it is the same note twice. Upstream will create it without
     //! complaint, and the result draws as ONE notehead while every later read of the chord sees two
@@ -760,8 +768,7 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
                                                           "(internal) - nothing was changed")
                                          : found.problem);
         }
-        destination = found.chord ? static_cast<mu::engraving::EngravingItem*>(found.chord)
-                                  : static_cast<mu::engraving::EngravingItem*>(found.rest);
+        destination = static_cast<mu::engraving::EngravingItem*>(found.chordRest());
 
         //! ⛔⛔ THE GUARD. `Score::addText` does NOT check this: it calls `chordOrRest(destination)` and
         //! dereferences the result, so a null destination is a null dereference inside upstream. Getting
@@ -924,7 +931,10 @@ RecipeResult muse::agentharness::toggleArticulation(mu::engraving::Score* score,
                                      : found.problem);
     }
 
-    mu::engraving::Chord* chord = found.chord;
+    mu::engraving::Chord* chord = found.asChord(formatAddress(address)).chordOrNull();
+    if (!chord) {
+        return RecipeResult::failure(found.asChord(formatAddress(address)).problem);
+    }
     //! `hasArticulation` takes an articulation to compare against, so one is built to ask the question. It
     //! is not added - `EditChord::toggleArticulation` builds its own - so it is deleted immediately;
     //! leaking it here would be a leak per call.
@@ -984,7 +994,7 @@ RecipeResult muse::agentharness::moveNote(mu::engraving::Score* score, const Sco
     }
 
     const int pitch = source.note->pitch();
-    const bool sourceChordWouldEmpty = source.chord->notes().size() <= 1;
+    const bool sourceChordWouldEmpty = source.chordOrNull()->notes().size() <= 1;
 
     const NoteLookup target = chordAt(score, to, 0);
     if (!target.found()) {
@@ -996,7 +1006,7 @@ RecipeResult muse::agentharness::moveNote(mu::engraving::Score* score, const Sco
 
     //! ⛔ THE TARGET MUST BE A CHORD. A rest is not something a note can be moved into - the note has to
     //! go ONTO something, and "make this rest a note" is `note_add` on a beat that already has one.
-    if (!target.chord) {
+    if (!target.chordOrNull()) {
         return RecipeResult::failure(
             QStringLiteral("%1 is a rest. A note can only be moved onto a beat that already has one; to put "
                            "a note on a silent beat, add it there instead.").arg(formatAddress(to)));
@@ -1004,7 +1014,7 @@ RecipeResult muse::agentharness::moveNote(mu::engraving::Score* score, const Sco
 
     //! ⛔ THE TARGET MUST NOT ALREADY HAVE THIS PITCH. Two notes at one pitch is not a chord - it draws as
     //! one notehead while every later read sees two, which reads as "the chord has a note I cannot see".
-    if (target.chord->findNote(pitch)) {
+    if (target.chordOrNull()->findNote(pitch)) {
         return RecipeResult::failure(QStringLiteral("%1 already has a %2, so moving the note there would "
                                                     "put two notes at the same pitch")
                                      .arg(formatAddress(to), pitchName(pitch)));
@@ -1169,8 +1179,7 @@ mu::engraving::ChordRest* chordRestAt(mu::engraving::Score* score, const ScoreAd
                   : found.problem;
         return nullptr;
     }
-    return found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
-                       : static_cast<mu::engraving::ChordRest*>(found.rest);
+    return found.chordRest();
 }
 } // namespace
 
@@ -1483,7 +1492,10 @@ RecipeResult muse::agentharness::setChordPitches(mu::engraving::Score* score, co
                            "rest cannot be given pitches.").arg(formatAddress(address)));
     }
 
-    mu::engraving::Chord* chord = found.chord;
+    mu::engraving::Chord* chord = found.asChord(formatAddress(address)).chordOrNull();
+    if (!chord) {
+        return RecipeResult::failure(found.asChord(formatAddress(address)).problem);
+    }
 
     //! ⛔ THE ORDER MATTERS, and this is the whole reason the recipe exists. Removing first can empty the
     //! chord - which `removeNote` refuses and which would be a broken object if it did not. So:
@@ -1555,14 +1567,21 @@ RecipeResult muse::agentharness::changeToRest(mu::engraving::Score* score, const
                                      : found.problem);
     }
 
-    mu::engraving::Chord* chord = found.chord;
-
+    //! ⛔⛔ THE REST CHECK COMES FIRST, AND A BLIND CONVERSION PUT IT SECOND - which the existing test
+    //! caught immediately (第 93 条的回归守卫).
+    //!
+    //! `asChord()` FAILS on a rest, by design. Asking for the chord before asking "is this already a rest"
+    //! therefore turns the "already silent, nothing to do" answer into "there is no chord to work on" -
+    //! i.e. it re-breaks the exact case that made the whole-measure-rest branch reachable in the first
+    //! place. The order here is not stylistic: the rest answer is only available to a caller that asks for
+    //! it before demanding a chord.
     if (found.isRest()) {
         //! Not an error: it is already silent. Reported as success so the caller does not go looking for
         //! another way to do what is already done.
         return RecipeResult::success(QStringLiteral("%1 is already a rest").arg(formatAddress(address)));
     }
 
+    mu::engraving::Chord* chord = found.chordOrNull();
     if (!chord) {
         return RecipeResult::failure(QStringLiteral("%1 holds something that is neither a chord nor a "
                                                     "rest, so it cannot be silenced")
@@ -1605,8 +1624,9 @@ RecipeResult muse::agentharness::addSlur(mu::engraving::Score* score, const Scor
     //! ⚠️ A slur attaches to the CHORD REST, not to a note inside it - which is why this takes the
     //! chord and does not need a note index. A caller on a rest is refused: a slur needs something to
     //! start on, and "slur the silence" is not a thing.
-    mu::engraving::ChordRest* start = found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
-                                                  : found.rest;
+    //! ⚠️ `chordRest()` and not a hand-written ternary: a slur or a text attaches to either, and
+    //! the ternary is exactly the shape that was written wrong elsewhere (第 112 条).
+    mu::engraving::ChordRest* start = found.chordRest();
     if (!start || start->isRest()) {
         return RecipeResult::failure(QStringLiteral("%1 is a rest, so there is nothing to slur from")
                                      .arg(formatAddress(address)));
@@ -1668,8 +1688,9 @@ RecipeResult muse::agentharness::removeSlur(mu::engraving::Score* score, const S
                                      : found.problem);
     }
 
-    mu::engraving::ChordRest* start = found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
-                                                  : found.rest;
+    //! ⚠️ `chordRest()` and not a hand-written ternary: a slur or a text attaches to either, and
+    //! the ternary is exactly the shape that was written wrong elsewhere (第 112 条).
+    mu::engraving::ChordRest* start = found.chordRest();
     if (!start) {
         return RecipeResult::failure(QStringLiteral("%1 holds nothing to slur")
                                      .arg(formatAddress(address)));
@@ -1709,8 +1730,9 @@ RecipeResult muse::agentharness::toggleSlur(mu::engraving::Score* score, const S
                                      : found.problem);
     }
 
-    mu::engraving::ChordRest* start = found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
-                                                  : found.rest;
+    //! ⚠️ `chordRest()` and not a hand-written ternary: a slur or a text attaches to either, and
+    //! the ternary is exactly the shape that was written wrong elsewhere (第 112 条).
+    mu::engraving::ChordRest* start = found.chordRest();
     if (start && start->slur()) {
         return removeSlur(score, address, voice);
     }

@@ -76,6 +76,41 @@ struct NoteLookup
 
     //! Whether the position holds a rest. A recipe that wants silence asks this before doing anything.
     bool isRest() const { return rest != nullptr; }
+
+    //! ── THE SAFE WAY TO REACH THE CHORD ──────────────────────────────────────────────────────────
+    //!
+    //! ⛔⛔ WHY THESE EXIST, AND IT IS NOT STYLE. `chord` is null whenever the position holds a rest -
+    //! that is what the `rest` field is FOR - and reaching for `chord` directly is how the SAME null
+    //! dereference was written TWICE: once in `noteAt` (found by the locator suite, 第 94 条) and once in
+    //! `setChordDuration` (found by the recipe suite, 第 112 条). Both were fixed by editing one function,
+    //! and both times the fix left every OTHER call site exactly as unsafe as before.
+    //!
+    //! ⛔ **Fixing an instance is not fixing the shape.** What makes the shape safe is that the unsafe
+    //! access is no longer the easy one: `asChord()` returns the chord or FAILS LOUDLY, so a caller that
+    //! has not thought about rests gets a message instead of an access violation, and the message names
+    //! the address so the caller can act.
+    //!
+    //! ⚠️ `asChord()` is for callers that have already established there IS a chord (`found()` and not
+    //! `isRest()`), or that want a refusal when there is not. A caller that legitimately handles both cases
+    //! uses `chordRest()`.
+
+    //! The chord, or null - for callers that check. Prefer `asChord()`.
+    mu::engraving::Chord* chordOrNull() const { return chord; }
+
+    //! The chord, or a failure that says what is there instead.
+    //! @param address what to name in the message
+    //!
+    //! ⚠️ DEFINED IN THE .cpp, not inline here, and the reason is mechanical: this header only
+    //! forward-declares `ChordRest`, so an inline `static_cast<ChordRest*>(chord)` cannot see that `Chord`
+    //! derives from it. Moving the body is cheaper than including the whole chord hierarchy in a header
+    //! that a dozen files include.
+    NoteLookup asChord(const QString& address) const;
+
+    //! The chord OR the rest, as a `ChordRest*` - for callers that legitimately act on either.
+    //!
+    //! ⚠️ This is what most recipes want: a duration, a slur or an articulation attaches to a `ChordRest`,
+    //! and "make this rest a half rest" is as ordinary a request as "make this note a half note".
+    mu::engraving::ChordRest* chordRest() const;
 };
 
 //! The note at an address.
