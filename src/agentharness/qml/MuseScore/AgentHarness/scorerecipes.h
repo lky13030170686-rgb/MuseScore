@@ -234,17 +234,30 @@ RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, in
 //! selection the user did not make, transposing, and putting it back. That is a side effect on shared state
 //! for the duration of the call, and it would also move what the user had selected.
 //!
-//! ⚠️ What this does NOT do: transpose the KEY SIGNATURE. `Transpose::transposeKeys` needs a `Transaction&`
-//! that a recipe has no way to obtain, and upstream itself does not transpose key signatures for an
-//! interval that is a whole number of octaves. So a caller transposing a passage by a non-octave interval
-//! gets notes moved and the key left alone - which is exactly what the tool's description says, because a
-//! silent half-transposition is worse than a documented one.
+//! ⚠️ THE KEY SIGNATURE IS OPT-IN, and the reason is not squeamishness: a key signature is NOT scoped to
+//! a measure range. It applies from its tick until the next one, so moving the key of measures 3-8 also
+//! moves the key of measure 9 unless something is written at the boundary to stop it. The first version of
+//! this recipe left the key alone and said so; the honest completion is to move it ONLY when asked, and
+//! then to write the boundary change as well, so the edit stays inside the range the caller named.
+//!
+//! ⛔ WHAT THE OLD COMMENT GOT WRONG: it said `Transpose::transposeKeys` needs a `Transaction&` "a recipe
+//! has no way to obtain". A recipe obtains one the same way `setKeySignature` does
+//! (`score->transactionManager()->currentOrDummyTransaction()`), and `transposeKeys` is the wrong function
+//! regardless - it is for instrument transposition (concert-pitch flips), not for moving a passage by an
+//! interval. Upstream's own range branch transposes the key with `Transpose::transposeKey` (key -> key)
+//! plus `EditKeySig::undoChangeKeySig`, which is what this does.
+//!
+//! ⚠️ A WHOLE-OCTAVE INTERVAL DOES NOT MOVE THE KEY, and that is upstream's rule, not a limitation:
+//! `Transpose::transpose` clears `trKeys` when `interval.chromatic % PITCH_DELTA_OCTAVE == 0`, because
+//! moving music by an octave leaves it in the same key. Same here.
 
 //! Transpose every note in a measure range by a number of semitones.
 //!
 //! @param partIndex 0-based index into `Score::parts()`; only that part's staves are touched
+//! @param transposeKeySignature when true, the key governing the range moves by the same interval and the
+//!        key in force AFTER the range is written back, so measures outside the range keep their key
 RecipeResult transposeRange(mu::engraving::Score* score, int fromMeasure, int toMeasure, int partIndex,
-                            int semitones);
+                            int semitones, bool transposeKeySignature = false);
 
 //! ── Tempo ─────────────────────────────────────────────────────────────────────────────────────
 //! ⛔ TEMPO IS NOT A NOTATION ELEMENT - it lives in `AutomationData` and changes through its OWN channel.

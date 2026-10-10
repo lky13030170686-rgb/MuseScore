@@ -174,14 +174,27 @@ NoteLookup muse::agentharness::chordAt(mu::engraving::Score* score, const ScoreA
             //! segment carries. A whole-measure rest is stored once on the measure, so asking about
             //! voice 2 of an empty bar finds it only through the fallback - and without that, the
             //! caller is told "there is nothing here" about a bar full of rest.
-            mu::engraving::EngravingItem* item = seg->element(track);
-            if (!item) {
-                for (mu::engraving::track_idx_t t = 0; t < score->ntracks(); ++t) {
-                    mu::engraving::EngravingItem* candidate = seg->element(t);
-                    if (candidate && candidate->isChordRest()) {
-                        item = candidate;
-                        break;
-                    }
+            //!
+            //! ⛔⛔ THE FALLBACK IS SCOPED TO THE REQUESTED STAFF, AND THAT SCOPE IS THE WHOLE POINT.
+            //! It used to scan `score->ntracks()` - EVERY track in the score - so a lookup on a staff
+            //! that has nothing at that tick returned whatever the OTHER staff had there. Measured: on
+            //! a two-staff part, `chordAt(staff 2, beat 2)` came back holding staff 1's chord (track 0),
+            //! and a recipe asked to shorten a beat of the second staff silently shortened the first
+            //! one's. That is the "agent edits the wrong note" failure the design lists as a risk, and
+            //! it is invisible from the result: the recipe reports the address it was GIVEN, so the
+            //! message and the edit disagree and only the score shows it.
+            //!
+            //! ⚠️ The whole-measure rest still resolves, because it lives on the measure's own segment
+            //! carrying its staff's voice-0 track - so it is inside this range, not outside it.
+            //! 第 121 条 records how this was found: a multi-staff test for a different fix came back
+            //! holding the wrong staff's chord.
+            mu::engraving::EngravingItem* item = nullptr;
+            for (mu::engraving::voice_idx_t v = 0; v < mu::engraving::VOICES; ++v) {
+                mu::engraving::EngravingItem* candidate =
+                    seg->element(mu::engraving::track_idx_t(staffIndex * mu::engraving::VOICES + v));
+                if (candidate && candidate->isChordRest()) {
+                    item = candidate;
+                    break;
                 }
             }
 

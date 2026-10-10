@@ -66,6 +66,14 @@ QJsonObject stringProperty(const QString& description)
     return p;
 }
 
+QJsonObject boolProperty(const QString& description)
+{
+    QJsonObject p;
+    p.insert(QStringLiteral("type"), QStringLiteral("boolean"));
+    p.insert(QStringLiteral("description"), description);
+    return p;
+}
+
 QJsonObject objectProperty(const QString& description)
 {
     QJsonObject p;
@@ -1368,9 +1376,14 @@ ToolResult muse::agentharness::toolTransposeRange(const QJsonObject& args, const
         return ToolResult::failure(refused);
     }
 
+    //! Optional, and FALSE when absent: moving the key signature is a separate decision from moving the
+    //! notes, and a caller that did not ask for it must not get it. `false` also keeps every existing call
+    //! site's meaning unchanged.
+    const bool transposeKeySignature = args.value(QStringLiteral("transposeKeySignature")).toBool(false);
+
     const RecipeResult result = ctx.field->runNoteRecipe(
         QStringLiteral("Transpose range"), [&](mu::engraving::Score* score) {
-        return transposeRange(score, fromMeasure, toMeasure, partIndex, semitones);
+        return transposeRange(score, fromMeasure, toMeasure, partIndex, semitones, transposeKeySignature);
     });
 
     if (!result.ok) {
@@ -2005,11 +2018,11 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
         ToolSpec{
             QStringLiteral("measure_fill"),
             QStringLiteral("Fill the EMPTY SPACE in a measure with rests, so the bar is as long as its "
-                           "time signature says. Use it after content was removed and left a hole. NOTE: "
-                           "this fills free space, so it does NOT lengthen a beat that is merely too short "
-                           "- if a bar is short because a note was shortened, set that note's duration "
-                           "instead. Refused when the bar already holds more than it can. Undoable with "
-                           "Ctrl+Z."),
+                           "time signature says. Use it after content was removed and left a hole, or "
+                           "after a beat was shortened. It fills every uncovered stretch of the bar, "
+                           "wherever it is - it does not lengthen a note, so a note that is too short "
+                           "stays that length and a rest is inserted after it. Refused when the bar "
+                           "already holds more than it can. Undoable with Ctrl+Z."),
             schemaObject([&] {
                 QJsonObject props;
                 props.insert(QStringLiteral("measure"), intProperty(QStringLiteral(
@@ -2044,9 +2057,10 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
         ToolSpec{
             QStringLiteral("transpose_range"),
             QStringLiteral("Transpose every note in a range of measures by a number of semitones, in one "
-                           "part. NOTE: this moves the NOTES only - it does not transpose the key "
-                           "signature, so a passage moved by a non-octave interval keeps its old key and "
-                           "will need the key set separately. Undoable with Ctrl+Z."),
+                           "part. By default this moves the NOTES only and leaves the key signature "
+                           "alone; set `transposeKeySignature` to true to move the key with them (the key "
+                           "in force after the range is written back, so measures outside the range keep "
+                           "their key). A whole-octave interval never moves the key. Undoable with Ctrl+Z."),
             schemaObject([&] {
                 QJsonObject props;
                 props.insert(QStringLiteral("fromMeasure"), intProperty(QStringLiteral(
@@ -2058,6 +2072,9 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 props.insert(QStringLiteral("semitones"), intProperty(QStringLiteral(
                                                                "How many semitones to move, negative for down. Refused beyond four "
                                                                "octaves.")));
+                props.insert(QStringLiteral("transposeKeySignature"), boolProperty(QStringLiteral(
+                                                                           "Optional, default false. When true, the key signature moves by the same "
+                                                                           "interval as the notes.")));
                 props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
                                                                        "Optional. The revision you last read; refused if the score changed since.")));
                 return props;

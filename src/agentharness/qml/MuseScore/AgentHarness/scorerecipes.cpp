@@ -844,7 +844,7 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
 }
 RecipeResult muse::agentharness::transposeRange(mu::engraving::Score* score, int fromMeasure, int toMeasure,
-                                                int partIndex, int semitones)
+                                                int partIndex, int semitones, bool transposeKeySignature)
 {
     if (!score) {
         return RecipeResult::failure(QStringLiteral("no score"));
@@ -944,7 +944,7 @@ RecipeResult muse::agentharness::transposeRange(mu::engraving::Score* score, int
         }
     }
 
-    if (moved == 0 && refused == 0) {
+    if (moved == 0 && refused == 0 && !transposeKeySignature) {
         return RecipeResult::success(QStringLiteral("measures %1-%2 hold no notes to transpose")
                                      .arg(fromMeasure).arg(toMeasure));
     }
@@ -960,8 +960,81 @@ RecipeResult muse::agentharness::transposeRange(mu::engraving::Score* score, int
             .arg(moved).arg(moved + refused).arg(fromMeasure).arg(toMeasure).arg(refused));
     }
 
-    return RecipeResult::success(QStringLiteral("measures %1-%2: transposed %3 note(s) by %4 semitone(s)")
-                                 .arg(fromMeasure).arg(toMeasure).arg(moved).arg(semitones));
+    //! ── The key signature ────────────────────────────────────────────────────────────────────────────
+    //!
+    //! ⛔⛔ A KEY SIGNATURE IS NOT SCOPED TO A MEASURE RANGE, AND THAT IS THE WHOLE DIFFICULTY. It applies
+    //! from its tick until the NEXT key signature. So "move the key of measures 3-8" also moves the key of
+    //! measure 9 unless something is written at the boundary to stop it - and moving music the caller did
+    //! not name is the same failure as the rest that landed in the next measure (第 120 条).
+    //!
+    //! ⚠️ So this does two things: transpose the key in force at the START of the range, and write the key
+    //! that was in force AFTER the range back at the barline, so the change is confined to the range.
+    //! 第 122 条 has the full account, including that the handoff's stated blocker for this was wrong.
+    const bool keyMoves = transposeKeySignature
+                          //! Upstream clears the key-transpose flag for a whole number of octaves
+                          //! (`transpose.cpp:100`), because an octave leaves the music in the same key.
+                          && semitones % mu::engraving::PITCH_DELTA_OCTAVE != 0;
+
+    QString keyNote;
+    if (keyMoves) {
+        mu::engraving::Transaction& tx = score->transactionManager()->currentOrDummyTransaction();
+        const mu::engraving::Fraction startTick = from->tick();
+        const mu::engraving::Fraction endTick = to->endTick();
+
+        for (mu::engraving::staff_idx_t staffIdx = firstStaff; staffIdx < lastStaff; ++staffIdx) {
+            mu::engraving::Staff* staff = score->staff(staffIdx);
+            if (!staff || staff->staffType(startTick)->group() == mu::engraving::StaffGroup::PERCUSSION) {
+                continue;
+            }
+
+            //! The key in force at the range start, transposed the same way the notes were.
+            const mu::engraving::Key oldKey = staff->concertKey(startTick);
+            const mu::engraving::Key newKey = mu::engraving::Transpose::transposeKey(
+                oldKey, interval, staff->part()->preferSharpFlat());
+
+            //! ⚠️ The key AFTER the range is read BEFORE anything is written. Once the start key changes,
+            //! `concertKey(endTick)` would report the NEW key (nothing separates them yet), so reading it
+            //! afterwards would write the transposed key back and undo half the work.
+            const mu::engraving::Key keyAfterRange = staff->concertKey(endTick);
+
+            mu::engraving::KeySigEvent atStart = staff->keySigEvent(startTick);
+            //! `setCustom(false)`: a plain interval transposition produces an ordinary key, never the
+            //! hand-built accidental list a custom signature carries (`setKeySignature` makes the same
+            //! distinction, and the file format reads it differently).
+            atStart.setCustom(false);
+            atStart.setConcertKey(newKey);
+            mu::engraving::EditKeySig::undoChangeKeySig(tx, score, staff, startTick, atStart);
+
+            if (keyNote.isEmpty()) {
+                keyNote = QStringLiteral("%1 -> %2").arg(describeKeySignature(int(oldKey)),
+                                                         describeKeySignature(int(newKey)));
+            }
+
+            //! ⛔ THE BOUNDARY WRITE, and it is the difference between "transposed measures 3-8" and
+            //! "transposed measures 3-8 AND changed the key of everything after them". Only needed when the
+            //! range does not run to the end of the score - and only when the key actually moved, so a
+            //! range that was already going to end in a new key is left alone.
+            if (to->nextMeasure() && keyAfterRange != newKey) {
+                mu::engraving::KeySigEvent after = staff->keySigEvent(endTick);
+                after.setCustom(false);
+                after.setConcertKey(keyAfterRange);
+                mu::engraving::EditKeySig::undoChangeKeySig(tx, score, staff, endTick, after);
+            }
+        }
+    }
+
+    if (!keyNote.isEmpty()) {
+        //! The description is built OUTSIDE the staff loop so it names the key once, not once per staff.
+        keyNote = QStringLiteral("; key signature %1 (measures outside the range keep their key)").arg(keyNote);
+    }
+
+    if (moved == 0) {
+        return RecipeResult::success(QStringLiteral("measures %1-%2 held no notes to transpose%3")
+                                     .arg(fromMeasure).arg(toMeasure).arg(keyNote));
+    }
+
+    return RecipeResult::success(QStringLiteral("measures %1-%2: transposed %3 note(s) by %4 semitone(s)%5")
+                                 .arg(fromMeasure).arg(toMeasure).arg(moved).arg(semitones).arg(keyNote));
 }
 
 RecipeResult muse::agentharness::setTempo(mu::engraving::Score* score, int measureNumber,
@@ -1080,7 +1153,8 @@ RecipeResult muse::agentharness::fillMeasureWithRests(mu::engraving::Score* scor
                                      .arg(measureNumber).arg(total));
     }
 
-    //! ⛔⛔ THE SHORTFALL IS A TOTAL, NOT A GAP, AND THE FIRST TWO VERSIONS OF THIS GOT IT WRONG.
+    //! ⛔⛔ THE HOLE IS A HOLE IN *COVERAGE*, NOT "AFTER THE LAST THING" - AND CONFLATING THE TWO
+    //! CORRUPTED THE NEXT MEASURE.
     //!
     //! A bar can be short in two shapes and they need different reasoning:
     //!   - a GAP - nothing between two things, e.g. after a note was removed;
@@ -1091,79 +1165,131 @@ RecipeResult muse::agentharness::fillMeasureWithRests(mu::engraving::Score* scor
     //! it is just too short, so that did nothing either. Measured both times: the bar stayed at
     //! `Found: 7/8. Expected: 4/4` while the tool reported success.
     //!
-    //! ⛔ What both shapes have in common is the thing that actually matters: **how much is missing**. So
-    //! this counts what the fullest voice holds and fills the difference at the end - which fixes a gap and
-    //! a short piece with the same arithmetic, and cannot be fooled by which shape it happens to be.
+    //! ⛔ The third version counted what the fullest voice held and inserted the difference at `fullestEnd`
+    //! (the end of its last chordrest). That fixes a gap at the END and is correct there - but when the hole
+    //! is anywhere else, `fullestEnd` is the last chordrest's end, which for a bar shortened in the MIDDLE
+    //! or at the START sits ON THE BARLINE. So the rest was inserted at the barline: INTO THE NEXT MEASURE,
+    //! replacing that bar's whole rest with an eighth rest, while the tool reported "filled the last 1/8" and
+    //! the requested bar was still short. Measured: `sanityCheck` then named TWO incomplete measures, and the
+    //! caller had been told the operation succeeded.
     //!
-    //! ⚠️ Per voice, and the FULLEST one decides: a bar is complete when every voice reaches the barline, so
-    //! the voice holding the most is the one whose shortfall is smallest - and filling that one brings the
-    //! bar to its length without overfilling a voice that already held less.
-    mu::engraving::Fraction fullest;
-    mu::engraving::Fraction fullestEnd = measure->tick();
-    bool anyContent = false;
-    for (mu::engraving::track_idx_t track = 0; track < score->ntracks(); ++track) {
+    //! ⛔⛔ SO THE QUESTION IS NOT "HOW MUCH IS MISSING" BUT "WHERE IS THE TIME THAT NOTHING COVERS". This
+    //! walks each voice's coverage of the bar and fills the uncovered intervals where they actually are. That
+    //! is what makes the tool's promise true - "fill the EMPTY SPACE" - and it cannot write outside the bar
+    //! it was asked about, because every interval it produces is clipped to the bar by construction.
+    //!
+    //! ⚠️ VOICE 0 OF EVERY STAFF, because that is what "the bar adds up" means: `sanityCheck` requires
+    //! voice 0 of each staff to equal the bar length (`check.cpp:198`), and only checks voices 1-3 for being
+    //! TOO LONG. Filling anything but voice 0 would leave the bar failing the very check this tool exists to
+    //! satisfy - and the tool would still have reported success.
+    const mu::engraving::Fraction measureStart = measure->tick();
+    const mu::engraving::Fraction measureEnd = measure->endTick();
+    const mu::engraving::Fraction measureLength = measureEnd - measureStart;
+
+    //! One entry per staff: the track this writes to (voice 0), its uncovered intervals, and how much it
+    //! already holds. Collected for every staff BEFORE anything is written, so an over-full bar is refused
+    //! without having half-filled the others.
+    struct StaffGaps
+    {
+        mu::engraving::track_idx_t track = 0;
         mu::engraving::Fraction held;
-        mu::engraving::Fraction end = measure->tick();
-        for (mu::engraving::Segment* segment = measure->first(mu::engraving::SegmentType::ChordRest); segment;
-             segment = segment->next(mu::engraving::SegmentType::ChordRest)) {
-            mu::engraving::EngravingItem* item = segment->element(track);
+        std::vector<std::pair<mu::engraving::Fraction, mu::engraving::Fraction> > holes;
+    };
+
+    std::vector<StaffGaps> gaps;
+    for (mu::engraving::staff_idx_t staffIdx = 0; staffIdx < score->nstaves(); ++staffIdx) {
+        StaffGaps staff;
+        staff.track = staffIdx * mu::engraving::VOICES;
+
+        mu::engraving::Fraction cursor = measureStart;
+        for (mu::engraving::Segment* segment = measure->first(mu::engraving::SegmentType::ChordRest);
+             segment; segment = segment->next(mu::engraving::SegmentType::ChordRest)) {
+            mu::engraving::EngravingItem* item = segment->element(staff.track);
             if (!item || !item->isChordRest()) {
                 continue;
             }
             const mu::engraving::ChordRest* chordRest = mu::engraving::toChordRest(item);
-            held += chordRest->ticks();
-            end = chordRest->endTick();
-            anyContent = true;
+            const mu::engraving::Fraction start = chordRest->tick();
+            const mu::engraving::Fraction end = chordRest->endTick();
+            //! ⛔ The cursor only ever moves FORWARD. A chordrest that starts before the cursor (an overlap,
+            //! which is how an already-broken bar looks) must not make the walk emit a "hole" with a negative
+            //! length - that would be a request to insert a negative rest.
+            if (start > cursor) {
+                staff.holes.emplace_back(cursor, start);
+            }
+            if (end > cursor) {
+                cursor = end;
+            }
+            staff.held += chordRest->ticks();
         }
-        if (held > fullest) {
-            fullest = held;
-            fullestEnd = end;
+
+        if (cursor < measureEnd) {
+            staff.holes.emplace_back(cursor, measureEnd);
+        }
+
+        gaps.push_back(std::move(staff));
+    }
+
+    //! ⛔ THE OVER-FULL CHECK COMES FIRST, AND THAT ORDER IS THE WHOLE POINT. An over-full bar has no
+    //! uncovered interval either - its content simply runs past the barline - so asking "are there holes?"
+    //! first would report it as ALREADY COMPLETE. That is the worst available answer: the caller is told a
+    //! broken bar is fine, and the bar that needs attention is the one thing not mentioned.
+    for (const StaffGaps& staff : gaps) {
+        if (staff.held > measureLength) {
+            //! ⛔ REFUSED, NOT PATCHED. A bar whose content runs past the barline is already broken, and
+            //! adding a rest would not fix it - it would add a rest to a bar that has no room for one, making
+            //! the breakage harder to see. The caller needs to know the bar is over-full, which is a different
+            //! problem from the one this tool solves.
+            return RecipeResult::failure(
+                QStringLiteral("measure %1 already holds more than it can (%2 of %3), so there is no room "
+                               "for rests. Something else made this bar too long; filling it would hide "
+                               "that.").arg(measureNumber)
+                .arg(staff.held.toString(), measure->ticks().toString()));
         }
     }
 
-    const mu::engraving::Fraction measureEnd = measure->endTick();
+    mu::engraving::Fraction filled;
+    int holeCount = 0;
+    int emptyStaves = 0;
+    for (const StaffGaps& staff : gaps) {
+        if (staff.holes.empty()) {
+            continue;
+        }
+        for (const std::pair<mu::engraving::Fraction, mu::engraving::Fraction>& hole : staff.holes) {
+            const mu::engraving::Fraction length = hole.second - hole.first;
+            LOGW() << "[agent-fill] m" << measureNumber << "staff" << int(staff.track / mu::engraving::VOICES)
+                   << "hole" << hole.first.toString() << "len" << length.toString();
+            //! ⚠️ EACH HOLE IS FILLED WHERE IT IS. `useDots` FALSE because `setRest` splits a hole into the
+            //! fewest rests that add up to it, which is what a musician writes - asking for dots as well
+            //! would produce a dotted rest where two plain ones are conventional.
+            //!
+            //! ⚠️ A staff with nothing at all in the bar gets a FULL-MEASURE rest, which is the difference
+            //! between a bar that reads "empty" and one that reads "four beats of rest" - the same
+            //! distinction the previous version drew for a wholly empty measure.
+            const bool wholeEmptyBar = staff.held.isZero() && hole.first == measureStart && hole.second == measureEnd;
+            score->setRest(hole.first, staff.track, length, /* useDots */ false, nullptr, wholeEmptyBar);
+            filled += length;
+            ++holeCount;
+        }
+        if (staff.held.isZero()) {
+            ++emptyStaves;
+        }
+    }
 
-    if (!anyContent) {
-        //! An empty measure: fill the whole bar, and say so as a FULL-MEASURE rest - `useFullMeasureRest`
-        //! is what makes it draw as the single centred symbol rather than a rest per beat. That distinction
-        //! is the difference between a bar that reads "empty" and a bar that reads "four rests".
-        score->setRest(measure->tick(), 0, measure->ticks(), false, nullptr, /* useFullMeasureRest */ true);
+    if (holeCount == 0) {
+        //! Not an error: the measure already adds up. Reported as success so a caller does not go looking
+        //! for another way to do what is already done - the same rule the duration and key-signature
+        //! recipes follow.
+        return RecipeResult::success(QStringLiteral("measure %1 is already complete").arg(measureNumber));
+    }
+
+    if (emptyStaves > 0 && holeCount == emptyStaves) {
         return RecipeResult::success(QStringLiteral("measure %1 was empty; filled it with a full-measure "
                                                     "rest").arg(measureNumber));
     }
 
-    if (fullest == measureEnd - measure->tick()) {
-        //! Not an error: the measure already adds up. Reported as success so a caller does not go looking
-        //! for another way to do what is already done - the same rule the duration and key-signature
-        //! recipes follow.
-        return RecipeResult::success(QStringLiteral("measure %1 is already complete")
-                                     .arg(measureNumber));
-    }
-
-    if (fullest > measureEnd - measure->tick()) {
-        //! ⛔ REFUSED, NOT PATCHED. A measure whose content runs past the barline is already broken, and
-        //! adding a rest would not fix it - it would add a rest to a bar that has no room for one, making
-        //! the breakage harder to see. The caller needs to know the bar is over-full, which is a different
-        //! problem from the one this tool solves.
-        return RecipeResult::failure(
-            QStringLiteral("measure %1 already holds more than it can (%2 of %3), so there is no room for "
-                           "rests. Something else made this bar too long; filling it would hide that.")
-            .arg(measureNumber)
-            .arg(fullest.toString(), measure->ticks().toString()));
-    }
-
-    const mu::engraving::Fraction gap = (measureEnd - measure->tick()) - fullest;
-    LOGW() << "[agent-fill] m" << measureNumber << "measureTicks=" << measure->ticks().toString()
-           << "fullest=" << fullest.toString() << "fullestEnd=" << fullestEnd.ticks()
-           << "gap=" << gap.toString() << "any=" << anyContent;
-
-    //! ⚠️ One `setRest` for the whole gap, and `useDots` FALSE: `setRest` splits the gap into the fewest
-    //! rests that add up to it, which is what a musician writes. Asking for dots as well would produce a
-    //! dotted rest where two plain ones are conventional.
-    score->setRest(fullestEnd, 0, gap, /* useDots */ false, nullptr, /* useFullMeasureRest */ false);
-
-    return RecipeResult::success(QStringLiteral("measure %1: filled the last %2 of the bar with rests")
-                                 .arg(measureNumber).arg(gap.toString()));
+    return RecipeResult::success(QStringLiteral("measure %1: filled %2 of empty space with rests (%3 gap(s))")
+                                 .arg(measureNumber).arg(filled.toString()).arg(holeCount));
 }
 
 RecipeResult muse::agentharness::appendStaff(mu::engraving::Score* score, int partIndex)
@@ -1658,7 +1784,12 @@ RecipeResult muse::agentharness::setKeySignature(mu::engraving::Score* score, in
     }
 
     mu::engraving::KeySigEvent event;
-    event.setKey(mu::engraving::Key(fifths));
+    //! ⛔ `setConcertKey`, NOT `setKey`, AND THE DIFFERENCE IS NOT COSMETIC. `setKey` writes only the
+    //! WRITTEN key (`m_key`) and leaves `m_concertKey` at `Key::INVALID` - so the score then answers -3 to
+    //! `staff->key(tick)` and **-8 (INVALID)** to `staff->concertKey(tick)`: two accessors of the same
+    //! signature disagreeing, with nothing to report it. Measured with a probe (第 121 条). `setConcertKey`
+    //! sets both, and for a non-transposing staff they are the same value anyway.
+    event.setConcertKey(mu::engraving::Key(fifths));
     //! ⚠️ `setCustom(false)` matters: a custom key signature is one with an explicit accidental list, and
     //! marking a plain -3 as custom would make the score claim it carries a signature the user built by
     //! hand. The notation layer distinguishes the two, and so does the file format.

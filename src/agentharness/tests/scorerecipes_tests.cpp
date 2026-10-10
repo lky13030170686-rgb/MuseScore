@@ -1948,11 +1948,10 @@ TEST(AgentHarness_ScoreRecipes, FillMeasureCompletesABarThatWasLeftShort)
     //!   - a GAP - content removed, so there is free space;
     //!   - a SHORT PIECE - a beat that is simply too brief.
     //!
-    //! `Score::setRest` creates rests in FREE SPACE, so it fixes the first and does nothing for the second:
-    //! measured, a bar shortened to 7/8 stayed at 7/8 while the tool reported "filled the last 1/8". So this
-    //! test uses the shape the tool can actually serve - the last beat turned into a rest, leaving the
-    //! eighth-note's worth of space genuinely empty - and the limitation is recorded in the tool's
-    //! description rather than left for a caller to discover.
+    //! The first two versions filled "from the end of the last thing" and "from the first uncovered tick",
+    //! and both did nothing for a short piece while reporting success. This test is the GAP shape, where
+    //! the tool has always worked; the short-piece shapes - which is where the rest used to be written into
+    //! the NEXT measure - are pinned by `FillMeasureFindsAHoleThatIsNotAtTheEnd`.
     ASSERT_TRUE(runRecipe(score.get(), [&] {
         return setChordDuration(score.get(), address(1, 4), 0, QStringLiteral("eighth"));
     }).ok);
@@ -1976,6 +1975,111 @@ TEST(AgentHarness_ScoreRecipes, FillMeasureCompletesABarThatWasLeftShort)
     Measure* after = score->tick2measure(Fraction(0, 1));
     ASSERT_TRUE(after != nullptr);
     EXPECT_EQ(after->ticks(), contentBefore);
+}
+
+TEST(AgentHarness_ScoreRecipes, FillMeasureFindsAHoleThatIsNotAtTheEnd)
+{
+    //! ⛔⛔ THE HOLE IS FOUND BY COVERAGE, NOT BY "WHERE THE LAST NOTE ENDS" - AND GETTING THAT WRONG
+    //! CORRUPTED THE NEXT MEASURE.
+    //!
+    //! Version 3 of the recipe counted how much the fullest voice held and then inserted the difference at
+    //! `fullestEnd` - the end of the last chordrest. That is right only when the hole happens to BE at the
+    //! end. Measured on a bar shortened in the MIDDLE (`[0 1/4][1/4 1/8][1/2 1/4][3/4 1/4]`): the last
+    //! chordrest ends ON the barline, so the rest was inserted at the barline - INTO MEASURE 2, whose whole
+    //! rest it replaced with an eighth rest - while the tool reported "filled the last 1/8" and measure 1
+    //! stayed at 7/8. Two bars broken, one of them not even mentioned.
+    //!
+    //! So the shape that matters is not "a beat is short" but "where is the uncovered time". This test walks
+    //! the three positions - middle, first, last - because only the last one agreed with the old answer.
+    struct Shape { const char* name; int beat; const char* len; };
+    const Shape shapes[] = {
+        { "middle", 2, "eighth" },
+        { "first", 1, "eighth" },
+        { "last", 4, "eighth" },
+    };
+
+    for (const Shape& shape : shapes) {
+        const auto s = loadScore(NOTE_SCORE);
+        ASSERT_TRUE(s);
+
+        ASSERT_TRUE(runRecipe(s.get(), [&] {
+            return setChordDuration(s.get(), address(1, shape.beat), 0, QString::fromLatin1(shape.len));
+        }).ok);
+        ASSERT_FALSE(s->sanityCheck()) << "the SETUP must leave bar 1 incomplete";
+
+        const RecipeResult result = runRecipe(s.get(), [&] {
+            return fillMeasureWithRests(s.get(), 1);
+        });
+        EXPECT_TRUE(result.ok) << shape.name << ": " << result.problem.toStdString();
+
+        //! ⛔ VERIFIED BY `sanityCheck`, which is the only thing that answers "does this bar add up" - and
+        //! which is exactly the gate that catches a rest written into the wrong measure.
+        EXPECT_TRUE(s->sanityCheck()) << shape.name << ": " << s->sanityCheck().text();
+
+        //! And the bar must still be as long as its signature - filling adds content, never length.
+        Measure* after = s->tick2measure(Fraction(0, 1));
+        ASSERT_TRUE(after != nullptr);
+        EXPECT_EQ(after->ticks(), Fraction(4, 4)) << shape.name;
+
+        //! ⛔⛔ AND THE NEIGHBOUR MUST BE UNTOUCHED. `sanityCheck` alone would NOT catch the original bug if
+        //! measure 2 had enough room to absorb the rest and still add up - so this asserts the neighbour's
+        //! own content. This is the assertion that pins the corruption itself.
+        const NoteLookup atSecond = chordAt(s.get(), address(2, 1), 0);
+        ASSERT_TRUE(atSecond.found()) << shape.name;
+        ASSERT_TRUE(atSecond.isRest()) << shape.name;
+        EXPECT_TRUE(mu::engraving::toRest(atSecond.rest)->isFullMeasureRest())
+            << shape.name << ": measure 2 must still be its whole rest";
+        EXPECT_EQ(mu::engraving::toChordRest(atSecond.rest)->ticks(), Fraction(4, 4)) << shape.name;
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, FillMeasureCompletesVoiceZeroOfEveryStaff)
+{
+    //! ⛔ "THE BAR ADDS UP" IS A PER-STAFF QUESTION, and the tool used to answer it for one staff only.
+    //! `sanityCheck` requires voice 0 of EVERY staff to equal the bar length (`check.cpp:198`) and only
+    //! checks voices 1-3 for being too long. So a bar left short on the second staff of a piano part would
+    //! come back "filled" while the score still failed the check this tool exists to satisfy.
+    //!
+    //! ⚠️ THE SHAPE MATTERS HERE TOO: after `appendStaff` the new staff holds whole-measure rests, so
+    //! "beat 2" of it is not an addressable position at all - the rest is one object spanning the bar.
+    //! Shortening that REST is the reachable way to leave the second staff's bar short.
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return appendStaff(score.get(), 0);
+    }).ok);
+    ASSERT_EQ(score->nstaves(), 2u);
+    ASSERT_TRUE(score->sanityCheck()) << "the SETUP must start from a sound score";
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 1, /* staff */ 2), 0, QStringLiteral("eighth"));
+    }).ok);
+
+    const std::string before = score->sanityCheck().text();
+    ASSERT_FALSE(before.empty()) << "the SETUP must leave bar 1 incomplete";
+    EXPECT_TRUE(QString::fromStdString(before).contains(QStringLiteral("staff 2")))
+        << "and it must be the SECOND staff that is short, or this test proves nothing: " << before;
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return fillMeasureWithRests(score.get(), 1);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    EXPECT_TRUE(score->sanityCheck()) << score->sanityCheck().text();
+
+    //! And the staff that was already complete must not have been given a second helping. Counting rests
+    //! on staff 1 is the check that the fill stayed where the hole was.
+    Measure* first = score->tick2measure(Fraction(0, 1));
+    ASSERT_TRUE(first != nullptr);
+    int restsOnStaffZero = 0;
+    for (Segment* s = first->first(SegmentType::ChordRest); s; s = s->next(SegmentType::ChordRest)) {
+        EngravingItem* e = s->element(0);
+        if (e && e->isRest()) {
+            ++restsOnStaffZero;
+        }
+    }
+    EXPECT_EQ(restsOnStaffZero, 0) << "staff 1 was already complete and must be left alone";
 }
 
 TEST(AgentHarness_ScoreRecipes, FillMeasureOnACompleteBarSucceedsAndSaysSo)
@@ -2274,6 +2378,86 @@ TEST(AgentHarness_ScoreRecipes, TransposeRangeRefusesBadArguments)
     EXPECT_FALSE(runRecipe(score.get(), [&] {
         return transposeRange(score.get(), 1, 1, 7, 2);
     }).ok);
+}
+
+TEST(AgentHarness_ScoreRecipes, TransposeRangeMovesTheKeyOnlyWhenAsked)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setKeySignature(score.get(), 1, -3);   //!< three flats
+    }).ok);
+    ASSERT_EQ(int(score->staff(0)->concertKey(Fraction(0, 1))), -3);
+
+    //! ⛔ THE DEFAULT MUST NOT MOVE THE KEY. Moving the key signature is a separate musical decision from
+    //! moving the notes, and a caller that did not ask for it must not get it - every existing call site's
+    //! meaning depends on that.
+    const RecipeResult plain = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 0, 2);
+    });
+    EXPECT_TRUE(plain.ok) << plain.problem.toStdString();
+    EXPECT_EQ(int(score->staff(0)->concertKey(Fraction(0, 1))), -3)
+        << "a transpose that did not ask for the key must leave it alone";
+
+    //! And when it IS asked for: three flats (E-flat major) up a whole tone is F major, ONE flat.
+    //! ⚠️ Written down carefully because the first version of this test said "four flats" - which is a
+    //! perfect FOURTH up, not a whole tone. A wrong expectation here would have been "confirmed" by
+    //! whatever the code happened to do the moment the numbers lined up.
+    const RecipeResult withKey = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 0, 2, /* transposeKeySignature */ true);
+    });
+    EXPECT_TRUE(withKey.ok) << withKey.problem.toStdString();
+    EXPECT_EQ(int(score->staff(0)->concertKey(Fraction(0, 1))), -1)
+        << "E-flat major up a whole tone is F major (one flat)";
+}
+
+TEST(AgentHarness_ScoreRecipes, TransposeRangeKeepsTheKeyOutsideTheRange)
+{
+    //! ⛔⛔ THE BOUNDARY IS THE WHOLE POINT. A key signature applies from its tick until the NEXT one, so
+    //! moving the key of measures 1-1 also moves the key of measure 2 unless something is written at the
+    //! barline to stop it. That is the same failure as a rest inserted into the next measure (第 122 条):
+    //! an edit to music the caller did not name.
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+    ASSERT_EQ(score->nmeasures(), 2) << "this test needs a measure AFTER the range";
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setKeySignature(score.get(), 1, -3);
+    }).ok);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 0, 2, /* transposeKeySignature */ true);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! Inside the range: moved.
+    EXPECT_EQ(int(score->staff(0)->concertKey(Fraction(0, 1))), -1) << "measure 1 moved with the notes";
+
+    //! ⛔ OUTSIDE the range: NOT moved. Without the boundary write this reads -1, because nothing separates
+    //! measure 2 from measure 1's new key.
+    EXPECT_EQ(int(score->staff(0)->concertKey(Fraction(1, 1))), -3)
+        << "measure 2 was not part of the request and must keep its key";
+}
+
+TEST(AgentHarness_ScoreRecipes, TransposeRangeByAnOctaveLeavesTheKeyAlone)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setKeySignature(score.get(), 1, -3);
+    }).ok);
+
+    //! ⚠️ Upstream's rule (`transpose.cpp:100`): an interval that is a whole number of octaves does not
+    //! move the key, because the music is still in the same key. Asking for the key here must be a no-op
+    //! rather than a "helpful" transposition to a key with 10 flats.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 0, 12, /* transposeKeySignature */ true);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_EQ(int(score->staff(0)->concertKey(Fraction(0, 1))), -3)
+        << "an octave leaves the key where it was";
 }
 
 TEST(AgentHarness_ScoreRecipes, TransposeRangeReportsAPartialResultAsAFailure)

@@ -26,8 +26,10 @@
 #include "engraving/dom/chord.h"
 #include "engraving/dom/masterscore.h"
 #include "engraving/dom/note.h"
+#include "engraving/dom/part.h"
 #include "engraving/dom/rest.h"
 #include "engraving/dom/score.h"
+#include "engraving/editing/editpart.h"
 #include "engraving/tests/utils/scorerw.h"
 
 #include "agentharness/qml/MuseScore/AgentHarness/addressing.h"
@@ -232,6 +234,48 @@ TEST(AgentHarness_NoteLocator, ARestIsFoundEvenForAVoiceThatHasNoElement)
         const NoteLookup found = chordAt(score.get(), address(2, 1), voice);
         EXPECT_TRUE(found.found()) << "voice " << voice << ": " << found.problem.toStdString();
         EXPECT_TRUE(found.isRest()) << "voice " << voice;
+    }
+}
+
+TEST(AgentHarness_NoteLocator, ALookupNeverReachesIntoAnotherStaff)
+{
+    //! ⛔⛔ THE FALLBACK THAT MADE WHOLE-MEASURE RESTS VISIBLE ALSO MADE OTHER STAFFS VISIBLE.
+    //!
+    //! When the requested track holds nothing at that tick, the locator falls back to whatever
+    //! chord-like element the segment carries - which is what lets it find a whole-measure rest, since
+    //! that is stored once on the measure. But the fallback used to scan `score->ntracks()`: EVERY track
+    //! in the score, other staves included. Measured on a two-staff part, `chordAt(staff 2, beat 2)`
+    //! returned staff 1's chord, and `setChordDuration` asked to shorten a beat of the second staff
+    //! shortened the FIRST one - while reporting the address it had been given. The message and the edit
+    //! disagreed, and only the score showed it.
+    //!
+    //! ⚠️ So this is not "the answer should have been empty" - it is "the answer must never be another
+    //! staff's note", which is the one thing an addressed write cannot survive.
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A second staff with nothing on it: every tick of it is empty, so every lookup on it is a chance
+    //! for the fallback to reach across.
+    score->startCmd(muse::TranslatableString::untranslatable("agentharness test"));
+    mu::engraving::EditPart::appendStaff(score.get(), score->parts()[0]);
+    score->endCmd();
+    ASSERT_EQ(score->nstaves(), 2u) << "the setup must actually add a staff";
+
+    for (int beat = 1; beat <= 3; ++beat) {
+        const NoteLookup onSecond = chordAt(score.get(), address(1, beat, /* staff */ 2), 0);
+        if (onSecond.found()) {
+            const mu::engraving::track_idx_t track = onSecond.chordRest()->track();
+            EXPECT_GE(int(track), int(VOICES))
+                << "beat " << beat << ": the second staff's lookup returned a track on the first staff";
+            EXPECT_EQ(int(track / VOICES), 1) << "beat " << beat << ": wrong staff";
+        }
+    }
+
+    //! And the note-level lookup must not reach across either - this is the path that edits pitches.
+    const NoteLookup noteOnSecond = noteAt(score.get(), address(1, 1, 2), 0, -1);
+    if (noteOnSecond.ok()) {
+        EXPECT_GE(int(noteOnSecond.note->track()), int(VOICES))
+            << "a note lookup on staff 2 must never return staff 1's note";
     }
 }
 
