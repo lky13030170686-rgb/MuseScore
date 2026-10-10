@@ -1912,3 +1912,22 @@ TEST(AgentHarness_ScoreRecipes, StaffToolsRefuseAPartThatDoesNotExist)
         EXPECT_TRUE(result.problem.contains(QStringLiteral("0 to 0"))) << result.problem.toStdString();
     }
 }
+TEST(AgentHarness_ScoreRecipes, SetDurationOnARestMustNotCrash)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔⛔ THE CRASH GUARD. `chordAt` returns with only `rest` set on a rest - that is what the `rest`
+    //! field is FOR - so a recipe that reaches for `found.chord` unconditionally dereferences null. The
+    //! locator suite found that shape once already (第 94 条) and it cost several rounds; this pins it from
+    //! the recipe side for the duration path, which had the same hole.
+    //!
+    //! ⚠️ Bar 2 of `test.mscx` is a whole-measure rest, and `setChordDuration` is asked to change it.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(2, 1), 0, QStringLiteral("half"));
+    });
+
+    //! Whether it succeeds or refuses, it must not crash - and on a REST, changing the duration is a
+    //! legitimate request, so it should succeed.
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+}

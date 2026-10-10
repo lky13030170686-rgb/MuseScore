@@ -354,11 +354,27 @@ RecipeResult muse::agentharness::setChordDuration(mu::engraving::Score* score, c
         return RecipeResult::failure(parsed.problem);
     }
 
-    mu::engraving::Chord* chord = found.chord;
-    const QString was = describeDuration(chord->durationType());
+    //! ⛔⛔ A REST IS A LEGITIMATE TARGET, AND REACHING FOR `found.chord` HERE WAS A CRASH.
+    //!
+    //! `chordAt` returns with only `rest` set on a rest - that is what the `rest` field is FOR - so the
+    //! unconditional `found.chord->...` that used to be here dereferenced null. The unit suite caught it
+    //! with an access violation, the same way the locator suite caught the identical hole in `noteAt`
+    //! (第 94 条). The running program never hit it because nobody had asked to change a rest's length.
+    //!
+    //! ⚠️ And it is not a case to refuse: "make this rest a half rest" is an ordinary request, and
+    //! `undoChangeChordRestLen` takes a `ChordRest` - it was always able to do it. The old code simply
+    //! never got that far.
+    mu::engraving::ChordRest* target = found.chord ? static_cast<mu::engraving::ChordRest*>(found.chord)
+                                                   : static_cast<mu::engraving::ChordRest*>(found.rest);
+    if (!target) {
+        return RecipeResult::failure(QStringLiteral("%1 holds nothing whose length can be set")
+                                     .arg(formatAddress(address)));
+    }
 
-    if (chord->durationType().type() == parsed.value.type()
-        && chord->durationType().dots() == parsed.value.dots()) {
+    const QString was = describeDuration(target->durationType());
+
+    if (target->durationType().type() == parsed.value.type()
+        && target->durationType().dots() == parsed.value.dots()) {
         //! Not an error: it is already that long. Reported as success so a model does not go looking
         //! for another way to do what it already did.
         return RecipeResult::success(QStringLiteral("%1 is already %2")
@@ -371,9 +387,9 @@ RecipeResult muse::agentharness::setChordDuration(mu::engraving::Score* score, c
     //!
     //! The message names the space available, because "it does not fit" without a number leaves the
     //! caller guessing whether it overshot by a beat or by a whole bar.
-    if (!durationFits(chord, parsed.value)) {
-        const mu::engraving::Measure* measure = chord->findMeasure();
-        const mu::engraving::Fraction available = measure ? measure->endTick() - chord->tick()
+    if (!durationFits(target, parsed.value)) {
+        const mu::engraving::Measure* measure = target->findMeasure();
+        const mu::engraving::Fraction available = measure ? measure->endTick() - target->tick()
                                                           : mu::engraving::Fraction(0, 1);
         return RecipeResult::failure(
             //! ⚠️ The space left is reported as a FRACTION OF A WHOLE NOTE (`3/4`), not as a duration
@@ -396,7 +412,7 @@ RecipeResult muse::agentharness::setChordDuration(mu::engraving::Score* score, c
     //! ⚠️ It sets DURATION_TYPE_WITH_DOTS and DURATION as two properties. That is upstream's own
     //! sequence; doing only the first leaves `ticks()` stale, which shows up as a chord that draws
     //! short and overlaps the next beat.
-    score->undoChangeChordRestLen(chord, parsed.value);
+    score->undoChangeChordRestLen(target, parsed.value);
 
     return RecipeResult::success(QStringLiteral("%1: %2 -> %3")
                                  .arg(formatAddress(address), was, parsed.name));
