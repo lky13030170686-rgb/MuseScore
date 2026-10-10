@@ -27,6 +27,7 @@
 #include <QJsonParseError>
 
 #include "async/async.h"
+#include "engraving/automation/automationdata.h"
 #include "engraving/dom/masterscore.h"
 #include "engraving/editing/transaction/transaction.h"
 
@@ -242,6 +243,16 @@ void FieldController::unbind()
 {
     if (m_score) {
         m_score->changesChannel().disconnect(this);
+
+        //! ⛔⛔ AND THE AUTOMATION CHANNEL TOO. Every subscription made in `bindToCurrentNotation` has to be
+        //! torn down here, or it outlives the score it was made on: the callback captures `this` and fires
+        //! into a controller whose `m_score` is now a DIFFERENT score - so a tempo change in the new score
+        //! would be attributed to the old one, and a change in the old one would be recorded as if it had
+        //! happened in the new one. Missing this line is the shape of bug that only shows up after the user
+        //! switches scores, which is precisely when nobody is looking at the field.
+        if (mu::engraving::AutomationDataConstPtr automation = m_score->automationData()) {
+            automation->changed().disconnect(this);
+        }
     }
 
     if (INotationPtr notation = context()->currentNotation()) {
@@ -295,6 +306,24 @@ void FieldController::bindToCurrentNotation()
     m_score->changesChannel().onReceive(this, [this](const ScoreChanges& changes) {
         onScoreChanges(changes);
     });
+
+    //! ⛔⛔ THE SECOND CHANNEL, AND WITHOUT IT AN ENTIRE CLASS OF EDIT IS INVISIBLE.
+    //!
+    //! Dynamics and tempo are not notation elements - they live in `AutomationData`, and they change
+    //! through a DIFFERENT channel (`automationdata.h:49`). Subscribing only to `changesChannel` means a
+    //! user dragging a tempo curve point produces NO event at all: the field would report the score as
+    //! unchanged while its playback had just been rewritten. That is the "silently missing a whole class of
+    //! change" failure the plan lists as a named risk, and it is invisible from the notation side - the
+    //! notes really did not move.
+    //!
+    //! ⚠️ Recorded as its own kind of event rather than folded into `onScoreChanges`: there are no
+    //! `changedObjects` here (nothing in the notation layer moved), so reusing that path would produce an
+    //! event claiming zero objects changed - which reads as "nothing happened".
+    if (mu::engraving::AutomationDataConstPtr automation = m_score->automationData()) {
+        automation->changed().onReceive(this, [this](const mu::engraving::AutomationChanges& changes) {
+            onAutomationChanges(changes);
+        });
+    }
 
     if (INotationUndoStackPtr undoStack = notation->undoStack()) {
         //! Transaction committed. The name of what just happened is read in onScoreChanges (the
@@ -391,6 +420,43 @@ void FieldController::noteActionFromUndoStack(RawFieldEvent& event) const
     }
 }
 
+void FieldController::onAutomationChanges(const mu::engraving::AutomationChanges& changes)
+{
+    //! ⚠️ A FULL RESET HAS NO KEYS AND NO RANGE - `isEmpty()` is true for it, and treating that as "nothing
+    //! happened" is exactly backwards: a reset is the LARGEST change there is.
+    if (changes.isEmpty() && !changes.isFullReset) {
+        return;
+    }
+
+    RawFieldEvent event;
+    event.action = changes.isFullReset
+                   ? QStringLiteral("Automation reset")
+                   : QStringLiteral("Automation edit (%1 curve point(s))").arg(changes.affectedKeys.size());
+
+    //! ⚠️ `utick_t` is UNSIGNED and `-1` is its "unset" - so the conversion has to happen here rather than
+    //! being assumed. Passing it through unchanged would put a huge positive number in the field for
+    //! "no range", and the panel would show a tick far past the end of the score.
+    event.tickFrom = changes.tickFrom == muse::nidx ? -1 : int(changes.tickFrom);
+    event.tickTo = changes.tickTo == muse::nidx ? -1 : int(changes.tickTo);
+
+    //! Automation belongs to a staff or to the whole score, not to one of them per event - so the staff
+    //! range is left unset rather than guessed at from the keys, which carry curve types rather than staves.
+    event.staffFrom = -1;
+    event.staffTo = -1;
+
+    //! ⛔ NOT a layout-only change. `isLayoutOnly` means "the objects did not change", and here they did -
+    //! just not in the notation layer. Marking this as layout-only would let the panel filter it out.
+    event.isLayoutOnly = false;
+    event.hasBoundary = true;
+    event.objectCount = int(changes.affectedKeys.size());
+    event.source = RawFieldEvent::Source::User;
+
+    record(event);
+
+    refreshScoreFacts();
+    ++m_revision;
+    emit fieldChanged();
+}
 void FieldController::onScoreChanges(const ScoreChanges& changes)
 {
     //! ── Undo / redo direction ──────────────────────────────────────────────────────────

@@ -60,10 +60,7 @@ struct RecipeResult;
 
 namespace mu::engraving {
 class Score;
-}
-
-namespace mu::engraving {
-class Score;
+struct AutomationChanges;
 struct ScoreChanges;
 }
 
@@ -497,6 +494,10 @@ private:
     void bindToCurrentNotation();
     void unbind();
     void onScoreChanges(const mu::engraving::ScoreChanges& changes);
+
+    //! The AUTOMATION channel - dynamics and tempo curves. See the note where it is subscribed: without it
+    //! an entire class of edit never reaches the field.
+    void onAutomationChanges(const mu::engraving::AutomationChanges& changes);
     void onStackChanged();
     void onUndoRedo();
     void refreshScoreFacts();
