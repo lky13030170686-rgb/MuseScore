@@ -1340,6 +1340,47 @@ ToolResult muse::agentharness::toolTempoSet(const QJsonObject& args, const ToolC
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolTransposeRange(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int fromMeasure = 0;
+    int toMeasure = 0;
+    int partIndex = 0;
+    int semitones = 0;
+    if (!readInt(args, QStringLiteral("fromMeasure"), fromMeasure)) {
+        return ToolResult::failure(QStringLiteral("`fromMeasure` is required and must be an integer"));
+    }
+    if (!readInt(args, QStringLiteral("toMeasure"), toMeasure)) {
+        return ToolResult::failure(QStringLiteral("`toMeasure` is required and must be an integer"));
+    }
+    if (!readInt(args, QStringLiteral("part"), partIndex)) {
+        return ToolResult::failure(QStringLiteral("`part` is required: the 0-based index of the part"));
+    }
+    if (!readInt(args, QStringLiteral("semitones"), semitones)) {
+        return ToolResult::failure(QStringLiteral("`semitones` is required and must be an integer"));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Transpose range"), [&](mu::engraving::Score* score) {
+        return transposeRange(score, fromMeasure, toMeasure, partIndex, semitones);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -2001,6 +2042,30 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             toolTempoSet,
         },
         ToolSpec{
+            QStringLiteral("transpose_range"),
+            QStringLiteral("Transpose every note in a range of measures by a number of semitones, in one "
+                           "part. NOTE: this moves the NOTES only - it does not transpose the key "
+                           "signature, so a passage moved by a non-octave interval keeps its old key and "
+                           "will need the key set separately. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("fromMeasure"), intProperty(QStringLiteral(
+                                                                   "1-based first measure of the range.")));
+                props.insert(QStringLiteral("toMeasure"), intProperty(QStringLiteral(
+                                                                 "1-based last measure of the range, inclusive.")));
+                props.insert(QStringLiteral("part"), intProperty(QStringLiteral(
+                                                             "0-based index of the part whose staves are transposed.")));
+                props.insert(QStringLiteral("semitones"), intProperty(QStringLiteral(
+                                                               "How many semitones to move, negative for down. Refused beyond four "
+                                                               "octaves.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("fromMeasure"), QStringLiteral("toMeasure"),
+                             QStringLiteral("part"), QStringLiteral("semitones") }),
+            toolTransposeRange,
+        },
+        ToolSpec{
             QStringLiteral("note_tie"),
             QStringLiteral("Tie the note at an address to the next note of the SAME PITCH, remove that "
                            "tie, or toggle it. A tie changes how the notes SOUND (one longer note); a "
@@ -2102,7 +2167,7 @@ bool muse::agentharness::isBatchableTool(const QString& name)
         QStringLiteral("key_signature_set"), QStringLiteral("time_signature_set"),
         QStringLiteral("measure_insert"), QStringLiteral("measure_remove"),
         QStringLiteral("measure_fill"),
-        QStringLiteral("tempo_set"),
+        QStringLiteral("tempo_set"), QStringLiteral("transpose_range"),
     };
     return kBatchable.contains(name);
 }

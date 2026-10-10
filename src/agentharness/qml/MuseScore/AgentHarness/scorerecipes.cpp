@@ -843,6 +843,127 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
     }
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
 }
+RecipeResult muse::agentharness::transposeRange(mu::engraving::Score* score, int fromMeasure, int toMeasure,
+                                                int partIndex, int semitones)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (semitones == 0) {
+        //! Not an error: nothing to do is not a failure. Reported as success so a caller does not go looking
+        //! for another way to do what it already did - the rule the duration and key-signature recipes keep.
+        return RecipeResult::success(QStringLiteral("nothing to do: the interval is zero semitones"));
+    }
+
+    //! ⚠️ A sanity bound rather than a musical one. Transposing by more than a few octaves is almost always
+    //! a caller that passed the wrong unit (a MIDI note number, a scale degree), and the result - notes
+    //! pushed off the end of the staff - is harder to undo than to refuse.
+    if (semitones < -48 || semitones > 48) {
+        return RecipeResult::failure(
+            QStringLiteral("%1 semitones is more than four octaves; if you meant a different unit (a MIDI "
+                           "note number, a scale degree), convert it first").arg(semitones));
+    }
+
+    const std::vector<mu::engraving::Part*>& parts = score->parts();
+    if (partIndex < 0 || partIndex >= int(parts.size())) {
+        return RecipeResult::failure(
+            QStringLiteral("there is no part %1; the score has %2 (0 to %3)")
+            .arg(partIndex).arg(parts.size()).arg(int(parts.size()) - 1));
+    }
+
+    int total = 0;
+    mu::engraving::Measure* from = measureAt(score, fromMeasure, &total);
+    if (!from) {
+        return RecipeResult::failure(QStringLiteral("there is no measure %1; the score has %2")
+                                     .arg(fromMeasure).arg(total));
+    }
+    mu::engraving::Measure* to = measureAt(score, toMeasure, &total);
+    if (!to) {
+        return RecipeResult::failure(QStringLiteral("there is no measure %1; the score has %2")
+                                     .arg(toMeasure).arg(total));
+    }
+
+    //! ⛔ REVERSED RANGES ARE REFUSED, NOT SWAPPED. A caller that passed them the wrong way round has a
+    //! wrong idea of which measures it is editing, and silently transposing the range it did not ask for is
+    //! the kind of help that costs a user their score.
+    if (to->tick() < from->tick()) {
+        return RecipeResult::failure(
+            QStringLiteral("measure %1 comes after measure %2; give the range low-to-high")
+            .arg(fromMeasure).arg(toMeasure));
+    }
+
+    mu::engraving::Part* part = parts[size_t(partIndex)];
+    const mu::engraving::staff_idx_t firstStaff = part->staff(0)->idx();
+    const mu::engraving::staff_idx_t lastStaff = firstStaff + mu::engraving::staff_idx_t(part->nstaves());
+
+    //! ⚠️ `Interval(0, semitones)` - a chromatic interval with NO diatonic component. Passing a diatonic
+    //! count as well would make the result depend on the key (a "third" is major or minor), which is a
+    //! different operation from "up two semitones" and not what the parameter says.
+    const mu::engraving::Interval interval(0, semitones);
+
+    int moved = 0;
+    int refused = 0;
+
+    for (mu::engraving::Measure* measure = from; measure; measure = measure->nextMeasure()) {
+        for (mu::engraving::Segment* segment = measure->first(mu::engraving::SegmentType::ChordRest); segment;
+             segment = segment->next(mu::engraving::SegmentType::ChordRest)) {
+            for (mu::engraving::staff_idx_t staffIdx = firstStaff; staffIdx < lastStaff; ++staffIdx) {
+                for (mu::engraving::voice_idx_t voice = 0; voice < mu::engraving::VOICES; ++voice) {
+                    mu::engraving::EngravingItem* item =
+                        segment->element(staffIdx * mu::engraving::VOICES + voice);
+                    if (!item || !item->isChord()) {
+                        continue;
+                    }
+
+                    //! ⚠️ The chord's notes are COPIED before the loop: `Note::transpose` pushes an undo
+                    //! command that can rebuild the chord's note list, so iterating the live vector while
+                    //! editing it is how a transpose skips every other note.
+                    const std::vector<mu::engraving::Note*> notes =
+                        mu::engraving::toChord(item)->notes();
+                    for (mu::engraving::Note* note : notes) {
+                        //! ⛔ `Note::transpose`, which pushes `EditNote::undoChangePitch` for the note AND
+                        //! every note it is linked to. Setting the pitch directly would edit one part and
+                        //! silently desynchronise the others - the same reason `note_set_pitch` uses it.
+                        if (note->transpose(interval, /* useDoubleSharpsFlats */ false)) {
+                            ++moved;
+                        } else {
+                            //! ⚠️ COUNTED, NOT IGNORED. `transpose` returns false when the result would be
+                            //! outside the range of pitches a note can hold - so a passage at the top of the
+                            //! staff can be PARTLY transposed, and a report that only said "done" would hide
+                            //! the notes that stayed put.
+                            ++refused;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (measure == to) {
+            break;
+        }
+    }
+
+    if (moved == 0 && refused == 0) {
+        return RecipeResult::success(QStringLiteral("measures %1-%2 hold no notes to transpose")
+                                     .arg(fromMeasure).arg(toMeasure));
+    }
+
+    if (refused > 0) {
+        //! ⛔ A PARTIAL RESULT IS REPORTED AS A FAILURE, because it is one: the caller asked for a passage to
+        //! be transposed and part of it was not. Saying "done" here is exactly the "looks like it succeeded,
+        //! did nothing" failure this project keeps meeting - and the caller cannot tell which notes moved.
+        return RecipeResult::failure(
+            QStringLiteral("only %1 of %2 note(s) in measures %3-%4 could be transposed; %5 would have "
+                           "gone outside the range of pitches a note can hold. Nothing has been left in a "
+                           "half-transposed state you cannot see - undo with Ctrl+Z.")
+            .arg(moved).arg(moved + refused).arg(fromMeasure).arg(toMeasure).arg(refused));
+    }
+
+    return RecipeResult::success(QStringLiteral("measures %1-%2: transposed %3 note(s) by %4 semitone(s)")
+                                 .arg(fromMeasure).arg(toMeasure).arg(moved).arg(semitones));
+}
+
 RecipeResult muse::agentharness::setTempo(mu::engraving::Score* score, int measureNumber,
                                          double beatsPerMinute)
 {

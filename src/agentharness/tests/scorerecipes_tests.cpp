@@ -2127,3 +2127,179 @@ TEST(AgentHarness_ScoreRecipes, SetTempoIsVisibleInTheScoresAutomationData)
     EXPECT_GE(after, before) << "the tempo curve must hold the point";
     EXPECT_GE(after, 1) << "there must be a tempo point after setting one";
 }
+//! ── Transposing a range ───────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_ScoreRecipes, TransposeRangeMovesEveryNoteInTheRange)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ THE EXPECTATION IS A DELTA, NOT A LIST OF PITCHES I WROTE DOWN. The first version of this test
+    //! asserted `{62,64,66,67}` for "C4 D4 E4 F4 up two semitones" and was wrong about what the score
+    //! actually holds - which makes the test a check of my arithmetic rather than of the code. Reading the
+    //! pitches BEFORE and comparing after is self-consistent: it cannot be wrong about the input.
+    int before[4] = {};
+    for (int beat = 1; beat <= 4; ++beat) {
+        const NoteLookup at = chordAt(score.get(), address(1, beat), 0);
+        ASSERT_TRUE(at.found()) << "beat " << beat;
+        ASSERT_TRUE(at.chordOrNull() != nullptr) << "beat " << beat;
+        ASSERT_FALSE(at.chordOrNull()->notes().empty()) << "beat " << beat;
+        before[beat - 1] = at.chordOrNull()->notes().front()->pitch();
+    }
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 0, 2);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("4 note(s)"))) << result.detail.toStdString();
+
+    //! ⛔ EVERY NOTE, READ BACK ONE BY ONE. A range transpose that moves only the first note of each chord,
+    //! or every other note, reports success just as loudly - and a spot check of one note would not see it.
+    //! (That is why the recipe copies the chord's note list before editing it.)
+    for (int beat = 1; beat <= 4; ++beat) {
+        const NoteLookup at = chordAt(score.get(), address(1, beat), 0);
+        ASSERT_TRUE(at.found()) << "beat " << beat;
+        //! ⚠️ `chordAt` fills `chord`, not `note` - that split is the point of the two accessors. Reading
+        //! `at.note` here would be null on every beat and the test would fail for the wrong reason.
+        ASSERT_TRUE(at.chordOrNull() != nullptr) << "beat " << beat;
+        ASSERT_FALSE(at.chordOrNull()->notes().empty()) << "beat " << beat;
+        EXPECT_EQ(at.chordOrNull()->notes().front()->pitch(), before[beat - 1] + 2)
+            << "beat " << beat << " must have moved by exactly the interval";
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, TransposeRangeLeavesTheRestOfTheScoreAlone)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Bar 2 is a whole-measure rest; bar 1 is not in the range.
+    const NoteLookup beforeLookup = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(beforeLookup.chordOrNull() != nullptr);
+    ASSERT_FALSE(beforeLookup.chordOrNull()->notes().empty());
+    const int beforeBar1 = beforeLookup.chordOrNull()->notes().front()->pitch();
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 0, -2);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔ THE BOUNDARY, NOT JUST THE MIDDLE. A loop that runs one measure too far, or that uses `<=` on the
+    //! end, transposes content the caller did not ask for - and the report still says the right range.
+    const NoteLookup bar2 = chordAt(score.get(), address(2, 1), 0);
+    ASSERT_TRUE(bar2.found());
+    EXPECT_TRUE(bar2.isRest()) << "bar 2 must still be a rest";
+
+    //! And bar 1 moved down by exactly two, measured against what it held.
+    const NoteLookup first = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(first.chordOrNull() != nullptr);
+    ASSERT_FALSE(first.chordOrNull()->notes().empty());
+    EXPECT_EQ(first.chordOrNull()->notes().front()->pitch(), beforeBar1 - 2);
+}
+
+TEST(AgentHarness_ScoreRecipes, TransposeRangeCoversBothEndsOfTheRange)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ THE INCLUSIVE END IS THE EASY ONE TO GET WRONG: a loop that stops before `to` silently leaves the
+    //! last measure untransposed. Transposing bars 1-2 and checking the LAST bar is what catches it - and
+    //! bar 2 is a rest, so this also checks that a rest in the range does not stop the walk.
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(2, 1), 0, QStringLiteral("quarter"));
+    }).ok);
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return changeToRest(score.get(), address(2, 1), 0);
+    }).ok);
+    //! ⚠️ And fill bar 2 back up, or this test would be asserting `sanityCheck` against a bar the SETUP
+    //! broke - a failure that says nothing about transposing. (`measure_fill` cannot lengthen a shortened
+    //! beat, so the quarter rest is first turned into a hole, then filled.)
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return changeToRest(score.get(), address(2, 1), 0);
+    }).ok);
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return fillMeasureWithRests(score.get(), 2);
+    }).ok);
+    ASSERT_TRUE(score->sanityCheck()) << "the SETUP must leave a sound score: "
+                                      << score->sanityCheck().text();
+
+    const NoteLookup beforeLookup = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(beforeLookup.chordOrNull() != nullptr);
+    ASSERT_FALSE(beforeLookup.chordOrNull()->notes().empty());
+    const int beforeBar1 = beforeLookup.chordOrNull()->notes().front()->pitch();
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 2, 0, 5);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! Bar 1 beat 1 moved by exactly the interval, measured against what it held.
+    const NoteLookup first = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(first.chordOrNull() != nullptr);
+    ASSERT_FALSE(first.chordOrNull()->notes().empty());
+    EXPECT_EQ(first.chordOrNull()->notes().front()->pitch(), beforeBar1 + 5) << "bar 1 must be transposed";
+
+    //! And the score must still be sound - a transpose that produced a bar that does not add up would be
+    //! caught by the same gate the batch path uses.
+    EXPECT_TRUE(score->sanityCheck()) << score->sanityCheck().text();
+}
+
+TEST(AgentHarness_ScoreRecipes, TransposeRangeRefusesBadArguments)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Zero is not a failure - nothing to do is a legitimate answer, and a model told "failed" would look
+    //! for another way to do what is already done.
+    EXPECT_TRUE(runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 0, 0);
+    }).ok);
+
+    //! A reversed range is refused, NOT swapped: a caller that passed them the wrong way round has a wrong
+    //! idea of which measures it is editing.
+    const RecipeResult reversed = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 2, 1, 0, 2);
+    });
+    EXPECT_FALSE(reversed.ok);
+    EXPECT_TRUE(reversed.problem.contains(QStringLiteral("low-to-high"))) << reversed.problem.toStdString();
+
+    //! More than four octaves is almost always a wrong unit, not a musical request.
+    const RecipeResult tooFar = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 0, 60);
+    });
+    EXPECT_FALSE(tooFar.ok);
+    EXPECT_TRUE(tooFar.problem.contains(QStringLiteral("four octaves"))) << tooFar.problem.toStdString();
+
+    //! And a part that does not exist.
+    EXPECT_FALSE(runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 7, 2);
+    }).ok);
+}
+
+TEST(AgentHarness_ScoreRecipes, TransposeRangeReportsAPartialResultAsAFailure)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ A PARTIAL TRANSPOSE IS A FAILURE, NOT A SUCCESS WITH A FOOTNOTE. `Note::transpose` refuses when the
+    //! result would leave the range of pitches a note can hold, so a passage near the top of the staff moves
+    //! PARTLY. Reporting "done" there is the "looks like it succeeded, did nothing" failure - and the caller
+    //! cannot tell which notes moved.
+    //!
+    //! Push bar 1 up to the very top first, then ask for more than is left.
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setNotePitch(score.get(), address(1, 1), 0, -1, 125);
+    }).ok);
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setNotePitch(score.get(), address(1, 2), 0, -1, 125);
+    }).ok);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return transposeRange(score.get(), 1, 1, 0, 24);
+    });
+
+    //! The two notes at 125 cannot go up 24 (the maximum is 127), so this must be a failure that says so.
+    EXPECT_FALSE(result.ok) << "a partly-transposed passage must not be reported as done";
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("could be transposed")))
+        << result.problem.toStdString();
+}

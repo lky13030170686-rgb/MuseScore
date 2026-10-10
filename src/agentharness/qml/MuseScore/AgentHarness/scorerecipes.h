@@ -228,6 +228,24 @@ RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int
 RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, int numerator,
                               int denominator);
 
+//! ── Transposing a passage ─────────────────────────────────────────────────────────────────────
+//! ⛔ WHY THIS IS NOT `Transpose::transpose`, WHICH ALREADY EXISTS. That function reads the SCORE'S
+//! SELECTION - it has no way to be told "measures 3 to 8" - so calling it from a tool would mean setting a
+//! selection the user did not make, transposing, and putting it back. That is a side effect on shared state
+//! for the duration of the call, and it would also move what the user had selected.
+//!
+//! ⚠️ What this does NOT do: transpose the KEY SIGNATURE. `Transpose::transposeKeys` needs a `Transaction&`
+//! that a recipe has no way to obtain, and upstream itself does not transpose key signatures for an
+//! interval that is a whole number of octaves. So a caller transposing a passage by a non-octave interval
+//! gets notes moved and the key left alone - which is exactly what the tool's description says, because a
+//! silent half-transposition is worse than a documented one.
+
+//! Transpose every note in a measure range by a number of semitones.
+//!
+//! @param partIndex 0-based index into `Score::parts()`; only that part's staves are touched
+RecipeResult transposeRange(mu::engraving::Score* score, int fromMeasure, int toMeasure, int partIndex,
+                            int semitones);
+
 //! ── Tempo ─────────────────────────────────────────────────────────────────────────────────────
 //! ⛔ TEMPO IS NOT A NOTATION ELEMENT - it lives in `AutomationData` and changes through its OWN channel.
 //! That makes this the one recipe whose edit the information field would not see if only
