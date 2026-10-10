@@ -80,6 +80,20 @@ Item {
                   : qsTrc("agentharness", "Set an API key first")
             enabled: root.configured && !root.running
 
+            //! ⛔⛔ `TextInputField` DOES NOT WRITE BACK TO `currentText` BY ITSELF. Typing - and pasting -
+            //! only emit `textChanged`, and the caller owns the property: it is the caller's job to store
+            //! the value (see PalettePropertiesDialog.qml for the same idiom).
+            //!
+            //! Without this line the box shows every character you type while `currentText` stays empty,
+            //! so `Send` never enables and Enter returns early - a composer that LOOKS alive and cannot
+            //! send anything. Measured 2026-10-10: pasting a sentence painted it in the field and left
+            //! `Send` greyed out. Every earlier verification had driven the loop through
+            //! `MUSE_AGENT_DEMO_AGENT` (which calls `sendToAgent` directly), so the typed path was never
+            //! exercised until someone tried to use the UI like a user.
+            onTextChanged: function(newTextValue) {
+                promptField.currentText = newTextValue
+            }
+
             onAccepted: {
                 root.submit()
             }
@@ -88,6 +102,14 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             spacing: 4
+
+            //! Wide card (the Agent page): this spacer pushes the actions to the RIGHT end, which is where
+            //! the DSH web client puts its trailing controls. In the narrow panel it is invisible and the
+            //! Send button below stretches instead - the panel's look is unchanged.
+            Item {
+                Layout.fillWidth: true
+                visible: !root.compactButtons
+            }
 
             FlatButton {
                 id: sendButton
@@ -100,12 +122,6 @@ Item {
                 onClicked: {
                     root.submit()
                 }
-            }
-
-            //! Push the actions to the right end on a wide card (see `compactButtons`).
-            Item {
-                Layout.fillWidth: true
-                visible: !root.compactButtons
             }
 
             FlatButton {
@@ -138,10 +154,21 @@ Item {
             accessible.name: qsTrc("agentharness", "API key")
             hint: qsTrc("agentharness", "Paste an API key (kept in memory for this session)")
 
+            //! Same reason as the message field above: without the write-back `currentText` stays empty
+            //! and the pasted key is silently ignored (`length > 0` is false) - the key entry would look
+            //! like it accepted the key and nothing would change.
+            onTextChanged: function(newTextValue) {
+                keyField.currentText = newTextValue
+            }
+
             onAccepted: {
                 if (root.field && keyField.currentText.length > 0) {
                     root.field.setAgentApiKey(keyField.currentText)
-                    keyField.currentText = ""
+                    //! `clear()` and not `currentText = ""`: the inner input's binding to `currentText`
+                    //! is already broken by the user's edit, so assigning the property would leave the
+                    //! text visible on screen while the value was gone (the component's own `clear()`
+                    //! resets BOTH).
+                    keyField.clear()
                     keyField.visible = false
                 }
             }
@@ -162,7 +189,10 @@ Item {
 
         //! Cleared BEFORE sending: if the turn fails immediately the text is gone, which is the honest
         //! outcome - it was sent, and the transcript shows what happened to it.
-        promptField.currentText = ""
+        //! ⛔ `clear()` rather than `currentText = ""` - see the key field above: after the user typed,
+        //! the inner input no longer follows `currentText`, so clearing the property alone would leave
+        //! the sentence on screen (and invite sending it twice).
+        promptField.clear()
         root.field.sendToAgent(text)
     }
 }
