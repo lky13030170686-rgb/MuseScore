@@ -228,6 +228,19 @@ RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int
 RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, int numerator,
                               int denominator);
 
+//! ── Tempo ─────────────────────────────────────────────────────────────────────────────────────
+//! ⛔ TEMPO IS NOT A NOTATION ELEMENT - it lives in `AutomationData` and changes through its OWN channel.
+//! That makes this the one recipe whose edit the information field would not see if only
+//! `Score::changesChannel()` were subscribed, which is why it is also the trigger that verifies the second
+//! subscription works.
+
+//! Set the tempo, in beats per minute, at a measure.
+//!
+//! ⚠️ The tempo is stored NORMALIZED - as a fraction of the score's own maximum tempo (`tempovalues.h`) -
+//! because `AutomationPoint::outValue` is a plain `[0,1]` number with no unit. Writing a raw BPM there
+//! would ask for a tempo hundreds of times too fast, and the score would still play.
+RecipeResult setTempo(mu::engraving::Score* score, int measureNumber, double beatsPerMinute);
+
 //! ── Filling a measure ─────────────────────────────────────────────────────────────────────────
 //! The one operation whose job is to make a measure ADD UP. Everything else here changes what a bar
 //! contains; this one changes whether it is complete.

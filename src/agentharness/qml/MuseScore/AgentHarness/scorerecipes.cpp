@@ -25,7 +25,11 @@
 #include <QSet>
 
 #include "engraving/dom/chord.h"
+#include "engraving/automation/automationdata.h"
+#include "engraving/automation/automationtypes.h"
+#include "engraving/automation/tempovalues.h"
 #include "engraving/dom/factory.h"
+#include "engraving/dom/masterscore.h"
 #include "engraving/dom/tie.h"
 #include "engraving/dom/note.h"
 #include "engraving/dom/pitchspelling.h"
@@ -33,7 +37,11 @@
 #include "engraving/dom/chordrest.h"
 #include "engraving/dom/dynamic.h"
 #include "engraving/dom/hairpin.h"
+#include "engraving/automation/automationdata.h"
+#include "engraving/automation/automationtypes.h"
+#include "engraving/automation/tempovalues.h"
 #include "engraving/dom/factory.h"
+#include "engraving/dom/masterscore.h"
 #include "engraving/editing/editkeysig.h"
 #include "engraving/editing/editchord.h"
 #include "engraving/editing/editpart.h"
@@ -835,6 +843,109 @@ RecipeResult muse::agentharness::addText(mu::engraving::Score* score, const Scor
     }
     return RecipeResult::success(QStringLiteral("added %1 text \"%2\"").arg(style, text));
 }
+RecipeResult muse::agentharness::setTempo(mu::engraving::Score* score, int measureNumber,
+                                         double beatsPerMinute)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (!(beatsPerMinute > 0.0)) {
+        return RecipeResult::failure(QStringLiteral("a tempo must be a positive number of beats per minute "
+                                                    "(got %1)").arg(beatsPerMinute));
+    }
+
+    const mu::engraving::BeatsPerSecond bps(beatsPerMinute / 60.0);
+
+    //! ⛔ VALIDATED AGAINST THE SCORE'S OWN BOUNDS, not against a number written here. `Constants::MIN_TEMPO`
+    //! and `MAX_TEMPO` are what the automation layer clamps to, so refusing outside them keeps this recipe
+    //! and the layer from disagreeing about what is acceptable - and a tempo silently clamped to a third of
+    //! what was asked is exactly the "looks like it worked" failure this project keeps meeting.
+    //! ⚠️ Compared through `.val`, not through the type: `BeatsPerSecond` has no ordering operators, so
+    //! `bps < MIN_TEMPO` does not compile - and a silent conversion would not have been better.
+    if (bps.val < mu::engraving::Constants::MIN_TEMPO.val
+        || bps.val > mu::engraving::Constants::MAX_TEMPO.val) {
+        return RecipeResult::failure(
+            QStringLiteral("%1 BPM is outside the range this score can hold (%2 to %3 BPM)")
+            .arg(beatsPerMinute)
+            .arg(mu::engraving::Constants::MIN_TEMPO.val * 60.0, 0, 'f', 0)
+            .arg(mu::engraving::Constants::MAX_TEMPO.val * 60.0, 0, 'f', 0));
+    }
+
+    int total = 0;
+    mu::engraving::Measure* measure = measureAt(score, measureNumber, &total);
+    if (!measure) {
+        return RecipeResult::failure(QStringLiteral("there is no measure %1; the score has %2")
+                                     .arg(measureNumber).arg(total));
+    }
+
+    //! ⛔⛔ THE VALUE IS NORMALIZED, AND SKIPPING THIS IS THE WHOLE TRAP. `AutomationPoint::outValue` is a
+    //! plain number in `[0,1]` with no unit; tempo is stored as a FRACTION OF THE SCORE'S MAXIMUM
+    //! (`tempovalues.h`). Writing `120.0` there would ask for a tempo about two hundred times too fast -
+    //! and the score would still save, still play, and still look right on the page.
+    mu::engraving::AutomationPoint point;
+    point.value.outValue = std::clamp(mu::engraving::normalizeTempo(bps),
+                                      mu::engraving::MIN_NORMALIZED_TEMPO,
+                                      mu::engraving::MAX_NORMALIZED_TEMPO);
+    //! ⚠️ `generated = false`: this point was asked for, not derived from a tempo marking on the page. A
+    //! point marked generated would be treated as something the app may recompute and drop.
+    point.generated = false;
+
+    mu::engraving::AutomationPointEdit edit;
+    edit.tick = int(measure->tick().ticks());
+    edit.change = mu::engraving::AutomationPointEdit::SetPoint { point };
+
+    mu::engraving::AutomationPointEdits edits { edit };
+
+    //! ⛔⛔ THE CONTROLLER HAS TO BE INITIALIZED FIRST, AND NOTHING SAYS SO.
+    //!
+    //! `MasterScore::automationData()` returns whatever the controller holds, and that is NULL until
+    //! `ensureInitialized` has run - which normally happens as a side effect of building the tempo timeline
+    //! for playback. In a session where nothing has asked for a timeline yet, `automationData()` is null and
+    //! `editAutomationPoints` does NOTHING, silently: `EditAutomationPoints::redo` starts with
+    //! `IF_ASSERT_FAILED(m_controller->automationData()) { return; }`.
+    //!
+    //! ⚠️ Measured: the first version of this recipe reported "the tempo point was not written" in a unit
+    //! test while the same call would have worked in the running app, where playback had already initialized
+    //! the controller. That is the worst kind of difference between test and production - the test was
+    //! wrong about the world, not the code.
+    //!
+    //! ⚠️ `ensureInitialized` is idempotent (`if (m_score) return;`), so calling it unconditionally is safe
+    //! and costs one branch.
+    //! ⚠️ `tempoTimeline()` and not an `ensureInitialized` method: the controller has no public initializer,
+    //! and this accessor is the one that does it (`masterscore.cpp:240`). Its return value is not wanted -
+    //! the call is made for the side effect, which is stated here rather than left as a bare expression.
+    (void)score->masterScore()->tempoTimeline();
+
+    //! ⛔ `AutomationCurveKey::global(Tempo)` - tempo applies to the whole score, which in this API is the
+    //! `std::monostate` scope. Building an instrument- or staff-scoped key would put the point on a curve
+    //! nothing reads, and the tempo would not change.
+    score->editAutomationPoints(mu::engraving::AutomationCurveKey::global(mu::engraving::AutomationType::Tempo),
+                                edits, /* undoable */ true);
+
+    //! ⚠️ VERIFIED BY READING THE CURVE BACK, not by the call returning - `editAutomationPoints` returns
+    //! void and can silently do nothing, the same shape as `addTimeSig`. And the read-back has to
+    //! DENORMALIZE, or it would compare a `[0,1]` fraction against a BPM and always look wrong.
+    const mu::engraving::AutomationDataConstPtr automation = score->automationData();
+    if (!automation) {
+        return RecipeResult::failure(QStringLiteral("the score has no automation data, so the tempo could "
+                                                    "not be set"));
+    }
+
+    const mu::engraving::AutomationCurve& curve =
+        automation->curve(mu::engraving::AutomationCurveKey::global(mu::engraving::AutomationType::Tempo));
+    const auto at = curve.find(int(measure->tick().ticks()));
+    if (at == curve.end()) {
+        return RecipeResult::failure(QStringLiteral("the tempo point was not written at measure %1")
+                                     .arg(measureNumber));
+    }
+
+    const double landed = mu::engraving::denormalizeTempo(at->second.value.outValue).val * 60.0;
+
+    return RecipeResult::success(QStringLiteral("measure %1: tempo set to %2 BPM")
+                                 .arg(measureNumber).arg(landed, 0, 'f', 1));
+}
+
 RecipeResult muse::agentharness::fillMeasureWithRests(mu::engraving::Score* score, int measureNumber)
 {
     if (!score) {

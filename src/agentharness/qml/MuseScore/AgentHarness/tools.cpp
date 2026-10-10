@@ -1305,6 +1305,41 @@ ToolResult muse::agentharness::toolMeasureFill(const QJsonObject& args, const To
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolTempoSet(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int measureNumber = 0;
+    if (!readInt(args, QStringLiteral("measure"), measureNumber)) {
+        return ToolResult::failure(QStringLiteral("`measure` is required and must be an integer"));
+    }
+
+    const QJsonValue bpmValue = args.value(QStringLiteral("bpm"));
+    if (!bpmValue.isDouble()) {
+        return ToolResult::failure(QStringLiteral("`bpm` is required: the tempo in beats per minute"));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const double bpm = bpmValue.toDouble();
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Set tempo"), [&](mu::engraving::Score* score) {
+        return setTempo(score, measureNumber, bpm);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
 {
     //! ⛔⛔ THE LIST IS DERIVED FROM THE TOOL TABLE, NOT TYPED OUT.
@@ -1945,6 +1980,27 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             toolMeasureFill,
         },
         ToolSpec{
+            QStringLiteral("tempo_set"),
+            QStringLiteral("Set the tempo, in beats per minute, at a measure. NOTE: tempo is not a notation "
+                           "element - it lives in the score's automation data, so this changes how the "
+                           "score PLAYS without changing how it LOOKS. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("measure"), intProperty(QStringLiteral(
+                                                              "1-based measure where the tempo takes effect.")));
+                QJsonObject bpmProp;
+                bpmProp.insert(QStringLiteral("type"), QStringLiteral("number"));
+                bpmProp.insert(QStringLiteral("description"), QStringLiteral(
+                                                                  "The tempo in beats per minute, e.g. 120. Refused outside the range the "
+                                                                  "score can hold."));
+                props.insert(QStringLiteral("bpm"), bpmProp);
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("bpm") }),
+            toolTempoSet,
+        },
+        ToolSpec{
             QStringLiteral("note_tie"),
             QStringLiteral("Tie the note at an address to the next note of the SAME PITCH, remove that "
                            "tie, or toggle it. A tie changes how the notes SOUND (one longer note); a "
@@ -2046,6 +2102,7 @@ bool muse::agentharness::isBatchableTool(const QString& name)
         QStringLiteral("key_signature_set"), QStringLiteral("time_signature_set"),
         QStringLiteral("measure_insert"), QStringLiteral("measure_remove"),
         QStringLiteral("measure_fill"),
+        QStringLiteral("tempo_set"),
     };
     return kBatchable.contains(name);
 }

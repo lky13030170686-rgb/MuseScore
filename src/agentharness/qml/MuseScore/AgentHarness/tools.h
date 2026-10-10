@@ -203,6 +203,9 @@ ToolResult toolMeasureInsert(const QJsonObject& args, const ToolContext& ctx);
 //! Write: remove a range of measures.
 ToolResult toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: set the tempo at a measure.
+ToolResult toolTempoSet(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: fill the rest of a measure with rests.
 ToolResult toolMeasureFill(const QJsonObject& args, const ToolContext& ctx);
 

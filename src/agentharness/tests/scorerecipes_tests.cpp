@@ -25,6 +25,9 @@
 
 #include "engraving/dom/chord.h"
 #include "engraving/dom/masterscore.h"
+#include "engraving/automation/automationdata.h"
+#include "engraving/automation/automationtypes.h"
+#include "engraving/automation/tempovalues.h"
 #include "engraving/dom/articulation.h"
 #include "engraving/dom/dynamic.h"
 #include "engraving/dom/hairpin.h"
@@ -2044,4 +2047,83 @@ TEST(AgentHarness_ScoreRecipes, FillMeasureRefusesAMeasureThatDoesNotExist)
     });
     EXPECT_FALSE(result.ok);
     EXPECT_TRUE(result.problem.contains(QStringLiteral("no measure 99"))) << result.problem.toStdString();
+}
+//! ── Tempo ─────────────────────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_ScoreRecipes, SetTempoWritesTheNormalizedValueTheAutomationLayerReads)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setTempo(score.get(), 1, 120.0);
+    });
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! ⛔⛔ VERIFIED BY READING THE CURVE BACK AND DENORMALIZING. The stored value is a FRACTION OF THE
+    //! SCORE'S MAXIMUM TEMPO (`tempovalues.h`), not a BPM - so the assertion has to undo that, and the
+    //! recipe has to have done it in the first place. Writing a raw 120 into a `[0,1]` field would give a
+    //! tempo hundreds of times too fast, and the score would still save, play and look correct.
+    const mu::engraving::AutomationDataConstPtr automation = score->automationData();
+    ASSERT_TRUE(automation != nullptr);
+
+    const mu::engraving::AutomationCurve& curve =
+        automation->curve(mu::engraving::AutomationCurveKey::global(mu::engraving::AutomationType::Tempo));
+    const auto at = curve.find(0);
+    ASSERT_TRUE(at != curve.end()) << "a tempo point must exist at tick 0";
+
+    const double bpm = mu::engraving::denormalizeTempo(at->second.value.outValue).val * 60.0;
+    EXPECT_NEAR(bpm, 120.0, 1.0) << "the tempo must read back as what was asked for";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetTempoRejectsAnImpossibleTempo)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ THE BOUNDS ARE THE SCORE'S OWN (`Constants::MIN_TEMPO`/`MAX_TEMPO`), not numbers written into the
+    //! recipe - so this recipe and the automation layer cannot disagree about what is acceptable. A tempo
+    //! silently clamped to a fraction of what was asked is the "looks like it worked" failure.
+    for (double bad : { 0.0, -60.0, 100000.0 }) {
+        const RecipeResult result = runRecipe(score.get(), [&] {
+            return setTempo(score.get(), 1, bad);
+        });
+        EXPECT_FALSE(result.ok) << bad << " must be refused";
+        EXPECT_FALSE(result.problem.isEmpty());
+    }
+}
+
+TEST(AgentHarness_ScoreRecipes, SetTempoRefusesAMeasureThatDoesNotExist)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setTempo(score.get(), 99, 120.0);
+    });
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("no measure 99"))) << result.problem.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, SetTempoIsVisibleInTheScoresAutomationData)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ THIS IS THE POINT OF THE WHOLE TOOL for the information field's sake: a tempo change lands in
+    //! `AutomationData` and NOT in the notation layer - so a field subscribed only to `changesChannel`
+    //! would see nothing at all. Asserting the change is visible HERE is what makes the second channel
+    //! subscription meaningful rather than decorative.
+    const int before = int(score->automationData()->curve(
+        mu::engraving::AutomationCurveKey::global(mu::engraving::AutomationType::Tempo)).size());
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setTempo(score.get(), 1, 90.0);
+    }).ok);
+
+    const int after = int(score->automationData()->curve(
+        mu::engraving::AutomationCurveKey::global(mu::engraving::AutomationType::Tempo)).size());
+
+    EXPECT_GE(after, before) << "the tempo curve must hold the point";
+    EXPECT_GE(after, 1) << "there must be a tempo point after setting one";
 }
