@@ -240,3 +240,56 @@ QJsonObject muse::agentharness::buildChatRequest(const QString& model, const QJs
 
     return body;
 }
+
+QStringList muse::agentharness::parseModelIds(const QByteArray& body, QString* problem)
+{
+    const auto fail = [problem](const QString& why) {
+        if (problem) {
+            *problem = why;
+        }
+        return QStringList();
+    };
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        //! The body is reported, not swallowed: a gateway that answers `/models` with an HTML error page
+        //! produces the least useful failure of all - "no models" - unless the text is shown.
+        return fail(QStringLiteral("the response was not JSON: %1").arg(parseError.errorString()));
+    }
+
+    QJsonArray entries;
+    if (doc.isArray()) {
+        entries = doc.array();
+    } else {
+        const QJsonObject root = doc.object();
+        //! `data` first (the OpenAI shape every OpenAI-compatible route speaks), then ollama's `models`.
+        entries = root.value(QStringLiteral("data")).toArray();
+        if (entries.isEmpty()) {
+            entries = root.value(QStringLiteral("models")).toArray();
+        }
+    }
+
+    if (entries.isEmpty()) {
+        return fail(QStringLiteral("the response carried no model list (no `data` or `models` array)"));
+    }
+
+    QStringList ids;
+    for (const QJsonValue& value : entries) {
+        const QJsonObject entry = value.toObject();
+        QString id = entry.value(QStringLiteral("id")).toString();
+        if (id.isEmpty()) {
+            id = entry.value(QStringLiteral("name")).toString();
+        }
+        if (id.isEmpty() || ids.contains(id)) {
+            continue;
+        }
+        ids.append(id);
+    }
+
+    if (ids.isEmpty()) {
+        return fail(QStringLiteral("the model list carried no usable ids"));
+    }
+
+    return ids;
+}

@@ -83,6 +83,9 @@ static bool fieldTraceEnabled()
 //! clicked last week.
 static const Settings::Key AGENT_BASE_URL_KEY("agentharness", "agent/baseUrl");
 static const Settings::Key AGENT_MODEL_KEY("agentharness", "agent/model");
+//! The Agent page's column widths. Stored, not secret - see the note on the properties in the header.
+static const Settings::Key AGENT_SIDEBAR_WIDTH_KEY("agentharness", "agent/sidebarWidth");
+static const Settings::Key AGENT_RIGHTBAR_WIDTH_KEY("agentharness", "agent/rightbarWidth");
 static const QString DEFAULT_BASE_URL = QStringLiteral("https://api.deepseek.com");
 
 //! Command types and element types share one histogram; this keeps them from colliding.
@@ -1445,6 +1448,13 @@ void FieldController::setAgentBaseUrl(const QString& url)
     ensureAgentLoop();
     m_transport->setBaseUrl(url);
     Settings::instance()->setSharedValue(AGENT_BASE_URL_KEY, Val(url.toStdString()));
+
+    //! ⛔ THE LIST BELONGED TO THE OLD GATEWAY. Keeping it would offer model ids that do not exist at the
+    //! new address - and the panel would be showing a *successful* answer to a question nobody asked
+    //! anymore. Cleared here rather than in the panel, because this is the one place the address changes.
+    m_agentModelIds.clear();
+    m_agentModelsError.clear();
+
     emit fieldChanged();
 }
 
@@ -1453,6 +1463,91 @@ QString FieldController::agentBaseUrl() const
     //! Read back from the transport, never from a second copy: the transport is the thing that will
     //! actually be used, and a UI that displayed its own remembered value would be free to disagree.
     return m_transport ? m_transport->baseUrl() : QString();
+}
+
+void FieldController::refreshAgentModels()
+{
+    ensureAgentLoop();
+
+    m_agentModelsLoading = true;
+    m_agentModelsError.clear();
+    emit fieldChanged();
+
+    //! The list is cleared when a new fetch STARTS, not when one fails: leaving the previous gateway's
+    //! models on screen while asking a different one would offer the user names that do not exist there.
+    m_agentModelIds.clear();
+
+    m_transport->fetchModels([this](bool ok, const QStringList& ids, const QString& error) {
+        m_agentModelsLoading = false;
+
+        if (!ok) {
+            m_agentModelsError = error;
+            m_agentModelIds.clear();
+        } else {
+            m_agentModelsError.clear();
+            m_agentModelIds.clear();
+            for (const QString& id : ids) {
+                m_agentModelIds.append(id);
+            }
+        }
+
+        LOGW() << "[agent-field] model list" << (ok ? "OK" : "FAILED")
+               << "count=" << m_agentModelIds.size() << "error=" << m_agentModelsError;
+
+        //! ⛔ Notify, or the menu fills with nothing: the panel's menu model is built from these
+        //! properties and only re-evaluates on `fieldChanged` (第 127 条).
+        emit fieldChanged();
+    });
+}
+
+QVariantList FieldController::agentModelIds() const
+{
+    return m_agentModelIds;
+}
+
+bool FieldController::agentModelsLoading() const
+{
+    return m_agentModelsLoading;
+}
+
+QString FieldController::agentModelsError() const
+{
+    return m_agentModelsError;
+}
+
+void FieldController::setAgentSidebarWidth(int width)
+{
+    //! Read back through `agentSidebarWidth()`, so what is stored and what is reported are the same
+    //! number even if a caller passes something odd.
+    if (width <= 0) {
+        return;
+    }
+
+    Settings::instance()->setSharedValue(AGENT_SIDEBAR_WIDTH_KEY, Val(width));
+    emit fieldChanged();
+}
+
+void FieldController::setAgentRightbarWidth(int width)
+{
+    if (width <= 0) {
+        return;
+    }
+
+    Settings::instance()->setSharedValue(AGENT_RIGHTBAR_WIDTH_KEY, Val(width));
+    emit fieldChanged();
+}
+
+int FieldController::agentSidebarWidth() const
+{
+    //! ⛔ NO CACHED COPY. Read from the settings on every call - the same place the setter writes - so the
+    //! property cannot drift from what was stored. There is no hot loop here: this is read by a handful of
+    //! QML bindings when the page is laid out.
+    return Settings::instance()->value(AGENT_SIDEBAR_WIDTH_KEY).toInt();
+}
+
+int FieldController::agentRightbarWidth() const
+{
+    return Settings::instance()->value(AGENT_RIGHTBAR_WIDTH_KEY).toInt();
 }
 
 void FieldController::setAgentApiKey(const QString& key)

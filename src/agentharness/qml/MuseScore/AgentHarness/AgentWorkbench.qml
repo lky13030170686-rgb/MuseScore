@@ -36,10 +36,13 @@ import Muse.UiComponents
     Those numbers are copied here rather than invented, because "looks like the web client" is mostly
     a statement about proportions.
 
-    \b Why the columns are fixed widths and not draggable. The web client drags its boundaries and
-    remembers them. That is a preference to store, a handle to draw and a hit area to get right; none
-    of it changes what the page can do, so the first version ships the proportions and leaves the drag
-    to whoever wants it. The layout is a `RowLayout`, so adding a handle later does not move anything.
+    \b Why the columns are draggable NOW, and why that is not decoration. The first version shipped the
+    proportions and no handle, on the argument that a drag changes nothing the page can DO. That was
+    wrong for a page whose whole content is text: how much room the transcript gets is exactly the thing
+    a user wants to change - the left column is a reference you read once, and the right column is a log
+    you glance at, while the conversation is what you work in. The web client drags its boundaries and
+    REMEMBERS them (第 129 条), and so does this: the widths are stored through `FieldController`, the
+    same place the gateway and the model live.
 
     \b What is NOT copied, and why. The web client's sidebar lists sessions and it has a tab strip for
     conversation/trajectory views. This harness runs exactly one session per process and has no second
@@ -55,18 +58,65 @@ Item {
     property var field
 
     //! ── The web client's column constants ────────────────────────────────────────────────────────
-    readonly property int sidebarWidth: 280
+    readonly property int sidebarDefaultWidth: 280
     readonly property int sidebarMinWidth: 240
     readonly property int sidebarMaxWidth: 380
-    readonly property int rightbarWidth: 320
+    readonly property int rightbarDefaultWidth: 320
     readonly property int rightbarMinWidth: 280
     readonly property int rightbarMaxWidth: 420
     readonly property int centerMinWidth: 400
+
+    //! The dragged width. ⚠️ Seeded from the stored preference ONCE: the moment the user drags, this
+    //! becomes the authority (the binding is replaced by the assignment) and the new value is written
+    //! back on release. That is the same one-way-then-authoritative shape the connection panel's fields
+    //! use, and the reason it is not a two-way binding is that a two-way one would fight the drag.
+    property int sidebarWidth: (root.field && root.field.agentSidebarWidth > 0)
+                               ? root.field.agentSidebarWidth : root.sidebarDefaultWidth
+    property int rightbarWidth: (root.field && root.field.agentRightbarWidth > 0)
+                                ? root.field.agentRightbarWidth : root.rightbarDefaultWidth
 
     //! The centred content axis: the transcript column and (slightly wider) the composer card.
     readonly property real contentWidth: Math.max(520, Math.min(920, centerColumn.width * 0.72))
 
     readonly property bool running: root.field ? root.field.agentRunning : false
+
+    //! The width each boundary had when the drag started. The handle reports the distance from the press,
+    //! so the new width is `start + delta` - never `current + delta`, which would re-apply the whole drag
+    //! on every move event and run the column away from the pointer.
+    property int dragStartSidebarWidth: 0
+    property int dragStartRightbarWidth: 0
+
+    function beginDrag() {
+        root.dragStartSidebarWidth = root.sidebarWidth
+        root.dragStartRightbarWidth = root.rightbarWidth
+    }
+
+    //! Clamp and apply. The BOUNDS live here, next to the constants they come from - the handle and the
+    //! stored preference both stay ignorant of them.
+    function applySidebarDrag(delta) {
+        const next = Math.max(root.sidebarMinWidth,
+                              Math.min(root.sidebarMaxWidth, root.dragStartSidebarWidth + delta))
+        root.sidebarWidth = next
+    }
+
+    function applyRightbarDrag(delta) {
+        //! ⛔ NEGATED: the right column is on the RIGHT, so dragging its boundary left must make it WIDER.
+        //! Without this the boundary moves the wrong way, which reads as a broken drag rather than as a
+        //! sign error.
+        const next = Math.max(root.rightbarMinWidth,
+                              Math.min(root.rightbarMaxWidth, root.dragStartRightbarWidth - delta))
+        root.rightbarWidth = next
+    }
+
+    //! Persist on RELEASE, not on every move: a drag emits a move per pixel, and writing the preference on
+    //! each one would hammer the settings store for a value that is only meaningful when the hand stops.
+    function commitWidths() {
+        if (!root.field) {
+            return
+        }
+        root.field.setAgentSidebarWidth(root.sidebarWidth)
+        root.field.setAgentRightbarWidth(root.rightbarWidth)
+    }
 
     RowLayout {
         anchors.fill: parent
@@ -123,7 +173,24 @@ Item {
             }
         }
 
-        SeparatorLine {}
+        //! ── The left boundary: drag it to give the conversation more (or less) room ───────────────
+        //! `dragStart + delta`, never `current + delta`: the handle reports the distance from the press, so
+        //! the width stays a pure function of where the pointer is.
+        AgentColumnHandle {
+            Layout.fillHeight: true
+
+            onPressed: {
+                root.beginDrag()
+            }
+
+            onMoved: function(delta) {
+                root.applySidebarDrag(delta)
+            }
+
+            onReleased: {
+                root.commitWidths()
+            }
+        }
 
         //! ══ 2. Centre: the conversation, on a centred axis, with the composer underneath ═════════
         Rectangle {
@@ -237,7 +304,24 @@ Item {
             }
         }
 
-        SeparatorLine {}
+        //! ── The right boundary ─────────────────────────────────────────────────────────────────────
+        //! Same handle, opposite sense: this one widens the column to its RIGHT (`applyRightbarDrag`
+        //! negates the delta), which is the whole reason the sign lives in the page and not in the handle.
+        AgentColumnHandle {
+            Layout.fillHeight: true
+
+            onPressed: {
+                root.beginDrag()
+            }
+
+            onMoved: function(delta) {
+                root.applyRightbarDrag(delta)
+            }
+
+            onReleased: {
+                root.commitWidths()
+            }
+        }
 
         //! ══ 3. Right: what happened, and what the newest tool call actually was ═══════════════════
         Rectangle {

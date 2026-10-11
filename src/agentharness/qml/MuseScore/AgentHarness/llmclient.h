@@ -26,6 +26,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 namespace muse::agentharness {
@@ -114,5 +115,22 @@ private:
 //! @param effort       "low" | "high" | "max"; ignored when `thinking` is false
 QJsonObject buildChatRequest(const QString& model, const QJsonArray& messages, const QJsonArray& tools,
                              bool thinking, const QString& effort);
+
+//! Read the model ids out of a `GET /models` response body.
+//!
+//! WHY THIS IS PURE AND SEPARATE FROM THE SOCKET: it is the part that decides what the user is allowed to
+//! pick, and a wrong answer here is invisible - an empty list looks exactly like a gateway that serves
+//! nothing, and the menu just shows nothing. Same argument as `parseSseData()` above.
+//!
+//! ⚠️ THREE SHAPES ARE ACCEPTED, because three are in the wild and all three are cheap to read:
+//!   - `{"data":[{"id":"..."}]}`  - OpenAI, DeepSeek, and the opencode gateway
+//!   - `{"models":[{"name":"..."}]}` - ollama's own endpoint
+//!   - `[{"id":"..."}]`           - a bare array
+//! Entries are taken by `id`, falling back to `name`; empty ids are skipped, and duplicates are dropped
+//! while keeping the server's order (the server may rank them, and re-sorting would hide that).
+//!
+//! @param body    the raw response body
+//! @param problem set to why the body could not be understood, when it could not
+QStringList parseModelIds(const QByteArray& body, QString* problem = nullptr);
 
 } // namespace muse::agentharness

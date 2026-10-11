@@ -39,6 +39,11 @@ namespace {
 //! detector, not a latency measurement, and a finer timer would just be more wake-ups on the GUI
 //! thread.
 constexpr int WATCHDOG_INTERVAL_MS = 5000;
+
+//! How long to wait for a model list. A list is small and the user is staring at a menu that is either
+//! going to fill or not, so this is a hard deadline - and a much shorter one than the stream's, which
+//! exists to detect a STALLED stream rather than an unresponsive server.
+constexpr int MODELS_TIMEOUT_MS = 15000;
 } // namespace
 
 LlmTransport::LlmTransport(QObject* parent)
@@ -67,6 +72,7 @@ LlmTransport::~LlmTransport()
 {
     //! Abort rather than delete: a reply still running would emit into a half-destroyed object.
     abort();
+    abortModels();
 }
 
 void LlmTransport::setBaseUrl(const QString& baseUrl)
@@ -103,6 +109,163 @@ void LlmTransport::abort()
     m_reply->disconnect(this);
     m_reply->abort();
     cleanup();
+}
+
+void LlmTransport::abortModels()
+{
+    if (!m_modelsReply) {
+        return;
+    }
+
+    m_modelsReply->disconnect(this);
+    m_modelsReply->abort();
+    m_modelsReply->deleteLater();
+    m_modelsReply = nullptr;
+    m_onModels = nullptr;
+}
+
+bool LlmTransport::isOpencodeRoute() const
+{
+    //! ⛔ "AN OPENCODE ROUTE" IS NOT THE SAME AS "A URL CONTAINING opencode". The user's own OpenCodex
+    //! proxy answers on loopback and forwards to that same upstream - measured 2026-10-10:
+    //! `POST http://127.0.0.1:10100/v1/chat/completions` with a good key and the model this route serves
+    //! comes back `400 Provider error 400: Request is missing x-opencode-session and cannot be routed
+    //! efficiently.` Sending the header turns the same call into a 200 with a normal SSE stream
+    //! (`.../v1/models` lists the ids as `opencode-go/<model>`). So loopback counts as an opencode route:
+    //! a local OpenAI-compatible endpoint in this project's world IS the proxy in front of that gateway.
+    //! ⚠️ A generic local server (llama.cpp, ollama) ignores the header, which is why this is safe to
+    //! widen; the thing that must not happen is sending it to a NON-loopback third party.
+    return m_baseUrl.contains(QStringLiteral("opencode"))
+           || m_baseUrl.contains(QStringLiteral("127.0.0.1"))
+           || m_baseUrl.contains(QStringLiteral("localhost"))
+           || m_baseUrl.contains(QStringLiteral("[::1]"));
+}
+
+void LlmTransport::applyAuthHeaders(QNetworkRequest& request) const
+{
+    request.setRawHeader("authorization", QByteArray("Bearer ") + apiKey().toUtf8());
+
+    //! ⛔⛔ THE OPENCODE ROUTES REQUIRE A PER-CONVERSATION SESSION HEADER, AND WITHOUT IT *EVERY* REQUEST
+    //! IS REFUSED - with a message that does not name the header.
+    //!
+    //! Measured against `https://opencode.ai/zen/go/v1`: a well-formed request with a valid key and a
+    //! model id that route really serves comes back
+    //! `400 {"type":"MissingSessionID","message":"Request is missing x-opencode-session and cannot be
+    //! routed efficiently."}`. ⚠️ And an earlier probe that also omitted the field produced
+    //! `{"type":"ModelError","message":"Model  is not supported"}` - **with an empty name where the model
+    //! should be** - which reads like a bad model id and sends a caller off to try other names. That is
+    //! how this cost time: the real problem was a missing HEADER, and the error pointed at the BODY.
+    //!
+    //! ⚠️ It is sent ONLY to opencode routes. Adding it unconditionally would put a header on DeepSeek's
+    //! own endpoint that means nothing there - harmless today, and exactly the kind of "harmless" that
+    //! becomes a 400 the day the other gateway starts validating unknown headers.
+    //!
+    //! ⚠️ The value is the harness's own session id when one was supplied, so retries and resumed turns
+    //! keep the same routing identity; otherwise a fresh UUID, because an EMPTY value is not the same as
+    //! an absent one and would fail the same check.
+    if (isOpencodeRoute()) {
+        const QString session = m_sessionId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces)
+                                                      : m_sessionId;
+        request.setRawHeader("x-opencode-session", session.toUtf8());
+    }
+}
+
+void LlmTransport::fetchModels(std::function<void(bool, const QStringList&, const QString&)> done)
+{
+    //! One at a time: two live fetches would race to fill the same menu, and the older answer could win.
+    abortModels();
+
+    if (apiKey().isEmpty()) {
+        //! Same split as `start()`: "not configured" and "the server refused you" are different problems
+        //! and must not look the same.
+        if (done) {
+            done(false, QStringList(), QStringLiteral(
+                     "no API key configured. Set the DEEPSEEK_API_KEY environment variable."));
+        }
+        return;
+    }
+
+    if (m_baseUrl.isEmpty()) {
+        if (done) {
+            done(false, QStringList(), QStringLiteral("no API base URL configured"));
+        }
+        return;
+    }
+
+    const QUrl url(m_baseUrl + QStringLiteral("/models"));
+
+    QNetworkRequest request(url);
+    request.setRawHeader("accept", "application/json");
+    applyAuthHeaders(request);
+
+    m_onModels = std::move(done);
+    QNetworkReply* reply = m_network->get(request);
+    m_modelsReply = reply;
+
+    //! A hard deadline, and it must only fire for THIS reply: the pointer is captured and compared, so a
+    //! later fetch is not killed by an earlier fetch's timer.
+    QTimer::singleShot(MODELS_TIMEOUT_MS, this, [this, reply]() {
+        if (m_modelsReply == reply) {
+            finishModels(false, QStringList(),
+                         QStringLiteral("no answer within %1 ms").arg(MODELS_TIMEOUT_MS));
+        }
+    });
+
+    connect(reply, &QNetworkReply::finished, this, &LlmTransport::onModelsFinished);
+
+    LOGW() << "[agent-llm] GET" << url.toString();
+}
+
+void LlmTransport::onModelsFinished()
+{
+    if (!m_modelsReply) {
+        return;
+    }
+
+    QNetworkReply* reply = m_modelsReply;
+    const QNetworkReply::NetworkError error = reply->error();
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray body = reply->readAll();
+
+    if (error != QNetworkReply::NoError) {
+        //! ⛔ The body is carried up, not replaced by "connection failed": the useful part of a 401 or a
+        //! 404 here is the server's own sentence, and the caller shows it to the user.
+        QString detail = QString::fromUtf8(body).left(400);
+        if (detail.isEmpty()) {
+            detail = reply->errorString();
+        }
+        finishModels(false, QStringList(), QStringLiteral("HTTP %1: %2").arg(status).arg(detail));
+        return;
+    }
+
+    QString problem;
+    const QStringList ids = parseModelIds(body, &problem);
+    if (!problem.isEmpty()) {
+        finishModels(false, QStringList(), problem);
+        return;
+    }
+
+    finishModels(true, ids, QString());
+}
+
+void LlmTransport::finishModels(bool ok, const QStringList& ids, const QString& error)
+{
+    //! Take the callback OUT before invoking it: the caller may start another fetch from inside, and a
+    //! callback still stored here would then be cleared by the cleanup below - after it was replaced.
+    auto onModels = m_onModels;
+    m_onModels = nullptr;
+
+    if (m_modelsReply) {
+        m_modelsReply->disconnect(this);
+        m_modelsReply->deleteLater();
+        m_modelsReply = nullptr;
+    }
+
+    LOGW() << "[agent-llm] models" << (ok ? "OK" : "FAILED") << "count=" << ids.size() << "error=" << error;
+
+    if (onModels) {
+        onModels(ok, ids, error);
+    }
 }
 
 void LlmTransport::cleanup()
@@ -170,45 +333,10 @@ void LlmTransport::start(const QJsonObject& requestBody,
     //! ⛔ `Accept: text/event-stream` is not decoration: without it some gateways buffer the response
     //! and the stream arrives as one lump at the end, which looks exactly like "the model is slow".
     request.setRawHeader("accept", "text/event-stream");
-    request.setRawHeader("authorization", QByteArray("Bearer ") + key.toUtf8());
 
-    //! ⛔⛔ THE OPENCODE ROUTES REQUIRE A PER-CONVERSATION SESSION HEADER, AND WITHOUT IT *EVERY* REQUEST
-    //! IS REFUSED - with a message that does not name the header.
-    //!
-    //! Measured against `https://opencode.ai/zen/go/v1`: a well-formed request with a valid key and a
-    //! model id that route really serves comes back
-    //! `400 {"type":"MissingSessionID","message":"Request is missing x-opencode-session and cannot be
-    //! routed efficiently."}`. ⚠️ And an earlier probe that also omitted the field produced
-    //! `{"type":"ModelError","message":"Model  is not supported"}` - **with an empty name where the model
-    //! should be** - which reads like a bad model id and sends a caller off to try other names. That is
-    //! how this cost time: the real problem was a missing HEADER, and the error pointed at the BODY.
-    //!
-    //! ⚠️ It is sent ONLY to opencode routes. Adding it unconditionally would put a header on DeepSeek's
-    //! own endpoint that means nothing there - harmless today, and exactly the kind of "harmless" that
-    //! becomes a 400 the day the other gateway starts validating unknown headers.
-    //!
-    //! ⛔ "AN OPENCODE ROUTE" IS NOT THE SAME AS "A URL CONTAINING opencode". The user's own OpenCodex
-    //! proxy answers on loopback and forwards to that same upstream - measured 2026-10-10:
-    //! `POST http://127.0.0.1:10100/v1/chat/completions` with a good key and the model this route serves
-    //! comes back `400 Provider error 400: Request is missing x-opencode-session and cannot be routed
-    //! efficiently.` Sending the header turns the same call into a 200 with a normal SSE stream
-    //! (`.../v1/models` lists the ids as `opencode-go/<model>`). So loopback counts as an opencode route:
-    //! a local OpenAI-compatible endpoint in this project's world IS the proxy in front of that gateway.
-    //! ⚠️ A generic local server (llama.cpp, ollama) ignores the header, which is why this is safe to
-    //! widen; the thing that must not happen is sending it to a NON-loopback third party.
-    //!
-    //! ⚠️ The value is the harness's own session id when one was supplied, so retries and resumed turns
-    //! keep the same routing identity; otherwise a fresh UUID, because an EMPTY value is not the same as
-    //! an absent one and would fail the same check.
-    const bool opencodeRoute = m_baseUrl.contains(QStringLiteral("opencode"))
-                               || m_baseUrl.contains(QStringLiteral("127.0.0.1"))
-                               || m_baseUrl.contains(QStringLiteral("localhost"))
-                               || m_baseUrl.contains(QStringLiteral("[::1]"));
-    if (opencodeRoute) {
-        const QString session = m_sessionId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces)
-                                                      : m_sessionId;
-        request.setRawHeader("x-opencode-session", session.toUtf8());
-    }
+    //! Authorization and, on the opencode routes, the session header. Shared with `fetchModels()` so the
+    //! two requests cannot drift apart - the rule, and why it is what it is, live in `applyAuthHeaders`.
+    applyAuthHeaders(request);
 
     const QByteArray body = QJsonDocument(requestBody).toJson(QJsonDocument::Compact);
 
@@ -218,7 +346,12 @@ void LlmTransport::start(const QJsonObject& requestBody,
     connect(m_reply, &QNetworkReply::readyRead, this, &LlmTransport::onReadyRead);
     connect(m_reply, &QNetworkReply::finished, this, &LlmTransport::onReplyFinished);
 
-    LOGW() << "[agent-llm] POST" << url.toString() << "bytes=" << body.size();
+    //! ⚠️ The model is named HERE, even though the body carries it, because "which model answered" is the
+    //! first question asked of any surprising answer - and the body is not logged (it carries the whole
+    //! conversation). One field is enough to correlate a turn with a model.
+    LOGW() << "[agent-llm] POST" << url.toString()
+           << "model=" << requestBody.value(QStringLiteral("model")).toString()
+           << "bytes=" << body.size();
 }
 
 void LlmTransport::onReadyRead()

@@ -82,9 +82,16 @@ qt_add_qml_module(agentharness_qml
         AgentConversationView.qml
         AgentTimelineList.qml
         AgentComposer.qml
+        # The composer's message field. Its own file because it is the one control with a keyboard
+        # contract to get right (Enter sends, Shift+Enter adds a line) - and because `TextInputField`
+        # could not carry it: that one is single-line, and `TextInputArea`'s Enter inserts a line.
+        AgentComposerField.qml
         # The Agent page's own parts. The page shell itself lives in appshell (AgentPage/AgentPage.qml)
         # next to the other pages; what it arranges is here, with the agent.
         AgentWorkbench.qml
+        # The drag boundary between two columns. One file for two boundaries, because the only difference
+        # between them - which way is "wider" - belongs to the page, not to the handle.
+        AgentColumnHandle.qml
         AgentFactsPanel.qml
         AgentToolInspector.qml
         AgentConnectionPanel.qml

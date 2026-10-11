@@ -68,7 +68,12 @@ Item {
         anchors.fill: parent
         spacing: 4
 
-        TextInputField {
+        //! ── The message field ───────────────────────────────────────────────────────────────
+        //! Multi-line and growing (see AgentComposerField.qml for why it is not `TextInputField`).
+        //! It carries no write-back line on purpose: `currentText` is a live mirror of the inner
+        //! `TextArea`, so the "the box paints your typing while the property stays empty" failure has
+        //! nowhere to happen - there is only one copy of the text.
+        AgentComposerField {
             id: promptField
 
             Layout.fillWidth: true
@@ -79,20 +84,6 @@ Item {
                   ? qsTrc("agentharness", "Ask about this score, or tell it what to change")
                   : qsTrc("agentharness", "Set an API key first")
             enabled: root.configured && !root.running
-
-            //! ⛔⛔ `TextInputField` DOES NOT WRITE BACK TO `currentText` BY ITSELF. Typing - and pasting -
-            //! only emit `textChanged`, and the caller owns the property: it is the caller's job to store
-            //! the value (see PalettePropertiesDialog.qml for the same idiom).
-            //!
-            //! Without this line the box shows every character you type while `currentText` stays empty,
-            //! so `Send` never enables and Enter returns early - a composer that LOOKS alive and cannot
-            //! send anything. Measured 2026-10-10: pasting a sentence painted it in the field and left
-            //! `Send` greyed out. Every earlier verification had driven the loop through
-            //! `MUSE_AGENT_DEMO_AGENT` (which calls `sendToAgent` directly), so the typed path was never
-            //! exercised until someone tried to use the UI like a user.
-            onTextChanged: function(newTextValue) {
-                promptField.currentText = newTextValue
-            }
 
             onAccepted: {
                 root.submit()
@@ -160,6 +151,19 @@ Item {
                     keyField.visible = !keyField.visible
                 }
             }
+        }
+
+        //! ── What the keys do ─────────────────────────────────────────────────────────────────
+        //! A chat box whose Enter both sends and inserts a line is a coin toss the user should not have
+        //! to run. The line is always present - not shown on focus - so that the composer does not
+        //! change height under the pointer the moment it is clicked. It elides (`StyledTextLabel`'s
+        //! default) rather than pushing the buttons around when the dock panel is narrow.
+        StyledTextLabel {
+            Layout.fillWidth: true
+
+            text: qsTrc("agentharness", "Enter sends · Shift+Enter adds a line")
+            color: ui.theme.fontSecondaryColor
+            horizontalAlignment: Text.AlignLeft
         }
 
         //! ── Key entry, revealed on demand ────────────────────────────────────────────────────

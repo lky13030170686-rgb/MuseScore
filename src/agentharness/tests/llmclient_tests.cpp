@@ -284,3 +284,71 @@ TEST(AgentHarness_LlmClient, ToolsAreOmittedWhenThereAreNone)
     const QJsonObject body = buildChatRequest(QStringLiteral("m"), QJsonArray(), QJsonArray(), false, QString());
     EXPECT_FALSE(body.contains(QStringLiteral("tools")));
 }
+
+//! ── The model list ─────────────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_LlmClient, ModelListIsReadFromTheOpenAiShape)
+{
+    //! The shape OpenAI, DeepSeek and the opencode gateway all answer with. The order is KEPT: the server
+    //! may rank the list, and re-sorting it would throw that away.
+    QString problem;
+    const QStringList ids = parseModelIds(
+        R"({"object":"list","data":[{"id":"b-model"},{"id":"a-model"}]})", &problem);
+
+    EXPECT_TRUE(problem.isEmpty()) << problem.toStdString();
+    ASSERT_EQ(ids.size(), 2);
+    EXPECT_EQ(ids[0], QStringLiteral("b-model"));
+    EXPECT_EQ(ids[1], QStringLiteral("a-model"));
+}
+
+TEST(AgentHarness_LlmClient, ModelListIsReadFromOllamaAndFromABareArray)
+{
+    //! Two other real shapes. Without these the menu is empty against those servers, and an empty menu
+    //! looks exactly like "this gateway serves nothing".
+    QString problem;
+    QStringList ids = parseModelIds(R"({"models":[{"name":"llama3:8b"}]})", &problem);
+    EXPECT_TRUE(problem.isEmpty()) << problem.toStdString();
+    ASSERT_EQ(ids.size(), 1);
+    EXPECT_EQ(ids[0], QStringLiteral("llama3:8b"));
+
+    ids = parseModelIds(R"([{"id":"only-one"}])", &problem);
+    EXPECT_TRUE(problem.isEmpty()) << problem.toStdString();
+    ASSERT_EQ(ids.size(), 1);
+    EXPECT_EQ(ids[0], QStringLiteral("only-one"));
+}
+
+TEST(AgentHarness_LlmClient, ModelListSkipsEmptyIdsAndDuplicates)
+{
+    QString problem;
+    const QStringList ids = parseModelIds(
+        R"({"data":[{"id":"x"},{},{"id":""},{"name":""},{"id":"x"},{"id":"y"}]})", &problem);
+
+    EXPECT_TRUE(problem.isEmpty()) << problem.toStdString();
+    ASSERT_EQ(ids.size(), 2) << "an entry with no id is not a model, and a repeated id is not a second model";
+    EXPECT_EQ(ids[0], QStringLiteral("x"));
+    EXPECT_EQ(ids[1], QStringLiteral("y"));
+}
+
+TEST(AgentHarness_LlmClient, ModelListReportsWhyItCouldNotBeRead)
+{
+    //! ⛔ THE POINT OF THE `problem` OUT-PARAMETER. An unreadable answer and an empty one are different
+    //! facts, and the difference is the whole message the user gets: a gateway that answers `/models` with
+    //! an HTML error page must not read as "no models here".
+    QString problem;
+    EXPECT_TRUE(parseModelIds("<html>502 Bad Gateway</html>", &problem).isEmpty());
+    EXPECT_FALSE(problem.isEmpty()) << "a non-JSON body must be reported, not silently empty";
+    EXPECT_TRUE(problem.contains(QStringLiteral("JSON"))) << problem.toStdString();
+
+    problem.clear();
+    EXPECT_TRUE(parseModelIds(R"({"object":"list"})", &problem).isEmpty());
+    EXPECT_FALSE(problem.isEmpty()) << "a JSON body with no list in it must say so";
+
+    problem.clear();
+    EXPECT_TRUE(parseModelIds(R"({"data":[{"object":"model"}]})", &problem).isEmpty());
+    EXPECT_FALSE(problem.isEmpty()) << "a list whose entries carry no ids must say so";
+
+    //! And a good answer leaves the reason empty, or the panel would show a failure next to a full menu.
+    problem.clear();
+    EXPECT_FALSE(parseModelIds(R"({"data":[{"id":"m"}]})", &problem).isEmpty());
+    EXPECT_TRUE(problem.isEmpty()) << problem.toStdString();
+}

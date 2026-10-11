@@ -23,7 +23,9 @@
 #pragma once
 
 #include <QObject>
+#include <QPointer>
 #include <QString>
+#include <QStringList>
 
 #include <functional>
 
@@ -31,6 +33,9 @@
 
 class QNetworkAccessManager;
 class QNetworkReply;
+//! Forward-declared: `applyAuthHeaders` takes it by reference, and the header deliberately does not pull
+//! in QtNetwork (see the note above about why this class talks to Qt's own network stack directly).
+class QNetworkRequest;
 
 namespace muse::agentharness {
 //! The HTTP+SSE transport for one chat-completions call.
@@ -84,6 +89,23 @@ public:
 
     bool isRunning() const { return m_reply != nullptr; }
 
+    //! Ask the endpoint which models it serves (`GET <base>/models`).
+    //!
+    //! WHY IT IS NOT PART OF A TURN: "which model may I pick" is a question about the GATEWAY, and the
+    //! connection panel asks it while nothing is running. It therefore gets its OWN reply - a list fetch
+    //! must never abort a turn in flight, and `start()` must never cancel a list fetch.
+    //!
+    //! ⛔ THE SAME AUTH HEADERS AS A TURN, from the same function. The opencode routes refuse a request
+    //! that is missing `x-opencode-session` (measured - see `applyAuthHeaders`), and a list fetch that
+    //! re-derived its own headers would come back 400 for a reason that names neither the header nor the
+    //! caller - which is exactly how that cost an afternoon the first time.
+    //!
+    //! The callback runs on the GUI thread; `ok == false` carries the reason in `error`.
+    void fetchModels(std::function<void(bool ok, const QStringList& ids, const QString& error)> done);
+    //! Abort an in-flight list fetch, if any. Safe to call when idle.
+    void abortModels();
+    bool isFetchingModels() const { return m_modelsReply != nullptr; }
+
     //! How long to wait with no bytes before giving up. A stream that has silently died looks exactly
     //! like a model that is thinking, and without this the harness would wait forever.
     void setIdleTimeoutMs(int ms) { m_idleTimeoutMs = ms; }
@@ -102,6 +124,15 @@ private:
     void handleSseLine(const QByteArray& line);
     void fail(const QString& error);
     void cleanup();
+
+    //! True when the base URL is an opencode route, which requires the per-conversation session header.
+    bool isOpencodeRoute() const;
+    //! Authorization + (on those routes) the session header. ONE place, used by both the streaming call
+    //! and the model list - see the note on `fetchModels`.
+    void applyAuthHeaders(QNetworkRequest& request) const;
+
+    void onModelsFinished();
+    void finishModels(bool ok, const QStringList& ids, const QString& error);
 
     QNetworkAccessManager* m_network = nullptr;
     QNetworkReply* m_reply = nullptr;
@@ -122,6 +153,10 @@ private:
 
     std::function<void(const StreamChunk&)> m_onChunk;
     std::function<void(bool, const QString&)> m_onFinished;
+
+    //! The `GET /models` reply and its callback, kept apart from the stream above.
+    QPointer<QNetworkReply> m_modelsReply;
+    std::function<void(bool, const QStringList&, const QString&)> m_onModels;
 
     int m_idleTimeoutMs = 300000;
     qint64 m_lastActivityMs = 0;

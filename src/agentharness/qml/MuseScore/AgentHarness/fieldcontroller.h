@@ -254,6 +254,18 @@ public:
     Q_PROPERTY(bool agentConfigured READ agentConfigured NOTIFY fieldChanged)
     Q_PROPERTY(QString agentLastError READ agentLastError NOTIFY fieldChanged)
     Q_PROPERTY(QString agentApiKeySource READ agentApiKeySource NOTIFY fieldChanged)
+    //! The model ids the endpoint says it serves, and how the last attempt to ask went. The list is a
+    //! PROPERTY (not an invokable) for the usual reason: the menu binding has to re-evaluate when the
+    //! answer arrives, and an invokable getter has nothing to connect to (第 125 条).
+    Q_PROPERTY(QVariantList agentModelIds READ agentModelIds NOTIFY fieldChanged)
+    Q_PROPERTY(bool agentModelsLoading READ agentModelsLoading NOTIFY fieldChanged)
+    Q_PROPERTY(QString agentModelsError READ agentModelsError NOTIFY fieldChanged)
+    //! The Agent page's column widths, as the user dragged them. 0 means "never dragged", and the page
+    //! falls back to its own default. A LAYOUT PREFERENCE, so it is stored like the gateway and the model
+    //! and not like the key: a width the user set by hand and has to set again every launch is the same
+    //! complaint as a gateway they have to retype.
+    Q_PROPERTY(int agentSidebarWidth READ agentSidebarWidth NOTIFY fieldChanged)
+    Q_PROPERTY(int agentRightbarWidth READ agentRightbarWidth NOTIFY fieldChanged)
 
     //! Send a user message and run a turn. Returns immediately: the loop is asynchronous, and
     //! blocking here would freeze the editor for the length of a model response.
@@ -273,6 +285,23 @@ public:
     //! not written to settings yet.
     Q_INVOKABLE void setAgentApiKey(const QString& key);
 
+    //! Ask the gateway for its model list (`GET <base>/models`) and publish it as `agentModelIds`.
+    //!
+    //! WHY THE UI ASKS RATHER THAN GUESSING: a model name is the one setting a user cannot get right by
+    //! reasoning - it is the GATEWAY's vocabulary, not ours. Measured: pointed at an opencode route the
+    //! harness asked for `deepseek-chat`, which that route does not serve, and the failure looked like a
+    //! broken agent rather than a wrong string. The list is how the user finds the right one.
+    Q_INVOKABLE void refreshAgentModels();
+
+    //! Remember a dragged column width. The BOUNDS are not checked here: they belong to the layout that
+    //! draws the columns (`AgentWorkbench.qml`'s `sidebarMinWidth` and friends), and a second copy of them
+    //! in C++ is a second thing to keep in step. The page clamps what it reads, so a stored outlier is
+    //! harmless - and a rejected one would silently lose the user's drag.
+    Q_INVOKABLE void setAgentSidebarWidth(int width);
+    Q_INVOKABLE void setAgentRightbarWidth(int width);
+    int agentSidebarWidth() const;
+    int agentRightbarWidth() const;
+
     //! Whether a turn is currently running.
     bool agentRunning() const;
     //! Whether an API key is available. The panel says "not configured" rather than letting the user
@@ -286,6 +315,12 @@ public:
     //! Reported rather than guessed at, because "it works on my machine" is usually an environment
     //! variable someone forgot they set.
     QString agentApiKeySource() const;
+    //! The model ids from the last successful `refreshAgentModels()`, as a list of strings for the menu.
+    QVariantList agentModelIds() const;
+    bool agentModelsLoading() const;
+    //! Why the last attempt failed, empty when it did not. Shown next to the list, because "the menu is
+    //! empty" is otherwise indistinguishable from "the gateway serves nothing".
+    QString agentModelsError() const;
     //! The conversation so far, oldest first, as `{ role, text, kind }` maps for the panel.
     //! Built from the LOG, so what the panel shows and what the model was sent cannot diverge.
     QVariantList agentTranscript() const;
@@ -549,6 +584,13 @@ private:
     std::unique_ptr<LlmTransport> m_transport;
     std::unique_ptr<AgentLoop> m_loop;
     QString m_agentLastError;
+
+    //! The gateway's model list and the state of the last attempt to fetch it. Kept here rather than in
+    //! the transport because the transport is replaceable (the base URL can change between fetches) and
+    //! the panel must keep showing the last answer while a new one is on the way.
+    QVariantList m_agentModelIds;
+    bool m_agentModelsLoading = false;
+    QString m_agentModelsError;
 
     void ensureAgentLoop();
 };
