@@ -43,6 +43,12 @@
 #include "notation/inotationelements.h"
 #include "notation/inotationundostack.h"
 
+//! The app's own settings store, so the gateway and the model survive a restart. This is the framework
+//! way (`Settings::Key(module, "path")` + `value()` / `setSharedValue()`), the same one
+//! `AppShellConfiguration` uses - NOT `QSettings` directly, which would write a second settings file
+//! and not follow `--revert-to-factory`.
+#include "settings.h"
+
 #include "addressing.h"
 #include "agentloop.h"
 #include "llmtransport.h"
@@ -69,6 +75,15 @@ static bool fieldTraceEnabled()
     static const bool enabled = qEnvironmentVariableIsSet("MUSE_AGENT_FIELD_TRACE");
     return enabled;
 }
+
+//! ── The two settings a user should not have to retype ────────────────────────────────────────────
+//! Which gateway and which model. Both are PREFERENCES (the key is the only secret, and it stays in
+//! memory - see `setAgentApiKey()`). They live in the app's own store, so a restart keeps them, and
+//! the environment still WINS over them: scripted runs must not be at the mercy of whatever a user
+//! clicked last week.
+static const Settings::Key AGENT_BASE_URL_KEY("agentharness", "agent/baseUrl");
+static const Settings::Key AGENT_MODEL_KEY("agentharness", "agent/model");
+static const QString DEFAULT_BASE_URL = QStringLiteral("https://api.deepseek.com");
 
 //! Command types and element types share one histogram; this keeps them from colliding.
 //! The value itself lives on FieldController so `semanticderive.cpp` can use the same one.
@@ -1298,8 +1313,18 @@ void FieldController::ensureAgentLoop()
     //! The base URL is overridable so the whole chain can be pointed at a local mock. That is what
     //! makes the transport verifiable without a real key - and it is the same switch a user behind a
     //! gateway needs.
-    const QString override = qEnvironmentVariable("MUSE_AGENT_API_BASE");
-    m_transport->setBaseUrl(override.isEmpty() ? QStringLiteral("https://api.deepseek.com") : override);
+    //!
+    //! ⚠️ THREE SOURCES, IN THIS ORDER: environment, then the user's stored preference, then the
+    //! DeepSeek default. The environment wins on purpose - scripted runs and CI must not be at the
+    //! mercy of whatever was last typed into the connection panel. Before this, a gateway could only
+    //! be set by an environment variable, i.e. **"can I talk to the agent" was decided by whoever
+    //! launched the process** (measured 2026-10-10: the app worked from a launcher script and was
+    //! unusable when started from the desktop shortcut).
+    const QString envBase = qEnvironmentVariable("MUSE_AGENT_API_BASE");
+    const QString storedBase = QString::fromStdString(Settings::instance()->value(AGENT_BASE_URL_KEY).toString());
+    m_transport->setBaseUrl(!envBase.isEmpty() ? envBase
+                           : !storedBase.isEmpty() ? storedBase
+                           : DEFAULT_BASE_URL);
 
     m_loop = std::make_unique<AgentLoop>(&m_session, m_transport.get(), this);
 
@@ -1312,10 +1337,24 @@ void FieldController::ensureAgentLoop()
     //! working URL and a working route all produced a failure that looked like a broken agent.
     //!
     //! ⚠️ The DEFAULT is unchanged (`AgentLoop`'s own `deepseek-chat`), so pointing at DeepSeek's own
-    //! endpoint still needs no configuration at all.
-    const QString modelOverride = qEnvironmentVariable("MUSE_AGENT_MODEL");
-    if (!modelOverride.isEmpty()) {
-        m_loop->setModel(modelOverride);
+    //! endpoint still needs no configuration at all. Precedence is the same as the URL's: env, then the
+    //! stored preference, then the default.
+    const QString envModel = qEnvironmentVariable("MUSE_AGENT_MODEL");
+    const QString storedModel = QString::fromStdString(Settings::instance()->value(AGENT_MODEL_KEY).toString());
+    if (!envModel.isEmpty()) {
+        m_loop->setModel(envModel);
+    } else if (!storedModel.isEmpty()) {
+        m_loop->setModel(storedModel);
+    }
+
+    //! How many model round-trips one turn may take, before the loop gives up and SAYS SO
+    //! ("stopped after N steps without the model finishing"). The guard has to stay - a runaway loop
+    //! costs real money - but a real multi-part task ("fill every measure, check each pitch, report")
+    //! legitimately needs more than the default 8, and a user watching it stop early has no way to
+    //! know the limit is ours. Raisable per run without a rebuild; `0`/unset keeps the default.
+    const int maxSteps = qEnvironmentVariableIntValue("MUSE_AGENT_MAX_STEPS");
+    if (maxSteps > 0) {
+        m_loop->setMaxStepsPerTurn(maxSteps);
     }
 
     connect(m_loop.get(), &AgentLoop::assistantText, this, [this](const QString&) {
@@ -1389,12 +1428,31 @@ void FieldController::setAgentModel(const QString& model)
 {
     ensureAgentLoop();
     m_loop->setModel(model);
+
+    //! Persisted because it is a PREFERENCE, not a secret: "which model am I talking to" is exactly the
+    //! kind of thing a user should not have to retype (or set an environment variable for) every run.
+    //! ⚠️ The KEY is deliberately not stored - see `setAgentApiKey()` and 交接文档 §六.
+    Settings::instance()->setSharedValue(AGENT_MODEL_KEY, Val(model.toStdString()));
+
+    //! ⛔ AND THE UI HAS TO BE TOLD. Every QML binding on this object (`agentConfigured`, `agentModel`
+    //! through the panel's labels, ...) re-evaluates only on `fieldChanged`; a setter that changes state
+    //! without emitting leaves the UI describing the PREVIOUS configuration, forever (第 127 条).
+    emit fieldChanged();
 }
 
 void FieldController::setAgentBaseUrl(const QString& url)
 {
     ensureAgentLoop();
     m_transport->setBaseUrl(url);
+    Settings::instance()->setSharedValue(AGENT_BASE_URL_KEY, Val(url.toStdString()));
+    emit fieldChanged();
+}
+
+QString FieldController::agentBaseUrl() const
+{
+    //! Read back from the transport, never from a second copy: the transport is the thing that will
+    //! actually be used, and a UI that displayed its own remembered value would be free to disagree.
+    return m_transport ? m_transport->baseUrl() : QString();
 }
 
 void FieldController::setAgentApiKey(const QString& key)
@@ -1407,6 +1465,14 @@ void FieldController::setAgentApiKey(const QString& key)
         //! end up somewhere it should not be.
         LOGW() << "[agent-llm] api key set by the user (length" << key.size() << ")";
     }
+
+    //! ⛔⛔ NOTIFY, OR THE KEY IS SET AND THE UI NEVER KNOWS. Measured 2026-10-10: a user pastes a key,
+    //! presses Enter, the field closes - and the composer still says "Set an API key first" with Send
+    //! disabled, because `agentConfigured` is a binding that only re-evaluates on `fieldChanged`.
+    //! Worse: `submit()` re-checks `root.configured` (the stale binding), so the message is refused
+    //! even though the transport HAS the key - "I pasted my key and it still will not send", with
+    //! nothing in the log (第 127 条).
+    emit fieldChanged();
 }
 
 QString FieldController::agentApiKeySource() const

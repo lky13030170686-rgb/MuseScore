@@ -87,6 +87,7 @@ qt_add_qml_module(agentharness_qml
         AgentWorkbench.qml
         AgentFactsPanel.qml
         AgentToolInspector.qml
+        AgentConnectionPanel.qml
 
     IMPORTS
         TARGET muse_ui_qml

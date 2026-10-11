@@ -111,6 +111,26 @@ Item {
                 visible: !root.compactButtons
             }
 
+            //! ── Stop ────────────────────────────────────────────────────────────────────────────
+            //! It lives HERE, in the shared composer, because the panel had no way to stop a running turn
+            //! at all: the only Stop button was the Agent page's header, so a user watching the side panel
+            //! could only wait it out (or close the app). One control, both surfaces.
+            //! ⚠️ Visible only while running - an always-present Stop would advertise a thing to stop when
+            //! nothing is happening.
+            FlatButton {
+                id: stopButton
+
+                visible: root.running
+                accessible.name: qsTrc("agentharness", "Stop the agent")
+                text: qsTrc("agentharness", "Stop")
+
+                onClicked: {
+                    if (root.field) {
+                        root.field.abortAgent()
+                    }
+                }
+            }
+
             FlatButton {
                 id: sendButton
 

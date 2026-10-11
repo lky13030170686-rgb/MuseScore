@@ -260,9 +260,15 @@ public:
     Q_INVOKABLE void sendToAgent(const QString& text);
     Q_INVOKABLE void abortAgent();
     Q_INVOKABLE QString agentModel() const;
+    //! Set the model. Persisted as a preference (not a secret): the connection panel shows it back, and
+    //! an environment variable still wins over it at startup.
     Q_INVOKABLE void setAgentModel(const QString& model);
-    //! Override the API base URL (a gateway, or a local mock for verification).
+    //! Override the API base URL (a gateway, or a local mock for verification). Also persisted, with the
+    //! same precedence rule: environment, then this, then the DeepSeek default.
     Q_INVOKABLE void setAgentBaseUrl(const QString& url);
+    //! The base URL actually in force, read back from the transport. The connection panel displays THIS
+    //! rather than its own remembered text, so what the user sees is what will be used.
+    Q_INVOKABLE QString agentBaseUrl() const;
     //! Store an API key for this run. Held in memory only - see `agentApiKeySource()` for why it is
     //! not written to settings yet.
     Q_INVOKABLE void setAgentApiKey(const QString& key);

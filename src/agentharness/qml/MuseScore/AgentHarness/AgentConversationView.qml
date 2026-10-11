@@ -60,6 +60,12 @@ Item {
     //! rebuild the whole list per token.
     readonly property string streaming: root.field ? root.field.agentStreamingText : ""
     readonly property string lastError: root.field ? root.field.agentLastError : ""
+    //! The model's own reasoning stream. `FieldController` has collected it since the first day and
+    //! NOTHING displayed it: a turn that spends ten seconds thinking looked like a hang while the
+    //! explanation sat in a property nobody read (measured 2026-10-10). Collapsed by default - it is
+    //! long, and it is not the answer - but one click away, and the label says how much there is.
+    readonly property string reasoning: root.field ? root.field.agentStreamingReasoning : ""
+    property bool reasoningExpanded: false
 
     implicitHeight: content.implicitHeight
 
@@ -97,6 +103,45 @@ Item {
                     positionViewAtEnd()
                 }
             }
+        }
+
+        //! ── The model's reasoning, one click away ─────────────────────────────────────────────
+        //! It sits ABOVE the answer because that is the order it happens in. A real `FlatButton` with an
+        //! accessible name, like every other control here: a hand-drawn toggle cannot be reached by UI
+        //! Automation, so the panel could not be verified from a script (维护手册.md §7.6).
+        FlatButton {
+            id: reasoningToggle
+
+            Layout.fillWidth: true
+            visible: root.reasoning.length > 0
+            accessible.name: qsTrc("agentharness", "Show or hide the model's reasoning")
+            opacity: 0.9
+            //! The character count is the liveness signal while a turn runs: the reasoning grows first and
+            //! the answer comes after, so a counter that keeps moving is what tells the user "it is
+            //! working, not stuck".
+            text: root.reasoningExpanded
+                  ? qsTrc("agentharness", "Hide thinking (%1)").arg(root.reasoning.length)
+                  : qsTrc("agentharness", "Thinking… (%1)").arg(root.reasoning.length)
+
+            onClicked: {
+                root.reasoningExpanded = !root.reasoningExpanded
+            }
+        }
+
+        StyledTextLabel {
+            id: reasoningLabel
+
+            Layout.fillWidth: true
+            //! Capped and clipped: reasoning is normally several times longer than the answer, and letting
+            //! it take the height would push the conversation (and the input) out of the panel.
+            Layout.preferredHeight: root.reasoningExpanded ? Math.min(160, reasoningLabel.implicitHeight) : 0
+            visible: root.reasoningExpanded
+            clip: true
+            opacity: 0.75
+            horizontalAlignment: Text.AlignLeft
+            verticalAlignment: Text.AlignTop
+            wrapMode: Text.WordWrap
+            text: root.reasoning
         }
 
         //! ── Live stream, so the surface is not silent while the model is thinking ─────────────

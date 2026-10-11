@@ -101,18 +101,24 @@ Item {
 
                 SeparatorLine {}
 
-                //! The two settings a user needs to know to trust what they are looking at: where the
-                //! key came from (environment vs typed in), and which model is being asked. `agentModel()`
-                //! is `Q_INVOKABLE`, so the binding also touches `agentTranscript` to get a dependency
-                //! that notifies - otherwise the label would be whatever it read on the first frame.
+                //! Where the agent talks to, editable in the app. Before this, the gateway and the model
+                //! could only be set by environment variables - so "can I use the agent" depended on who
+                //! launched the process (第 127 条). The key stays in the composer and is never saved.
+                AgentConnectionPanel {
+                    Layout.fillWidth: true
+                    field: root.field
+                }
+
+                //! The key's provenance still deserves a line: "it works on my machine" is usually an
+                //! environment variable someone forgot they set, and a key that came from the environment
+                //! cannot be cleared from here.
                 StyledTextLabel {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignLeft
                     elide: Text.ElideRight
                     color: ui.theme.fontSecondaryColor
-                    text: qsTrc("agentharness", "Key: %1 · Model: %2")
+                    text: qsTrc("agentharness", "Key: %1")
                           .arg(root.field ? root.field.agentApiKeySource : "none")
-                          .arg(root.field && root.field.agentTranscript.length >= 0 ? root.field.agentModel() : "")
                 }
             }
         }
@@ -133,10 +139,10 @@ Item {
                 anchors.fill: parent
                 spacing: 0
 
-                //! ── Header: the score this session is about, plus the running controls ────────────
-                //! The web client's header is also where its right-panel button lives; here the two
-                //! things that belong at the top of a long-running agent are "what is it working on"
-                //! and "make it stop".
+                //! ── Header: what this session is working on ──────────────────────────────────────
+                //! The score facts, plus a busy indicator while a turn runs. ⚠️ The Stop button is NOT
+                //! here: it lives in the shared composer (`AgentComposer`), so the panel can stop a turn
+                //! too - it had no way to before (第 127 条). One control, both surfaces.
                 Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 52
@@ -160,21 +166,6 @@ Item {
                             Layout.preferredHeight: 16
                             running: root.running
                             visible: root.running
-                        }
-
-                        //! A real `FlatButton` with an accessible name: a stop control nothing can press
-                        //! from a script is a stop control nobody can verify (维护手册.md §7.6).
-                        FlatButton {
-                            accessible.name: qsTrc("agentharness", "Stop the agent")
-                            text: qsTrc("agentharness", "Stop")
-                            visible: root.running
-                            enabled: root.running
-
-                            onClicked: {
-                                if (root.field) {
-                                    root.field.abortAgent()
-                                }
-                            }
                         }
                     }
                 }
