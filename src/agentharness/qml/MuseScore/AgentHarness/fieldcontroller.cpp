@@ -89,6 +89,14 @@ static const Settings::Key AGENT_RIGHTBAR_WIDTH_KEY("agentharness", "agent/right
 //! The per-turn step guard, as a preference (第 130 条). Stored like the gateway and the model: it is a
 //! PREFERENCE (how much work one message may cost), not a secret.
 static const Settings::Key AGENT_MAX_STEPS_KEY("agentharness", "agent/maxSteps");
+//! Every gateway's remembered model catalog, as JSON (第 131 条 - see modelcatalog.h for the shape and why
+//! it is keyed by base URL).
+static const Settings::Key AGENT_MODEL_CATALOGS_KEY("agentharness", "agent/modelCatalogs");
+//! Whether the API key may be written to this file, and the key itself when it may.
+//! ⛔ The flag is the user's decision, made once in the Models page; the key is only ever written when it is
+//! true. `agent/apiKey` being EMPTY is the normal state on a machine that never ticked the box.
+static const Settings::Key AGENT_REMEMBER_KEY_KEY("agentharness", "agent/rememberApiKey");
+static const Settings::Key AGENT_API_KEY_KEY("agentharness", "agent/apiKey");
 static const QString DEFAULT_BASE_URL = QStringLiteral("https://api.deepseek.com");
 
 //! Command types and element types share one histogram; this keeps them from colliding.
@@ -1339,6 +1347,21 @@ void FieldController::ensureAgentLoop()
                            : !storedBase.isEmpty() ? storedBase
                            : DEFAULT_BASE_URL);
 
+    //! The API key: the environment first (it is the one place a key can live without this program writing
+    //! it to disk), then the key the user asked to be remembered (第 131 条). ⚠️ This is where the
+    //! "remember my key" box turns into an actually usable key after a restart - without it the stored key
+    //! would be a setting nothing reads.
+    if (qEnvironmentVariableIsEmpty("DEEPSEEK_API_KEY") && agentRememberApiKey()) {
+        const QString storedKey = QString::fromStdString(Settings::instance()->value(AGENT_API_KEY_KEY).toString());
+        if (!storedKey.isEmpty()) {
+            m_transport->setApiKey(storedKey);
+
+            if (fieldTraceEnabled()) {
+                LOGW() << "[agent-llm] api key restored from the settings (length" << storedKey.size() << ")";
+            }
+        }
+    }
+
     m_loop = std::make_unique<AgentLoop>(&m_session, m_transport.get(), this);
 
     //! ⛔ THE MODEL IS OVERRIDABLE FOR THE SAME REASON THE BASE URL IS, AND LEAVING IT FIXED MADE THE
@@ -1450,7 +1473,8 @@ void FieldController::setAgentModel(const QString& model)
 
     //! Persisted because it is a PREFERENCE, not a secret: "which model am I talking to" is exactly the
     //! kind of thing a user should not have to retype (or set an environment variable for) every run.
-    //! ⚠️ The KEY is deliberately not stored - see `setAgentApiKey()` and 交接文档 §六.
+    //! ⚠️ The KEY is a secret and is only stored when the user asks for that - see `setAgentRememberApiKey()`
+    //! and 交接文档 §六.
     Settings::instance()->setSharedValue(AGENT_MODEL_KEY, Val(model.toStdString()));
 
     //! ⛔ AND THE UI HAS TO BE TOLD. Every QML binding on this object (`agentConfigured`, `agentModel`
@@ -1465,11 +1489,26 @@ void FieldController::setAgentBaseUrl(const QString& url)
     m_transport->setBaseUrl(url);
     Settings::instance()->setSharedValue(AGENT_BASE_URL_KEY, Val(url.toStdString()));
 
-    //! ⛔ THE LIST BELONGED TO THE OLD GATEWAY. Keeping it would offer model ids that do not exist at the
-    //! new address - and the panel would be showing a *successful* answer to a question nobody asked
-    //! anymore. Cleared here rather than in the panel, because this is the one place the address changes.
+    //! ⛔ THE LIST NOW FOLLOWS THE GATEWAY INSTEAD OF BEING THROWN AWAY (第 131 条). Before this round a
+    //! gateway change CLEARED the list, which was right while the list lived in memory only - but the
+    //! catalog is stored per gateway now, so the honest answer for the new address is "whatever we know
+    //! about THAT address": its remembered list, or nothing at all. Showing the old gateway's models is
+    //! still refused; forgetting the new gateway's is no longer necessary.
+    //! ⚠️ LOADED FIRST, explicitly: the map is normally read on first ask, but "the user's first action is
+    //! typing a new address" would otherwise look up an EMPTY map and answer "this gateway serves nothing"
+    //! while its stored list sat unread on disk.
+    ensureModelCatalogsLoaded();
+
     m_agentModelIds.clear();
     m_agentModelsError.clear();
+    const ModelCatalog known = catalogFor(m_modelCatalogs, url);
+    for (const QString& id : known.ids) {
+        m_agentModelIds.append(id);
+    }
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] gateway set to" << url << "- remembered models:" << m_agentModelIds.size();
+    }
 
     emit fieldChanged();
 }
@@ -1489,26 +1528,33 @@ void FieldController::refreshAgentModels()
     m_agentModelsError.clear();
     emit fieldChanged();
 
-    //! The list is cleared when a new fetch STARTS, not when one fails: leaving the previous gateway's
-    //! models on screen while asking a different one would offer the user names that do not exist there.
+    //! The list is cleared when a new fetch STARTS, not when one fails: leaving the previous answer on
+    //! screen while asking again would offer the user names that may no longer exist there.
     m_agentModelIds.clear();
 
-    m_transport->fetchModels([this](bool ok, const QStringList& ids, const QString& error) {
+    const QString gateway = m_transport->baseUrl();
+
+    m_transport->fetchModels([this, gateway](bool ok, const QStringList& ids, const QString& error) {
         m_agentModelsLoading = false;
 
         if (!ok) {
             m_agentModelsError = error;
             m_agentModelIds.clear();
+
+            LOGW() << "[agent-field] model list" << "FAILED" << "error=" << m_agentModelsError;
         } else {
             m_agentModelsError.clear();
-            m_agentModelIds.clear();
-            for (const QString& id : ids) {
-                m_agentModelIds.append(id);
-            }
-        }
 
-        LOGW() << "[agent-field] model list" << (ok ? "OK" : "FAILED")
-               << "count=" << m_agentModelIds.size() << "error=" << m_agentModelsError;
+            //! ⛔ PERSISTED (第 131 条): the answer is stored for the gateway it came from, so the list is
+            //! there on the next launch - and so switching gateways back and forth restores each list
+            //! instead of making the user fetch again every time.
+            setCurrentCatalog(ids, QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+
+            LOGW() << "[agent-field] model list" << "OK"
+                   << "count=" << ids.size()
+                   << "gateway=" << gateway
+                   << "stored=" << m_agentModelIds.size();
+        }
 
         //! ⛔ Notify, or the menu fills with nothing: the panel's menu model is built from these
         //! properties and only re-evaluates on `fieldChanged` (第 127 条).
@@ -1516,8 +1562,132 @@ void FieldController::refreshAgentModels()
     });
 }
 
+void FieldController::ensureModelCatalogsLoaded()
+{
+    if (m_modelCatalogsLoaded) {
+        return;
+    }
+    m_modelCatalogsLoaded = true;
+
+    const QString stored = QString::fromStdString(Settings::instance()->value(AGENT_MODEL_CATALOGS_KEY).toString());
+    QString problem;
+    m_modelCatalogs = parseModelCatalogs(stored, &problem);
+
+    if (!problem.isEmpty()) {
+        //! ⚠️ Reported, and the map is left EMPTY: half-parsed storage would show one gateway's models as if
+        //! the list were complete. The user's next fetch rewrites the value, so this is recoverable by doing
+        //! the obvious thing.
+        LOGW() << "[agent-field] stored model catalogs could not be read:" << problem;
+    }
+
+    if (fieldTraceEnabled() && !m_modelCatalogs.isEmpty()) {
+        LOGW() << "[agent-field] model catalogs loaded for" << m_modelCatalogs.size() << "gateway(s)";
+    }
+}
+
+void FieldController::storeModelCatalogs()
+{
+    Settings::instance()->setSharedValue(AGENT_MODEL_CATALOGS_KEY,
+                                         Val(serializeModelCatalogs(m_modelCatalogs).toStdString()));
+}
+
+void FieldController::setCurrentCatalog(const QStringList& ids, const QString& fetchedAt)
+{
+    ensureModelCatalogsLoaded();
+
+    ModelCatalog catalog;
+    catalog.ids = ids;
+    catalog.fetchedAt = fetchedAt;
+
+    m_modelCatalogs = withCatalog(m_modelCatalogs, agentBaseUrl(), catalog);
+    storeModelCatalogs();
+
+    //! ⛔ `m_agentModelIds` is RE-DERIVED, never assigned from `ids` directly: there is one stored catalog
+    //! per gateway, and the list the UI sees has to be the one that was actually stored (a dedupe or a
+    //! drop-on-empty rule applied in one place only).
+    m_agentModelIds.clear();
+    const ModelCatalog stored = catalogFor(m_modelCatalogs, agentBaseUrl());
+    for (const QString& id : stored.ids) {
+        m_agentModelIds.append(id);
+    }
+}
+
+void FieldController::addAgentModel(const QString& id)
+{
+    const QString wanted = id.trimmed();
+    if (wanted.isEmpty()) {
+        return;
+    }
+
+    ensureModelCatalogsLoaded();
+
+    const ModelCatalog current = catalogFor(m_modelCatalogs, agentBaseUrl());
+    if (current.ids.contains(wanted)) {
+        //! Idempotent on purpose: a user who adds an id that is already there has not made a mistake worth a
+        //! message, and a duplicate entry in the selector WOULD be one.
+        return;
+    }
+
+    QStringList ids = current.ids;
+    ids.append(wanted);
+
+    //! A hand-added id keeps the existing timestamp: the list was not re-fetched, and claiming it was would
+    //! make the "fetched at" line a lie.
+    setCurrentCatalog(ids, current.fetchedAt);
+
+    m_agentModelsError.clear();
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] model added by hand:" << wanted << "total=" << m_agentModelIds.size();
+    }
+
+    emit fieldChanged();
+}
+
+void FieldController::removeAgentModel(const QString& id)
+{
+    ensureModelCatalogsLoaded();
+
+    const ModelCatalog current = catalogFor(m_modelCatalogs, agentBaseUrl());
+    if (!current.ids.contains(id)) {
+        return;
+    }
+
+    QStringList ids = current.ids;
+    ids.removeAll(id);
+    setCurrentCatalog(ids, current.fetchedAt);
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] model removed:" << id << "remaining=" << m_agentModelIds.size();
+    }
+
+    emit fieldChanged();
+}
+
+QString FieldController::agentModelCatalogFetchedAt() const
+{
+    FieldController* self = const_cast<FieldController*>(this);
+    self->ensureModelCatalogsLoaded();
+
+    return catalogFor(m_modelCatalogs, agentBaseUrl()).fetchedAt;
+}
+
 QVariantList FieldController::agentModelIds() const
 {
+    //! ⛔ THE CATALOG IS READ FROM STORAGE ON FIRST ASK (第 131 条), so the model selector is populated the
+    //! moment the page opens - not only after the user presses "fetch" again. The value returned is the
+    //! current gateway's list (`catalogFor`), which is why switching gateways shows that gateway's list or
+    //! nothing, and never somebody else's.
+    FieldController* self = const_cast<FieldController*>(this);
+    self->ensureModelCatalogsLoaded();
+
+    if (m_agentModelIds.isEmpty() && !self->m_agentModelsLoading) {
+        const ModelCatalog stored = catalogFor(self->m_modelCatalogs, self->agentBaseUrl());
+        for (const QString& id : stored.ids) {
+            self->m_agentModelIds.append(id);
+        }
+    }
+
     return m_agentModelIds;
 }
 
@@ -1643,10 +1813,17 @@ void FieldController::setAgentApiKey(const QString& key)
     ensureAgentLoop();
     m_transport->setApiKey(key);
 
+    //! ⛔ WRITTEN TO DISK ONLY WHEN THE USER ASKED FOR IT (第 131 条). `agent/rememberApiKey` is the opt-in;
+    //! with it off this is exactly what it always was - a key that lives in memory for the run.
+    if (agentRememberApiKey()) {
+        Settings::instance()->setSharedValue(AGENT_API_KEY_KEY, Val(key.toStdString()));
+    }
+
     if (fieldTraceEnabled()) {
         //! Never log the key itself, not even a prefix. A log line is the easiest way for a secret to
         //! end up somewhere it should not be.
-        LOGW() << "[agent-llm] api key set by the user (length" << key.size() << ")";
+        LOGW() << "[agent-llm] api key set by the user (length" << key.size() << ")"
+               << "remembered=" << agentRememberApiKey();
     }
 
     //! ⛔⛔ NOTIFY, OR THE KEY IS SET AND THE UI NEVER KNOWS. Measured 2026-10-10: a user pastes a key,
@@ -1658,18 +1835,85 @@ void FieldController::setAgentApiKey(const QString& key)
     emit fieldChanged();
 }
 
+bool FieldController::agentRememberApiKey() const
+{
+    return Settings::instance()->value(AGENT_REMEMBER_KEY_KEY).toBool();
+}
+
+void FieldController::setAgentRememberApiKey(bool remember)
+{
+    ensureAgentLoop();
+
+    Settings::instance()->setSharedValue(AGENT_REMEMBER_KEY_KEY, Val(remember));
+
+    if (remember) {
+        //! Turning it ON must take effect for the key that is ALREADY in the transport, not only for the
+        //! next one: a user ticks the box after pasting a key and expects that key to survive the restart -
+        //! storing only future keys would make the box look broken until the second paste.
+        const QString current = m_transport->apiKey();
+        if (!current.isEmpty()) {
+            Settings::instance()->setSharedValue(AGENT_API_KEY_KEY, Val(current.toStdString()));
+        }
+    } else {
+        //! ⛔ OFF MEANS OFF: the stored copy is erased rather than merely ignored. Leaving a secret on disk
+        //! after the user asked for it to stop being remembered would be the worst of both worlds.
+        Settings::instance()->setSharedValue(AGENT_API_KEY_KEY, Val(std::string()));
+    }
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] remember api key:" << remember
+               << "source now" << agentApiKeySource();
+    }
+
+    emit fieldChanged();
+}
+
+void FieldController::forgetAgentApiKey()
+{
+    ensureAgentLoop();
+
+    m_transport->setApiKey(QString());
+    Settings::instance()->setSharedValue(AGENT_API_KEY_KEY, Val(std::string()));
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] api key forgotten (in memory and on disk)";
+    }
+
+    emit fieldChanged();
+}
+
 QString FieldController::agentApiKeySource() const
 {
     FieldController* self = const_cast<FieldController*>(this);
     self->ensureAgentLoop();
 
     if (!m_transport->apiKey().isEmpty()) {
-        //! `LlmTransport::apiKey()` resolves the environment on first ask, so by this point a
-        //! non-empty key may have come from either place. The distinction is reported by asking the
-        //! environment directly - the transport does not need to remember where it got it.
-        return qEnvironmentVariableIsEmpty("DEEPSEEK_API_KEY")
-               ? QStringLiteral("set")
-               : QStringLiteral("environment");
+        //! The order here IS the precedence in `ensureAgentLoop`: the environment is read first, then the
+        //! stored key, then whatever was set by hand this session. Reported rather than guessed - "it works
+        //! on my machine" is usually an environment variable somebody forgot they set.
+        //!
+        //! ⛔ THE COMPARISON IS BY VALUE, and that matters: `LlmTransport::apiKey()` falls back to
+        //! `DEEPSEEK_API_KEY` on its own, so "is the variable set" would keep answering "environment" AFTER
+        //! the user pasted a different key - and the settings page hides its key field for an environment
+        //! key, so the user would be locked out of replacing a key the app is no longer even using.
+        const QString envKey = qEnvironmentVariable("DEEPSEEK_API_KEY");
+        if (!envKey.isEmpty() && envKey == m_transport->apiKey()) {
+            return QStringLiteral("environment");
+        }
+
+        const QString stored = QString::fromStdString(Settings::instance()->value(AGENT_API_KEY_KEY).toString());
+        if (!stored.isEmpty() && stored == m_transport->apiKey()) {
+            return QStringLiteral("stored");
+        }
+
+        return QStringLiteral("set");
+    }
+
+    //! A key that is remembered but not loaded yet is still worth reporting: the user's question is "will
+    //! this work", and "remembered" answers it.
+    if (agentRememberApiKey()
+        && !QString::fromStdString(Settings::instance()->value(AGENT_API_KEY_KEY).toString()).isEmpty()) {
+        return QStringLiteral("stored");
     }
 
     return QStringLiteral("none");

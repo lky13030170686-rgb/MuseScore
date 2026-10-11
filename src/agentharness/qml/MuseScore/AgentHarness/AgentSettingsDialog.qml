@@ -96,6 +96,10 @@ Popup {
 
     readonly property var sections: [
         { id: "connection", label: qsTrc("agentharness", "Connection"), icon: IconCode.LINK },
+        //! DSH's "模型" section. It sits next to Connection rather than replacing it: Connection answers
+        //! "where does it talk to", Models answers "which model, with which key, out of which list" - and
+        //! the second question is the one that needed a page (第 131 条).
+        { id: "models", label: qsTrc("agentharness", "Models"), icon: IconCode.LIST },
         { id: "assistant", label: qsTrc("agentharness", "Assistant"), icon: IconCode.CLOCK },
         { id: "interface", label: qsTrc("agentharness", "Interface"), icon: IconCode.GRID },
         { id: "about", label: qsTrc("agentharness", "About"), icon: IconCode.INFO }
@@ -153,7 +157,23 @@ Popup {
         //! The Connection section re-reads what is in force every time the panel opens: a value typed but
         //! never applied (no Enter) must not come back looking like the gateway in use.
         connectionSection.reload()
+        modelsSection.reload()
         overlay.forceActiveFocus()
+    }
+
+    //! ⛔ ENTERING A SECTION RELOADS IT, and that is what makes it safe for two sections to describe the
+    //! same value. The sections are exclusive (`visible: false`), so only one is ever on screen - but
+    //! hidden items still exist and still hold their old text. Without this, switching the model from the
+    //! catalog and then walking back to Connection would show the OLD model in the field while the "in use"
+    //! line under it showed the new one: the panel contradicting itself, which is the exact failure the
+    //! read-back lines exist to prevent (第 130 条). Reloading on entry costs nothing and makes "what is on
+    //! screen" equal "what is in force" for whichever section the user is looking at.
+    onActiveSectionChanged: {
+        if (root.activeSection === "connection") {
+            connectionSection.reload()
+        } else if (root.activeSection === "models") {
+            modelsSection.reload()
+        }
     }
 
     contentItem: FocusScope {
@@ -401,7 +421,21 @@ Popup {
                                 wrapMode: Text.WordWrap
                                 color: ui.theme.fontSecondaryColor
                                 text: qsTrc("agentharness",
-                                            "The API key is entered with “Set key” in the composer and is never written to disk, so it is not shown here.")
+                                            "The API key has its own section, next to this one, because a key belongs to a model list rather than to an address. It can be entered in the composer too (“Set key”).")
+                            }
+
+                            //! ── Models ───────────────────────────────────────────────────────────
+                            //! DSH's "模型" section: the provider, its key, and the catalog you pick from.
+                            //! The whole section is one component (`AgentModelsSection.qml`), for the same
+                            //! reason the Connection section is: a second copy of the key field, the
+                            //! catalog list or the "switch the model in use" call would be a second place
+                            //! for them to disagree (维护手册.md §4.5).
+                            AgentModelsSection {
+                                id: modelsSection
+
+                                Layout.fillWidth: true
+                                visible: root.activeSection === "models"
+                                field: root.field
                             }
 
                             //! ── Assistant ─────────────────────────────────────────────────────────
@@ -525,8 +559,8 @@ Popup {
                                         return ""
                                     }
                                     return qsTrc("agentharness", "Gateway: %1\nModel: %2\nKey: %3\nTools: %4\nSession events: %5\nScore revision: %6")
-                                           .arg(root.field.agentBaseUrl())
-                                           .arg(root.field.agentModel())
+                                           .arg(root.field.agentBaseUrl)
+                                           .arg(root.field.agentModel)
                                            .arg(root.field.agentApiKeySource)
                                            .arg(root.field.toolCount)
                                            .arg(root.field.eventCount)

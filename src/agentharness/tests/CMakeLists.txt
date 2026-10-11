@@ -36,6 +36,10 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/spill_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/sessionlog_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/llmclient_tests.cpp
+    # The stored model catalog: the JSON shape of "which ids this gateway serves, and when we were
+    # told" (第 131 条). Pure text in / text out, which is why it can be tested without a settings
+    # file, a gateway or a window.
+    ${CMAKE_CURRENT_LIST_DIR}/modelcatalog_tests.cpp
     # The per-turn step guard, now that its value arrives from a settings field (第 130 条).
     ${CMAKE_CURRENT_LIST_DIR}/agentloop_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/systemprompt_tests.cpp

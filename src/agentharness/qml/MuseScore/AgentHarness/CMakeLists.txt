@@ -52,6 +52,11 @@ qt_add_qml_module(agentharness_qml
         sessionlog.h
         llmclient.cpp
         llmclient.h
+        # The model catalog's stored form: which ids a gateway serves, keyed by gateway, and when we
+        # were told. Pure (text in, text out) for the same reason `llmclient`'s wire handling is - the
+        # part that breaks is the shape of the document, not the socket (第 131 条).
+        modelcatalog.cpp
+        modelcatalog.h
         systemprompt.cpp
         systemprompt.h
         # The loop body and its socket. The transport uses QNetworkAccessManager directly rather than
@@ -95,6 +100,10 @@ qt_add_qml_module(agentharness_qml
         AgentFactsPanel.qml
         AgentToolInspector.qml
         AgentConnectionPanel.qml
+        # The provider's key and its model catalog - DSH's "模型" section. Its own file because the
+        # page is about the CATALOG (fetch, search, use, remove, add by hand) rather than about the
+        # address, which stays in the Connection section (第 131 条).
+        AgentModelsSection.qml
         # The settings surface, shaped like the DSH web client's shell (mask + centered panel + nav rail).
         # It embeds AgentConnectionPanel as its Connection section, so the gateway/model editors stay one
         # implementation; the panel and the page each open their own instance of this dialog.

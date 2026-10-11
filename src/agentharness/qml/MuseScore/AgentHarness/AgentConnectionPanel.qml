@@ -46,7 +46,7 @@ import Muse.UiComponents
     scripted runs must not depend on what a user clicked last week.
 
     \b Why "in use" is displayed separately from the fields. The fields are what you typed; the lines
-    under them are what the transport ACTUALLY holds (`agentBaseUrl()` / `agentModel()`, read back from
+    under them are what the transport ACTUALLY holds (`agentBaseUrl` / `agentModel`, read back from
     it). Showing only the fields would let the panel claim a gateway that is not the one in force - the
     same "two sources of truth" failure this subsystem refuses everywhere else.
 */
@@ -55,9 +55,11 @@ Item {
 
     property var field
 
-    //! What the transport really holds, refreshed when something is applied. A `Q_INVOKABLE` getter has
-    //! no notify signal, so a plain binding here would be evaluated once and then quietly go stale; this
-    //! is the same reason `AgentFactsPanel` touches a notifying property.
+    //! What the transport really holds, refreshed when something is applied. ⚠️ Since 第 131 条
+    //! `agentBaseUrl` / `agentModel` ARE notifying properties, so these could be plain bindings - they are
+    //! kept as a copy of "what was applied" because `reload()` also has to push the value into the two
+    //! text fields, and a field the user is typing in must not be re-seeded from a binding on every token
+    //! of a streamed answer.
     property string appliedGateway: ""
     property string appliedModel: ""
 
@@ -87,8 +89,8 @@ Item {
         if (!root.field) {
             return
         }
-        root.appliedGateway = root.field.agentBaseUrl()
-        root.appliedModel = root.field.agentModel()
+        root.appliedGateway = root.field.agentBaseUrl
+        root.appliedModel = root.field.agentModel
     }
 
     //! The menu's contents. `id` is what comes back from `onHandleMenuItem`; `title` is what is shown.
@@ -309,7 +311,7 @@ Item {
             horizontalAlignment: Text.AlignLeft
             wrapMode: Text.WordWrap
             color: ui.theme.fontSecondaryColor
-            text: qsTrc("agentharness", "Press Enter in a field to apply. The key is entered in the composer and is never saved.")
+            text: qsTrc("agentharness", "Press Enter in a field to apply. The API key has its own section: Models.")
         }
     }
 }

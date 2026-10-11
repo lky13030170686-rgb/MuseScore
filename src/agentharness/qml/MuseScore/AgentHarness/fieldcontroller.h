@@ -45,6 +45,7 @@
 #include "rcommand/icommandsregister.h"
 
 #include "addressing.h"
+#include "modelcatalog.h"
 #include "scorerecipes.h"
 #include "sessionlog.h"
 //! `ToolResult` is a parameter type on the tool entry points below, so it must be a COMPLETE type here
@@ -277,23 +278,34 @@ public:
     //! whose range disagrees with the clamp offers values that silently snap back.
     Q_PROPERTY(int agentMaxStepsMin READ agentMaxStepsMin CONSTANT)
     Q_PROPERTY(int agentMaxStepsMax READ agentMaxStepsMax CONSTANT)
+    //! ⛔ WHAT IS ACTUALLY IN FORCE, as a PROPERTY rather than an invokable getter (第 131 条). These two
+    //! were `Q_INVOKABLE QString agentModel() const` / `agentBaseUrl() const`, which is the trap the note
+    //! at the top of this block is about - and it bit exactly as described: assigning `field.agentModel`
+    //! (no parentheses) to a string in QML is a runtime error ("Unable to assign a function to a property
+    //! of any type other than var", measured 2026-10-11 in `AgentModelsSection`), and writing
+    //! `field.agentModel()` in a binding makes it a call that is evaluated once and then goes stale while
+    //! the value behind it changes. The caller wants to DISPLAY these and be told when they change, which
+    //! is what NOTIFY fieldChanged is for; the setters above already emit it.
+    Q_PROPERTY(QString agentModel READ agentModel NOTIFY fieldChanged)
+    Q_PROPERTY(QString agentBaseUrl READ agentBaseUrl NOTIFY fieldChanged)
 
     //! Send a user message and run a turn. Returns immediately: the loop is asynchronous, and
     //! blocking here would freeze the editor for the length of a model response.
     Q_INVOKABLE void sendToAgent(const QString& text);
     Q_INVOKABLE void abortAgent();
-    Q_INVOKABLE QString agentModel() const;
+    //! The model in force, read back from the loop. A QML property (see above), not an invokable.
+    QString agentModel() const;
     //! Set the model. Persisted as a preference (not a secret): the connection panel shows it back, and
     //! an environment variable still wins over it at startup.
     Q_INVOKABLE void setAgentModel(const QString& model);
     //! Override the API base URL (a gateway, or a local mock for verification). Also persisted, with the
     //! same precedence rule: environment, then this, then the DeepSeek default.
     Q_INVOKABLE void setAgentBaseUrl(const QString& url);
-    //! The base URL actually in force, read back from the transport. The connection panel displays THIS
-    //! rather than its own remembered text, so what the user sees is what will be used.
-    Q_INVOKABLE QString agentBaseUrl() const;
-    //! Store an API key for this run. Held in memory only - see `agentApiKeySource()` for why it is
-    //! not written to settings yet.
+    //! The base URL actually in force, read back from the transport. Every surface displays THIS rather
+    //! than its own remembered text, so what the user sees is what will be used. A QML property.
+    QString agentBaseUrl() const;
+    //! Store an API key. Kept in memory for the run, and written to the settings only when the user asked
+    //! for that - see `setAgentRememberApiKey()` and `agentApiKeySource()`.
     Q_INVOKABLE void setAgentApiKey(const QString& key);
 
     //! Ask the gateway for its model list (`GET <base>/models`) and publish it as `agentModelIds`.
@@ -326,6 +338,31 @@ public:
     //! Where the preferences above are actually stored. Shown in the settings dialog so "it is saved"
     //! stops being a claim: the file is named, and the dialog can reveal it.
     Q_INVOKABLE QString agentSettingsFilePath() const;
+
+    //! ── The model catalog: remembered, per gateway (第 131 条) ─────────────────────────────────────
+    //! The list a gateway serves IS its vocabulary (第 129 条), it costs a round trip to obtain, and losing
+    //! it on every restart means the model selector is empty exactly when the user wants to change models.
+    //! So it is stored - keyed by base URL (`modelcatalog.h` explains why the key matters), so the list of
+    //! one endpoint is never offered for another.
+    Q_PROPERTY(QString agentModelCatalogFetchedAt READ agentModelCatalogFetchedAt NOTIFY fieldChanged)
+    //! Add an id by hand. The gateway is not the only legitimate source: a user may know an id the
+    //! `/models` endpoint does not list (DSH's page says the same thing: unlisted ids can still be sent).
+    Q_INVOKABLE void addAgentModel(const QString& id);
+    Q_INVOKABLE void removeAgentModel(const QString& id);
+    QString agentModelCatalogFetchedAt() const;
+
+    //! ── The API key, and whether it is remembered (第 131 条) ───────────────────────────────────────
+    //! ⚠️ THIS REVERSES AN EARLIER RULE, deliberately and on request. Until 第 131 条 the key was NEVER
+    //! written to disk (交接文档 §六), which is the safest default - and it also means the key has to be
+    //! pasted again after every restart. The user asked for the opencode-go configuration to be saved, so
+    //! remembering is now possible, and it is OPT-IN and OFF by default: nothing is written unless somebody
+    //! ticks the box in the Models page. DSH does the same thing through its credentials domain (a key is
+    //! stored even when the settings document is read-only).
+    Q_PROPERTY(bool agentRememberApiKey READ agentRememberApiKey NOTIFY fieldChanged)
+    Q_INVOKABLE void setAgentRememberApiKey(bool remember);
+    //! Throw the key away: the in-memory one and the stored one. What "log out" means here.
+    Q_INVOKABLE void forgetAgentApiKey();
+    bool agentRememberApiKey() const;
 
     //! Put every agent preference back to its default: gateway, model, column widths, step guard.
     //! ⛔ NOT `Settings::reset()`: that clears the whole application's settings, which is somebody else's
@@ -619,9 +656,23 @@ private:
     //! The gateway's model list and the state of the last attempt to fetch it. Kept here rather than in
     //! the transport because the transport is replaceable (the base URL can change between fetches) and
     //! the panel must keep showing the last answer while a new one is on the way.
+    //! ⚠️ `m_agentModelIds` is always the list for the CURRENT gateway - it is a projection of
+    //! `m_modelCatalogs` (第 131 条), never an independent list.
     QVariantList m_agentModelIds;
     bool m_agentModelsLoading = false;
     QString m_agentModelsError;
+
+    //! Every gateway's remembered catalog, loaded from the settings on first use. `m_modelCatalogsLoaded`
+    //! is what makes the load lazy: a session that never opens the Models page never reads it.
+    QHash<QString, ModelCatalog> m_modelCatalogs;
+    bool m_modelCatalogsLoaded = false;
+
+    //! Read the stored catalogs once, and keep `m_agentModelIds` pointing at the current gateway's entry.
+    void ensureModelCatalogsLoaded();
+    //! Write `m_modelCatalogs` back, and re-derive `m_agentModelIds` from it.
+    void storeModelCatalogs();
+    //! Replace the current gateway's catalog (ids + timestamp) and persist.
+    void setCurrentCatalog(const QStringList& ids, const QString& fetchedAt);
 
     void ensureAgentLoop();
 };

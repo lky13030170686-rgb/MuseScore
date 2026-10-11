@@ -172,15 +172,18 @@ Item {
 
         //! ── Key entry, revealed on demand ────────────────────────────────────────────────────
         //! Hidden by default so the surface does not look like it is asking for a secret the user has
-        //! already provided. The key is kept in memory for this session by the transport - it is never
-        //! written to disk (see AgentHarness/交接文档.md §六).
+        //! already provided. A key set here is kept in memory for this session by the transport. ⚠️ Since
+        //! 第 131 条 it MAY also be on disk - the settings' Models section has an opt-in "remember the key"
+        //! checkbox, off by default, and the settings page is the only place that writes it. This hint must
+        //! not promise "never written to disk" any more: the promise would be about a choice the user makes
+        //! somewhere else.
         TextInputField {
             id: keyField
 
             Layout.fillWidth: true
             visible: false
             accessible.name: qsTrc("agentharness", "API key")
-            hint: qsTrc("agentharness", "Paste an API key (kept in memory for this session)")
+            hint: qsTrc("agentharness", "Paste an API key (kept for this session)")
 
             //! Same reason as the message field above: without the write-back `currentText` stays empty
             //! and the pasted key is silently ignored (`length > 0` is false) - the key entry would look
