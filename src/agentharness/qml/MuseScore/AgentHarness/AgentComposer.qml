@@ -39,6 +39,10 @@ import Muse.UiComponents
     \b Why `submit()` refuses rather than disabling alone. The button's `enabled` and the Enter key
     must not be able to disagree, so both go through one function that re-checks the same conditions.
 
+    \b The message field is `AgentComposerField`, NOT `TextInputField` (第 129 条): a chat box needs
+    several lines, and it needs Enter to SEND rather than to insert one. The key row still uses
+    `TextInputField` - a secret is one line by nature, and `clear()` on it is the component's own.
+
     \b Controls are real `FlatButton`s / `TextInputField`s with `accessible.name`. That is a build
     requirement, not a nicety: a hand-drawn `Rectangle` + `MouseArea` is unreachable for UI Automation,
     which would make the agent impossible to drive from a verification script (维护手册.md §7.6).
