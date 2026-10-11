@@ -52,9 +52,15 @@ import Muse.UiComponents
 
     \b Why it is a `Popup` over `Overlay.overlay` and not a MuseScore dialog window. A `DialogView` is a
     separate native window: it would sit outside the main window's stacking, carry its own title bar,
-    and could not be dismissed by clicking away. It also has to fit the DSH proportions inside a U
-    window whose chrome is not ours. The popup keeps the panel in the application's own layer, and one
+    and could not be dismissed by clicking away. It also has to fit the DSH proportions inside a window
+    whose chrome is not ours. The popup keeps the panel in the application's own layer, and one
     implementation serves both surfaces - the notation page's dock and the Agent page (维护手册.md §4.5).
+
+    \b Close paths, and the one that is not free. The close button, a click outside (`CloseOnPressOutside`)
+    and Escape all work - but Escape needed a `ShortcutOverride` claim, because it is registered as an
+    application-wide shortcut (第 122 条): `closePolicy: CloseOnEscape` never fired (the popup is not the
+    window's focus item), and a plain `Keys.onEscapePressed` never saw the key either. Measured
+    2026-10-11; the reasoning is written where the handler is.
 
     \b Where our sections differ from DSH's, and why. DSH's nav lists what DSH has (通用 / 模型 / 插件 /
     归档会话 …). This harness has exactly four real groups of settings, so the nav lists those four and
