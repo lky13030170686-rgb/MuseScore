@@ -343,13 +343,13 @@ RecipeResult muse::agentharness::setNotePitch(mu::engraving::Score* score, const
 //! ⚠️ Ties and tuplets are deliberately NOT special-cased: a tie means the note's SOUND continues, but
 //! its WRITTEN duration still has to fit the measure, and a tuplet's written duration is already scaled
 //! by `ticks()`. Special-casing either would be inventing a rule.
-//! A key signature as a musician reads it: the number of sharps or flats, named.
-//!
-//! ⚠️ Reported as "3 sharps" rather than as a key NAME (A major) on purpose. The notation layer stores a
-//! COUNT, and the count is what was asked for; naming the major key would silently pick one of the two
-//! modes that share every signature (A major and F# minor are both three sharps), and a caller who meant
-//! the minor one would be told something that is not what it set.
-QString describeKeySignature(int fifths)
+//! A key signature as a musician reads it - see the note on the declaration in scorerecipes.h for why it
+//! is a count and not a key name, and why the read path (the score overview) shares this one definition.
+//! ⚠️ Qualified, not left to `using namespace muse::agentharness`: an unqualified definition here lands in
+//! the GLOBAL namespace, so the declaration in the header (which is inside `muse::agentharness`) would be
+//! an unresolved symbol at link time - measured 2026-10-11 (`error LNK2019: 无法解析的外部符号
+//! muse::agentharness::describeKeySignature`).
+QString muse::agentharness::describeKeySignature(int fifths)
 {
     if (fifths == 0) {
         return QStringLiteral("no sharps or flats");

@@ -255,6 +255,19 @@ QStringList textStyleNames();
 //! what a user expects from the key signature button - the linked staves show the same key.
 RecipeResult setKeySignature(mu::engraving::Score* score, int measureNumber, int fifths);
 
+//! A key signature as a musician reads it: "no sharps or flats", "3 sharps", "2 flats".
+//!
+//! ⚠️ Reported as a COUNT rather than as a key NAME (A major) on purpose, and the same rule applies on
+//! both sides of the interface: the notation layer stores a count, and naming the major key would
+//! silently pick one of the two modes that share every signature (A major and F# minor are both three
+//! sharps), so a caller who meant the minor one would be told something that is not what it set.
+//!
+//! ⛔ ONE definition, TWO readers (第 132 条): the write path uses it in its result message ("key: 3 sharps
+//! -> 1 sharp") and the score overview uses it to ANSWER "what key is this in?" - which the model
+//! correctly reported it could not do while the digest printed time signatures and no key at all
+//! (measured twice, in the agent's own words, on 2026-10-11).
+QString describeKeySignature(int fifths);
+
 //! Set the time signature at a measure, e.g. 3/4.
 //!
 //! ⚠️ `local = false`: the signature applies to the whole score from that measure on, which is what

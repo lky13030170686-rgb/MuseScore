@@ -67,7 +67,58 @@ Item {
     readonly property string reasoning: root.field ? root.field.agentStreamingReasoning : ""
     property bool reasoningExpanded: false
 
+    //! Which folded tool groups the user has opened, keyed by the group's `groupId`.
+    //! ⛔ WHY THIS LIVES HERE AND NOT IN THE ROW. The transcript is a Q_PROPERTY that is re-evaluated on
+    //! every `fieldChanged` - and that fires for every streamed token - so the list model is replaced
+    //! repeatedly while the agent works. A row that owned its own `expanded` flag would be rebuilt and
+    //! snap shut the moment the model said anything, which is exactly when the user is reading it. The
+    //! view outlives the delegates, so the state does too (第 132 条).
+    //! ⚠️ Undefined is NOT false: a group that has never been touched opens by DEFAULT when it contains a
+    //! failed call (`hasError`), so an error can never be hidden inside a folded row.
+    property var openedGroups: ({})
+
+    function isGroupOpen(groupId, hasError) {
+        const stored = root.openedGroups[groupId]
+        return stored === undefined ? hasError === true : stored
+    }
+
+    function toggleGroup(groupId, hasError) {
+        const next = Object.assign({}, root.openedGroups)
+        next[groupId] = !root.isGroupOpen(groupId, hasError)
+        root.openedGroups = next
+    }
+
+    //! Set while the view should stay at the tail; see `requestTailFollow()`.
+    property bool tailFollowPending: false
+
+    //! Ask for the tail, and KEEP asking while the layout settles.
+    //! ⛔ ONE POSITIONING PASS IS NOT ENOUGH, and this is the part that is easy to get wrong: the row
+    //! that just arrived has no final height yet, so `positionViewAtEnd()` lands short of the end -
+    //! measured 2026-10-11: it stopped about a third of the way into the newest answer even after a
+    //! second pass on `contentHeightChanged`. A wrapped 40-line answer is laid out over several passes,
+    //! so the request is kept open for a short window (`tailFollowWindow`) during which every height
+    //! change re-positions. The window closes by itself, and a user who starts dragging closes it
+    //! immediately - following the tail must never fight the reader.
+    function requestTailFollow() {
+        transcriptView.positionViewAtEnd()
+        root.tailFollowPending = true
+        tailFollowWindow.restart()
+    }
+
     implicitHeight: content.implicitHeight
+
+    //! The settling window for the tail follow (see `requestTailFollow`). A timer rather than "one more
+    //! pass": the number of layout passes a wrapped paragraph needs is not ours to predict, and a
+    //! non-terminating `onContentHeightChanged` follower would fight every later change (a group the user
+    //! expands, for instance) forever.
+    Timer {
+        id: tailFollowWindow
+
+        interval: 250
+        onTriggered: {
+            root.tailFollowPending = false
+        }
+    }
 
     ColumnLayout {
         id: content
@@ -87,20 +138,91 @@ Item {
 
             model: root.field ? root.field.agentTranscript : []
 
-            delegate: AgentTranscriptRow {
+            //! ⛔ TWO KINDS OF ROW ARRIVE HERE NOW (第 132 条): the transcript's own rows, and the folded
+            //! runs of tool rows (`toolGroup`, built by `foldToolRows` in C++). The delegate therefore
+            //! holds BOTH and shows the one the data asks for.
+            //! ⛔ WHY NOT A `Loader` WITH TWO `Component`s. Measured 2026-10-11: an inline `Component` gets
+            //! its OWN context, so the delegate's id is not visible inside it - every row logged
+            //! `ReferenceError: rowLoader is not defined` and the rows came out blank. (Feeding the data in
+            //! from `onLoaded` instead does not work either: `required` properties must be set at
+            //! CREATION, so the loaded row logged `Required property kind was not initialized`.) Two
+            //! declarations in the delegate, one visible, has neither problem and no runtime dispatch.
+            delegate: Item {
+                id: rowItem
+
                 required property var modelData
 
+                readonly property bool isToolGroup: modelData.kind === "toolGroup"
+
                 width: transcriptView.width
-                kind: modelData.kind
-                roleLabel: modelData.role
-                body: modelData.text
-                isError: modelData.isError === true
-                webStyle: root.webStyle
+                implicitHeight: rowItem.isToolGroup ? groupRow.implicitHeight : plainRow.implicitHeight
+
+                AgentTranscriptRow {
+                    id: plainRow
+
+                    visible: !rowItem.isToolGroup
+                    width: parent.width
+                    kind: rowItem.modelData.kind
+                    roleLabel: rowItem.modelData.role
+                    body: rowItem.modelData.text
+                    isError: rowItem.modelData.isError === true
+                    webStyle: root.webStyle
+                }
+
+                //! ⚠️ The open/closed state comes from the VIEW (`openedGroups`), not from this row: the
+                //! transcript model is rebuilt on every streamed token, so a row that owned its own flag
+                //! would snap shut while the user is reading it.
+                AgentToolGroupRow {
+                    id: groupRow
+
+                    visible: rowItem.isToolGroup
+                    width: parent.width
+                    group: rowItem.modelData
+                    webStyle: root.webStyle
+                    expanded: root.isGroupOpen(rowItem.modelData.groupId, rowItem.modelData.hasError)
+
+                    onToggleRequested: {
+                        root.toggleGroup(rowItem.modelData.groupId, rowItem.modelData.hasError)
+                    }
+                }
             }
 
+            //! ⛔ THE TAIL IS FOLLOWED WHEN THE TURN ENDS TOO, not only while it runs. Measured 2026-10-11:
+            //! the final assistant row is appended in the SAME event that clears `running`, so a rule of
+            //! "follow while running" never fires for the one row that matters - the answer. Measured again
+            //! with six turns of long answers: the view sat on turn 1 while turns 3-6 were below the fold
+            //! (`z3-broken-overflow-long.png`), and with the rule below it sits on the newest turn
+            //! (`z5-fixed-tail.png`).
+            //! ⚠️ `moving` is respected: a reader who is dragging the list is not dragged away from what
+            //! they are reading (the same reason `followTailWhileRunning` exists).
             onCountChanged: {
-                if (root.followTailWhileRunning && root.running) {
+                if (!root.running) {
+                    root.requestTailFollow()
+                } else if (root.followTailWhileRunning) {
                     positionViewAtEnd()
+                }
+            }
+
+            //! Every height change inside the settling window re-positions: the newest row's height is
+            //! only known after it has been laid out, and the position computed before that is short.
+            onContentHeightChanged: {
+                if (root.tailFollowPending) {
+                    positionViewAtEnd()
+                }
+            }
+
+            onMovementStarted: {
+                root.tailFollowPending = false
+                tailFollowWindow.stop()
+            }
+
+            Connections {
+                target: root
+
+                function onRunningChanged() {
+                    if (!root.running && !transcriptView.moving) {
+                        root.requestTailFollow()
+                    }
                 }
             }
         }

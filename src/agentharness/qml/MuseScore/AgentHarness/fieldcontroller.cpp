@@ -57,6 +57,9 @@
 #include "spill.h"
 #include "systemprompt.h"
 #include "tools.h"
+//! Only the .cpp uses the fold: the header declares `agentTranscript()`, which returns the folded rows
+//! but does not need to know how they were folded.
+#include "transcriptfold.h"
 
 using namespace muse;
 using namespace muse::agentharness;
@@ -1925,6 +1928,12 @@ QVariantList FieldController::agentTranscript() const
     //! model's messages are two projections of one record, so they cannot disagree about what was
     //! said. Tool calls and results are shown because a user watching an agent work needs to see
     //! *what it did*, not just what it said.
+    //!
+    //! ⛔ AND IT IS FOLDED ON THE WAY OUT (第 132 条): consecutive tool rows become ONE `toolGroup` row
+    //! (`foldToolRows`). Measured on a real turn: four tools rendered as eight rows between the question
+    //! and the answer, and the step ceiling is 8 - so the answer, the only part the user asked for, ends
+    //! up below the fold. ⚠️ The fold is display-only and lossless: the folded rows travel inside the
+    //! group, so the view can show them again when the user expands it, and the LOG is untouched.
     QVariantList out;
 
     for (const SessionEvent& e : m_session.events()) {
@@ -1933,6 +1942,7 @@ QVariantList FieldController::agentTranscript() const
             m.insert(QStringLiteral("kind"), QStringLiteral("user"));
             m.insert(QStringLiteral("role"), QStringLiteral("you"));
             m.insert(QStringLiteral("text"), e.data.value(QStringLiteral("content")).toString());
+            m.insert(QStringLiteral("seq"), QVariant::fromValue(e.seq));
             out.append(m);
             continue;
         }
@@ -1944,6 +1954,8 @@ QVariantList FieldController::agentTranscript() const
                 m.insert(QStringLiteral("kind"), QStringLiteral("assistant"));
                 m.insert(QStringLiteral("role"), QStringLiteral("agent"));
                 m.insert(QStringLiteral("text"), text);
+                m.insert(QStringLiteral("seq"), QVariant::fromValue(e.seq));
+                m.insert(QStringLiteral("turn"), e.data.value(QStringLiteral("turn")).toInt());
                 out.append(m);
             }
 
@@ -1956,6 +1968,11 @@ QVariantList FieldController::agentTranscript() const
                 m.insert(QStringLiteral("text"), QStringLiteral("%1 %2")
                          .arg(fn.value(QStringLiteral("name")).toString(),
                               fn.value(QStringLiteral("arguments")).toString()));
+                //! ⚠️ Every call of one message shares the message's `seq`: the group id is derived from
+                //! the FIRST row of a run, and these rows are never the first of one unless the run starts
+                //! here - which is exactly the case the id has to be stable for.
+                m.insert(QStringLiteral("seq"), QVariant::fromValue(e.seq));
+                m.insert(QStringLiteral("turn"), e.data.value(QStringLiteral("turn")).toInt());
                 out.append(m);
             }
             continue;
@@ -1967,6 +1984,7 @@ QVariantList FieldController::agentTranscript() const
             m.insert(QStringLiteral("role"), QStringLiteral("tool"));
             m.insert(QStringLiteral("text"), e.data.value(QStringLiteral("content")).toString());
             m.insert(QStringLiteral("isError"), e.data.value(QStringLiteral("isError")).toBool());
+            m.insert(QStringLiteral("seq"), QVariant::fromValue(e.seq));
             out.append(m);
             continue;
         }
@@ -1976,12 +1994,13 @@ QVariantList FieldController::agentTranscript() const
             m.insert(QStringLiteral("kind"), QStringLiteral("attempt"));
             m.insert(QStringLiteral("role"), QStringLiteral("error"));
             m.insert(QStringLiteral("text"), e.data.value(QStringLiteral("problem")).toString());
+            m.insert(QStringLiteral("seq"), QVariant::fromValue(e.seq));
             out.append(m);
             continue;
         }
     }
 
-    return out;
+    return foldToolRows(out);
 }
 
 QString FieldController::statusText() const

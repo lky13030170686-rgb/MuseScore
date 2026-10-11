@@ -124,9 +124,16 @@ private:
     bool m_thinking = false;
     QString m_effort = QStringLiteral("high");
 
-    //! The step's accumulated stream. Cleared at the start of each step.
+    //! The step's accumulated stream. Cleared at the start of each step, and dropped when the step is
+    //! recorded in the log (see `closeTurn`) - the log is the durable record, and a stream that outlives
+    //! its own recording is the same answer shown twice.
     QString m_text;
     QString m_reasoning;
+    //! True once this step's text has been appended to the log as an assistant message. ⛔ It is what
+    //! decides whether the live stream may be dropped at the end of the turn: when the step FAILED or was
+    //! aborted the text never reached the log, and the stream is then the only copy of what the model had
+    //! said so far - throwing that away would delete the user's half-finished answer (第 132 条).
+    bool m_streamRecorded = false;
     ToolCallAssembler m_assembler;
     int m_promptTokens = 0;
     int m_completionTokens = 0;

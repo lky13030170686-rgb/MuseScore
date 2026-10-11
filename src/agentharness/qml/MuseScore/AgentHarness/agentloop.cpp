@@ -127,6 +127,7 @@ void AgentLoop::runNextStep()
 
     m_text.clear();
     m_reasoning.clear();
+    m_streamRecorded = false;
     m_assembler.reset();
     m_promptTokens = 0;
     m_completionTokens = 0;
@@ -218,6 +219,13 @@ void AgentLoop::onStreamFinished(bool ok, const QString& error)
     messageData.insert(QStringLiteral("usage"), usage);
 
     m_session->append(SessionEvent::ASSISTANT_MESSAGE, messageData);
+    //! ⛔ THE TEXT IS NOW THE RECORD, so the live stream has done its job (第 132 条). Measured on a real
+    //! turn: the stream was cleared only at the START of each step, so when a turn ended the last step's
+    //! text and reasoning were still there - the answer appeared once in the transcript and again below
+    //! it, under a `Thinking… (1073)` button that made a finished turn look like a running one.
+    //! ⚠️ The reasoning is NOT dropped here but in `closeTurn`: while tools run, the reasoning of the step
+    //! that asked for them is the only explanation of what is happening, and it is still that step's turn.
+    m_streamRecorded = true;
 
     if (calls.isEmpty()) {
         //! No tool calls: the model answered. The turn is over.
@@ -313,6 +321,19 @@ void AgentLoop::closeTurn(bool ok, const QString& reason)
         endData.insert(QStringLiteral("reason"), reason);
     }
     m_session->append(SessionEvent::TURN_END, endData);
+
+    //! ⛔ THE LIVE STREAM IS DROPPED ONCE IT IS IN THE LOG, AND ONLY THEN (第 132 条). The transcript is
+    //! derived from the log, so a stream that survives the turn that produced it shows the same answer
+    //! twice - and the reasoning counter under it makes a finished turn look like a running one.
+    //! ⚠️ When the step FAILED or was aborted the text never reached the log (`onStreamFinished` records a
+    //! failure as `assistant/attempt`, never as a message, so a transient error cannot poison the
+    //! history). The stream is then the ONLY copy of what the model had said, and clearing it would delete
+    //! the half-finished answer the user was reading.
+    if (m_streamRecorded) {
+        m_text.clear();
+        m_reasoning.clear();
+        m_streamRecorded = false;
+    }
 
     m_running = false;
     emit runningChanged();

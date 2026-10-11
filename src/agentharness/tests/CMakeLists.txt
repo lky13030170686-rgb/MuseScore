@@ -40,6 +40,8 @@ set(MODULE_TEST_SRC
     # told" (第 131 条). Pure text in / text out, which is why it can be tested without a settings
     # file, a gateway or a window.
     ${CMAKE_CURRENT_LIST_DIR}/modelcatalog_tests.cpp
+    # What the conversation view shows: the tool-call fold (第 132 条). Also pure - no window, no score.
+    ${CMAKE_CURRENT_LIST_DIR}/transcriptfold_tests.cpp
     # The per-turn step guard, now that its value arrives from a settings field (第 130 条).
     ${CMAKE_CURRENT_LIST_DIR}/agentloop_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/systemprompt_tests.cpp

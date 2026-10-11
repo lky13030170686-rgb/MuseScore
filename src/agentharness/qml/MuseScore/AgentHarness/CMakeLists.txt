@@ -57,6 +57,12 @@ qt_add_qml_module(agentharness_qml
         # part that breaks is the shape of the document, not the socket (第 131 条).
         modelcatalog.cpp
         modelcatalog.h
+        # What the conversation SHOWS of a turn: runs of consecutive tool rows folded into one row.
+        # Pure, for the same reason as the two above - "nothing was reordered, nothing was dropped, an
+        # error is never hidden" are claims about the conversation, so they are tests rather than
+        # something somebody has to notice on a screenshot (第 132 条).
+        transcriptfold.cpp
+        transcriptfold.h
         systemprompt.cpp
         systemprompt.h
         # The loop body and its socket. The transport uses QNetworkAccessManager directly rather than
@@ -80,6 +86,10 @@ qt_add_qml_module(agentharness_qml
     QML_FILES
         AgentPanel.qml
         AgentTranscriptRow.qml
+        # A folded run of tool calls (第 132 条): one line, and the rows themselves on request. Its own
+        # file because it is the only transcript row with a control in it, and because the fold is what
+        # keeps a four-tool turn from pushing the answer below the fold.
+        AgentToolGroupRow.qml
         AgentTimelineRow.qml
         # The three pieces the panel and the Agent page share. They are separate files because both
         # surfaces must show the same conversation, timeline and composer: a second hand-written list

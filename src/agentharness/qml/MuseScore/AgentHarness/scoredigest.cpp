@@ -35,6 +35,10 @@
 #include "engraving/dom/sig.h"
 #include "engraving/dom/mscore.h"
 
+//! `describeKeySignature` - the SAME wording the write path uses, so "what key is it in" and "what did
+//! you just set" cannot describe the same key two different ways (第 132 条).
+#include "scorerecipes.h"
+
 using namespace mu::engraving;
 
 namespace muse::agentharness {
@@ -154,6 +158,69 @@ QStringList timesigChanges(const Score* score)
 
     return out;
 }
+
+//! The key signature, as a line for the overview: staff 1's changes through the score, and - when another
+//! staff disagrees - who disagrees.
+//!
+//! ⛔ WHY THIS EXISTS AT ALL (第 132 条). Asked "what key is it in?", the agent answered, twice and in its
+//! own words, that it could not tell: the overview printed time signatures and pitch spellings but no key
+//! signature, so the only honest answer was "every note is a natural, so nothing contradicts C major /
+//! A minor, but I will not claim it". That is the tool's gap, not the model's - and "what key is this in"
+//! is one of the first questions a musician asks.
+//!
+//! ⚠️ Reported per STAFF-1 plus a disagreement note rather than as one score-wide value: a Bb clarinet is
+//! WRITTEN in a different key from the piano, so a single "the key is X" line would be wrong for whichever
+//! staff it did not come from. The common case (everyone agrees) stays one short line.
+QString keySignatureLine(const Score* score)
+{
+    if (!score || score->nstaves() == 0 || !score->firstMeasure()) {
+        return QString();
+    }
+
+    const Staff* first = score->staff(0);
+    if (!first) {
+        return QString();
+    }
+
+    QStringList changes;
+    QString previous;
+    int measureIndex = 0;
+    for (const Measure* measure = score->firstMeasure(); measure; measure = measure->nextMeasure(), ++measureIndex) {
+        const QString current = describeKeySignature(int(first->key(measure->tick())));
+        if (current != previous) {
+            changes.append(QStringLiteral("m%1 %2").arg(measureIndex + 1).arg(current));
+            previous = current;
+        }
+    }
+
+    if (changes.isEmpty()) {
+        return QString();
+    }
+
+    QString line = QStringLiteral("key signatures (staff 1): %1").arg(changes.join(QStringLiteral(", ")));
+
+    const Fraction startTick = score->firstMeasure()->tick();
+    QStringList others;
+    for (size_t i = 1; i < score->nstaves(); ++i) {
+        const Staff* staff = score->staff(i);
+        if (!staff) {
+            continue;
+        }
+        const QString key = describeKeySignature(int(staff->key(startTick)));
+        if (key != describeKeySignature(int(first->key(startTick)))) {
+            others.append(QStringLiteral("staff %1: %2").arg(i + 1).arg(key));
+        }
+    }
+
+    //! ⚠️ Said out loud rather than averaged away: a summary that reported one staff's key as "the" key of
+    //! a score whose staves disagree would be a plausible-looking wrong answer, which is the failure mode
+    //! this whole subsystem keeps refusing.
+    if (!others.isEmpty()) {
+        line += QStringLiteral("  ⚠️ other staves differ at m1 - %1").arg(others.join(QStringLiteral("; ")));
+    }
+
+    return line;
+}
 } // namespace
 
 QString buildScoreOverview(const Score* score)
@@ -181,6 +248,13 @@ QString buildScoreOverview(const Score* score)
     const QStringList timesigs = timesigChanges(score);
     if (!timesigs.isEmpty()) {
         lines.append(QStringLiteral("time signatures: %1").arg(timesigs.join(QStringLiteral(", "))));
+    }
+
+    //! The key, right after the time signature: together they are what a reader needs to make sense of the
+    //! pitches below, and "what key is it in" was a question the digest could not answer at all (第 132 条).
+    const QString keys = keySignatureLine(score);
+    if (!keys.isEmpty()) {
+        lines.append(keys);
     }
 
     //! ── Per staff ────────────────────────────────────────────────────────────────────────

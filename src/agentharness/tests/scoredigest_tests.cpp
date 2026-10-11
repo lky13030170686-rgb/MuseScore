@@ -90,6 +90,21 @@ TEST(AgentHarness_ScoreDigest, OverviewIsBounded)
     EXPECT_LT(lines, 60) << "overview grew to " << lines << " lines";
 }
 
+TEST(AgentHarness_ScoreDigest, OverviewAnswersWhatKeyItIsIn)
+{
+    //! ⛔ The gap this closes was reported BY THE MODEL, twice, in its own words: asked "what key is it
+    //! in?", it said the overview lists time signatures but no key signature, so it would not claim one.
+    //! A digest that cannot answer that is missing the second thing a musician asks about a score.
+    const std::shared_ptr<MasterScore> score = loadScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const QString text = buildScoreOverview(score.get());
+
+    //! The test score has no key signature at all, and THAT is the answer - not a missing line.
+    EXPECT_TRUE(text.contains(QStringLiteral("key signatures (staff 1): m1 no sharps or flats")))
+        << text.toStdString();
+}
+
 TEST(AgentHarness_ScoreDigest, OverviewOfNoScoreSaysSo)
 {
     //! "no score" and "a score with nothing in it" must not look the same: the first means the tool
