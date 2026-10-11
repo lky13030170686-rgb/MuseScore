@@ -1313,6 +1313,73 @@ ToolResult muse::agentharness::toolMeasureFill(const QJsonObject& args, const To
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+ToolResult muse::agentharness::toolMeasureInputNotes(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int measureNumber = 0;
+    if (!readInt(args, QStringLiteral("measure"), measureNumber)) {
+        return ToolResult::failure(QStringLiteral("`measure` is required and must be an integer"));
+    }
+
+    int staff = 1;
+    if (args.contains(QStringLiteral("staff")) && !readInt(args, QStringLiteral("staff"), staff)) {
+        return ToolResult::failure(QStringLiteral("`staff` must be an integer (1 = the first staff)"));
+    }
+
+    int voice = 0;
+    if (args.contains(QStringLiteral("voice")) && !readInt(args, QStringLiteral("voice"), voice)) {
+        return ToolResult::failure(QStringLiteral("`voice` must be an integer (0 = the upper voice)"));
+    }
+
+    const QJsonValue notesValue = args.value(QStringLiteral("notes"));
+    if (!notesValue.isArray() || notesValue.toArray().isEmpty()) {
+        return ToolResult::failure(QStringLiteral("`notes` is required and must be a non-empty array of "
+                                                  "{\"pitch\": <MIDI note number>, \"duration\": \"quarter\"} "
+                                                  "objects"));
+    }
+
+    QVector<NoteSpec> notes;
+    for (const QJsonValue& v : notesValue.toArray()) {
+        if (!v.isObject()) {
+            return ToolResult::failure(QStringLiteral("every entry of `notes` must be an object with "
+                                                      "`pitch` and `duration`"));
+        }
+        const QJsonObject o = v.toObject();
+
+        NoteSpec spec;
+        if (!readInt(o, QStringLiteral("pitch"), spec.midiPitch)) {
+            return ToolResult::failure(QStringLiteral("every note needs a `pitch` (MIDI note number, "
+                                                      "60 = middle C)"));
+        }
+        spec.duration = o.value(QStringLiteral("duration")).toString();
+        if (spec.duration.isEmpty()) {
+            return ToolResult::failure(QStringLiteral("every note needs a `duration` name - `quarter`, "
+                                                      "`eighth`, `dotted-half`, ..."));
+        }
+        notes.append(spec);
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Write notes"), [&](mu::engraving::Score* score) {
+        return inputNotesIntoMeasure(score, measureNumber, staff - 1, voice, notes);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolTempoSet(const QJsonObject& args, const ToolContext& ctx)
 {
     if (!ctx.field) {
@@ -2032,6 +2099,47 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                 return props;
             }(), QJsonArray{ QStringLiteral("measure") }),
             toolMeasureFill,
+        },
+        ToolSpec{
+            QStringLiteral("measure_input_notes"),
+            QStringLiteral("WRITE NOTES INTO A MEASURE THAT HOLDS ONLY RESTS - this is how you create "
+                           "music; every other note tool edits a note that is already there. The notes "
+                           "are written in order from the start of the bar, each with its own duration. "
+                           "`pitch` is a MIDI note number (60 = middle C, 62 = D4, 67 = G4). Refused when "
+                           "the bar already has notes (say so and ask whether to replace them), and when "
+                           "the durations add up to more than the bar holds - give FOUR QUARTER NOTES for "
+                           "a 4/4 bar, not one whole note per beat and never more than fits. Undoable "
+                           "with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("measure"), intProperty(QStringLiteral(
+                                                              "1-based measure number to write into.")));
+                props.insert(QStringLiteral("staff"), intProperty(QStringLiteral(
+                                                          "Optional. 1 = the first staff (default 1).")));
+                props.insert(QStringLiteral("voice"), intProperty(QStringLiteral(
+                                                          "Optional. 0 = the upper voice (default 0).")));
+                QJsonObject notesProp;
+                notesProp.insert(QStringLiteral("type"), QStringLiteral("array"));
+                notesProp.insert(QStringLiteral("description"), QStringLiteral(
+                                                                   "The notes, in the order they should sound. Their durations must fit "
+                                                                   "the measure."));
+                QJsonObject item;
+                item.insert(QStringLiteral("type"), QStringLiteral("object"));
+                QJsonObject itemProps;
+                itemProps.insert(QStringLiteral("pitch"), intProperty(QStringLiteral(
+                                                                  "MIDI note number: 60 = middle C, 62 = D4, 67 = G4.")));
+                itemProps.insert(QStringLiteral("duration"), stringProperty(QStringLiteral(
+                                                                       "Duration name: whole, half, quarter, eighth, 16th, 32nd, "
+                                                                       "optionally dotted (dotted-quarter) or a full bar (measure).")));
+                item.insert(QStringLiteral("properties"), itemProps);
+                item.insert(QStringLiteral("required"), QJsonArray{ QStringLiteral("pitch"), QStringLiteral("duration") });
+                notesProp.insert(QStringLiteral("items"), item);
+                props.insert(QStringLiteral("notes"), notesProp);
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("notes") }),
+            toolMeasureInputNotes,
         },
         ToolSpec{
             QStringLiteral("tempo_set"),

@@ -2096,6 +2096,180 @@ TEST(AgentHarness_ScoreRecipes, FillMeasureOnACompleteBarSucceedsAndSaysSo)
     EXPECT_TRUE(result.detail.contains(QStringLiteral("already complete"))) << result.detail.toStdString();
 }
 
+//! ── inputNotesIntoMeasure ───────────────────────────────────────────────────────────────────────
+//! ⛔ THIS IS THE RECIPE THAT WRITES MUSIC WHERE THERE WAS NONE, and that is why its tests assert the
+//! PITCH AT EACH BEAT rather than just `result.ok`. Every other note recipe edits a note that already
+//! exists, so a wrong address or a dropped command shows up as "the note did not change"; here the
+//! failure mode is "the bar still holds a rest", which looks identical to a bar nobody touched. The
+//! agent found this gap itself: asked to fill a measure, it reported that no tool in the table could
+//! create a note (第 127 条).
+
+namespace {
+QVector<NoteSpec> quarters(std::initializer_list<int> pitches)
+{
+    QVector<NoteSpec> notes;
+    for (int pitch : pitches) {
+        NoteSpec spec;
+        spec.midiPitch = pitch;
+        spec.duration = QStringLiteral("quarter");
+        notes.append(spec);
+    }
+    return notes;
+}
+
+NoteSpec note(int pitch, const QString& duration)
+{
+    NoteSpec spec;
+    spec.midiPitch = pitch;
+    spec.duration = duration;
+    return spec;
+}
+} // namespace
+
+TEST(AgentHarness_ScoreRecipes, WriteNotesIntoAnEmptyMeasure)
+{
+    const auto score = loadScore(EMPTY_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return inputNotesIntoMeasure(score.get(), 1, 0, 0, quarters({ 60, 62, 64, 65 }));   //!< C4 D4 E4 F4
+    });
+
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_EQ(pitchAt(score.get(), 1, 1), 60) << "the notes must be IN the score, not just reported";
+    EXPECT_EQ(pitchAt(score.get(), 1, 2), 62);
+    EXPECT_EQ(pitchAt(score.get(), 1, 3), 64);
+    EXPECT_EQ(pitchAt(score.get(), 1, 4), 65);
+}
+
+TEST(AgentHarness_ScoreRecipes, WriteNotesIntoAMeasureThatHeldAWholeMeasureRest)
+{
+    //! `test.mscx` is bar 1 = C4 D4 E4 F4, bar 2 = a WHOLE-MEASURE REST. Bar 2 is the case users ask
+    //! for constantly ("fill bar 2") and the one the table could not do: a full-measure rest is a single
+    //! rest spanning the bar, so nothing in it can be addressed as a note and the note recipes all
+    //! refuse it. The whole-rest has to be expanded into a real voice before anything can be written.
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return inputNotesIntoMeasure(score.get(), 2, 0, 0, quarters({ 67, 69, 71, 72 }));   //!< G4 A4 B4 C5
+    });
+
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_EQ(pitchAt(score.get(), 2, 1), 67);
+    EXPECT_EQ(pitchAt(score.get(), 2, 4), 72);
+    EXPECT_EQ(pitchAt(score.get(), 1, 1), 60) << "the other measure must not be touched";
+}
+
+TEST(AgentHarness_ScoreRecipes, WriteNotesRefusesAMeasureThatAlreadyHasNotes)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! ⛔ REFUSED, NOT OVERWRITTEN. Writing over music the user did not mention is the one outcome worth
+    //! refusing outright: "replace it" and "you asked me to replace it" are indistinguishable from the
+    //! call site, and the message is what lets the model ask instead of guess.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return inputNotesIntoMeasure(score.get(), 1, 0, 0, quarters({ 72, 72, 72, 72 }));
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("already has notes"))) << result.problem.toStdString();
+    EXPECT_EQ(pitchAt(score.get(), 1, 1), 60) << "nothing may be written when the check refuses";
+}
+
+TEST(AgentHarness_ScoreRecipes, WriteNotesRefusesDurationsThatDoNotFit)
+{
+    const auto score = loadScore(EMPTY_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Five quarters in a 4/4 bar. The alternatives to refusing are all worse, and one of them is 第 120
+    //! 条: letting the write run past the barline puts a note in the NEXT measure while reporting success.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return inputNotesIntoMeasure(score.get(), 1, 0, 0, quarters({ 60, 62, 64, 65, 67 }));
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("do not fit"))) << result.problem.toStdString();
+
+    const NoteLookup at = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(at.found());
+    EXPECT_TRUE(at.isRest()) << "a refused call must leave the bar exactly as it was";
+}
+
+TEST(AgentHarness_ScoreRecipes, WriteNotesLeavesTheRestOfTheMeasureAsRests)
+{
+    const auto score = loadScore(EMPTY_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Three beats written into a 4/4 bar: the last beat stays a rest. That is what a musician writing
+    //! three notes into a bar gets, and the detail must SAY so - a model that is not told the bar is
+    //! short will report a filled bar.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return inputNotesIntoMeasure(score.get(), 1, 0, 0, { note(60, QStringLiteral("half")),
+                                                             note(64, QStringLiteral("quarter")) });
+    });
+
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_EQ(pitchAt(score.get(), 1, 1), 60);
+    EXPECT_EQ(pitchAt(score.get(), 1, 3), 64);
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("rests"))) << result.detail.toStdString();
+
+    const NoteLookup lastBeat = chordAt(score.get(), address(1, 4), 0);
+    ASSERT_TRUE(lastBeat.found());
+    EXPECT_TRUE(lastBeat.isRest()) << "the unused beat must remain a rest";
+}
+
+TEST(AgentHarness_ScoreRecipes, WriteNotesUnderstandsDottedDurations)
+{
+    const auto score = loadScore(EMPTY_SCORE);
+    ASSERT_TRUE(score);
+
+    //! Dotted-half + quarter = exactly 4/4. The duration vocabulary is shared with `setChordDuration`
+    //! (`parseDuration`), so this also pins that the new tool did not grow its own parser.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return inputNotesIntoMeasure(score.get(), 1, 0, 0, { note(60, QStringLiteral("dotted-half")),
+                                                             note(67, QStringLiteral("quarter")) });
+    });
+
+    EXPECT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_EQ(pitchAt(score.get(), 1, 1), 60);
+    EXPECT_EQ(pitchAt(score.get(), 1, 4), 67);
+}
+
+TEST(AgentHarness_ScoreRecipes, WriteNotesRefusesAnUnknownDuration)
+{
+    const auto score = loadScore(EMPTY_SCORE);
+    ASSERT_TRUE(score);
+
+    //! The message must name WHICH note was wrong: a model that only reads "bad duration" will retry the
+    //! whole list, and with four notes that is four chances to get it wrong again.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return inputNotesIntoMeasure(score.get(), 1, 0, 0, { note(60, QStringLiteral("quarter")),
+                                                             note(62, QStringLiteral("quaver")) });
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("note 2"))) << result.problem.toStdString();
+
+    const NoteLookup at = chordAt(score.get(), address(1, 1), 0);
+    ASSERT_TRUE(at.found());
+    EXPECT_TRUE(at.isRest()) << "durations are parsed before anything is written";
+}
+
+TEST(AgentHarness_ScoreRecipes, WriteNotesRefusesAMeasureThatDoesNotExist)
+{
+    const auto score = loadScore(EMPTY_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return inputNotesIntoMeasure(score.get(), 9, 0, 0, quarters({ 60 }));
+    });
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("no measure 9"))) << result.problem.toStdString();
+}
+
 TEST(AgentHarness_ScoreRecipes, FillMeasureOnAnEmptyBarMakesItAFullMeasureRest)
 {
     const auto score = loadScore(EMPTY_SCORE);

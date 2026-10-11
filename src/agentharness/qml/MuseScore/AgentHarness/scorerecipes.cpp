@@ -64,8 +64,16 @@
 #include "engraving/dom/noteval.h"
 #include "engraving/dom/rest.h"
 #include "engraving/editing/transpose.h"
-#include "engraving/editing/editnote.h"
+//! ⛔ The note-entry primitives. This is the SAME code the user's own note input runs: `setNoteRest`
+//! is what makes a gap, splits a rest and writes the chord, and it is also what handles the ties it
+//! has to create when a duration crosses a barline. Re-implementing "write a note" with
+//! `Factory::createChord` + `undoAddElement` would look shorter and would silently lose all of that.
+#include "engraving/dom/input.h"
 #include "engraving/editing/noteinput.h"
+//! `EditNote` is what this file's older recipes push their undoable commands through (`undoChangePitch`
+//! and friends) - it was already included here before the note-entry work, and dropping it in a
+//! de-duplication pass broke the build with `EditNote::undoChangePitch: identifier not found`.
+#include "engraving/editing/editnote.h"
 #include "engraving/editing/transaction/transaction.h"
 
 #include "addressing.h"
@@ -1290,6 +1298,178 @@ RecipeResult muse::agentharness::fillMeasureWithRests(mu::engraving::Score* scor
 
     return RecipeResult::success(QStringLiteral("measure %1: filled %2 of empty space with rests (%3 gap(s))")
                                  .arg(measureNumber).arg(filled.toString()).arg(holeCount));
+}
+
+RecipeResult muse::agentharness::inputNotesIntoMeasure(mu::engraving::Score* score, int measureNumber,
+                                                       int staffIndex, int voice,
+                                                       const QVector<NoteSpec>& notes)
+{
+    using namespace mu::engraving;
+
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    if (notes.isEmpty()) {
+        return RecipeResult::failure(QStringLiteral("`notes` is empty - say which notes to write, "
+                                                    "e.g. [{\"pitch\": 60, \"duration\": \"quarter\"}]"));
+    }
+
+    if (voice < 0 || voice >= VOICES) {
+        return RecipeResult::failure(QStringLiteral("voice must be 0..%1").arg(VOICES - 1));
+    }
+
+    if (staffIndex < 0 || staffIndex >= static_cast<int>(score->nstaves())) {
+        return RecipeResult::failure(QStringLiteral("there is no staff %1; the score has %2")
+                                     .arg(staffIndex + 1).arg(score->nstaves()));
+    }
+
+    int measureCount = 0;
+    Measure* measure = measureAt(score, measureNumber, &measureCount);
+    if (!measure) {
+        return RecipeResult::failure(QStringLiteral("there is no measure %1; the score has %2")
+                                     .arg(measureNumber).arg(measureCount));
+    }
+
+    const track_idx_t track = static_cast<track_idx_t>(staffIndex) * VOICES + static_cast<track_idx_t>(voice);
+
+    //! ── 1. Durations first, so a typo costs nothing ───────────────────────────────────────────────
+    //! Every duration is parsed and the total checked BEFORE anything is written. A recipe that wrote
+    //! the first three notes and then discovered the fourth does not fit would leave the measure in a
+    //! state nobody asked for - and the caller with no way to tell how far it got.
+    QVector<TDuration> durations;
+    durations.reserve(notes.size());
+
+    Fraction total(0, 1);
+    for (int i = 0; i < notes.size(); ++i) {
+        const NoteSpec& spec = notes.at(i);
+        if (spec.midiPitch < 0 || spec.midiPitch > 127) {
+            return RecipeResult::failure(QStringLiteral("note %1: pitch %2 is not a MIDI note number "
+                                                        "(0-127)").arg(i + 1).arg(spec.midiPitch));
+        }
+
+        const DurationParse parsed = parseDuration(spec.duration);
+        if (!parsed.ok) {
+            return RecipeResult::failure(QStringLiteral("note %1: %2").arg(i + 1).arg(parsed.problem));
+        }
+
+        durations.append(parsed.value);
+        total += parsed.value.fraction();
+    }
+
+    const Fraction measureLength = measure->ticks();
+    if (total > measureLength) {
+        return RecipeResult::failure(
+            QStringLiteral("the notes add up to %1 but measure %2 holds %3 - they do not fit. "
+                           "Nothing was written; shorten the durations or split them across measures.")
+            .arg(total.toString()).arg(measureNumber).arg(measureLength.toString()));
+    }
+
+    //! ── 2. Only rests may be overwritten ──────────────────────────────────────────────────────────
+    //! ⛔ REFUSING A MEASURE THAT ALREADY HAS NOTES IS THE POINT OF THE CHECK. Writing over music the
+    //! user did not mention is the one outcome worth refusing outright, and "just replace it" would be
+    //! indistinguishable from "you asked me to replace it". The message names what is there so the
+    //! caller can ask for the right thing next.
+    for (Segment* seg = measure->first(SegmentType::ChordRest); seg && seg->measure() == measure;
+         seg = seg->next1(SegmentType::ChordRest)) {
+        ChordRest* cr = toChordRest(seg->element(track));
+        if (cr && !cr->isRest()) {
+            return RecipeResult::failure(
+                QStringLiteral("measure %1 (staff %2, voice %3) already has notes, and this tool only "
+                               "writes into rests. Nothing was changed: remove those notes first, or "
+                               "edit them with the note tools.")
+                .arg(measureNumber).arg(staffIndex + 1).arg(voice));
+        }
+    }
+
+    //! ── 3. Write, through the same primitives the user's own note input uses ─────────────────────
+    //! ⛔ `InputState` IS OURS, NOT THE SCORE'S. `Score::setNoteRest` takes an external state so a caller
+    //! can drive note entry without touching `score->inputState()` - which belongs to the EDITOR: it
+    //! holds the user's note-input mode, their current voice and their cursor. Writing through the
+    //! score's own state would move the user's input cursor and could leave the editor in note-input
+    //! mode, i.e. an agent edit would change what their next keypress does.
+    InputState state;
+    state.setTrack(track);
+    state.setVoice(static_cast<voice_idx_t>(voice));
+    state.setNoteEntryMode(true);
+    state.setNoteEntryMethod(NoteEntryMethod::BY_NOTE_NAME);
+
+    Segment* seg = measure->first(SegmentType::ChordRest);
+    if (!seg) {
+        return RecipeResult::failure(QStringLiteral("measure %1 has no position to write into")
+                                     .arg(measureNumber));
+    }
+
+    //! A whole-measure rest is ONE rest spanning the bar; `expandVoice` is what turns it into an
+    //! editable voice (rests at every position the input will need). Without it `setNoteRest` has no
+    //! gap to fill and the first note lands... nowhere.
+    score->expandVoice(seg, track);
+
+    int written = 0;
+    QStringList what;
+    for (int i = 0; i < notes.size(); ++i) {
+        if (!seg || seg->measure() != measure) {
+            //! Cannot happen after the length check above, and if it ever does the honest answer is to
+            //! say how far we got rather than to report a clean success (第 120 条).
+            return RecipeResult::failure(
+                QStringLiteral("wrote %1 of %2 notes and ran out of measure %3 - the measure is now "
+                               "partly written. Read it and finish by hand.")
+                .arg(written).arg(notes.size()).arg(measureNumber));
+        }
+
+        state.setSegment(seg);
+        state.setLastSegment(seg);
+        state.setDuration(durations.at(i));
+
+        NoteVal noteVal = NoteInput::noteVal(score, notes.at(i).midiPitch, static_cast<staff_idx_t>(staffIndex),
+                                            /* allowTransposition */ false);
+        Segment* writtenSeg = score->setNoteRest(seg, track, noteVal, durations.at(i).fraction(),
+                                                 DirectionV::AUTO, /* forceAccidental */ false, {}, /* rhythmic */ false,
+                                                 &state);
+        if (!writtenSeg) {
+            return RecipeResult::failure(
+                QStringLiteral("could not write note %1 (pitch %2, %3) into measure %4; wrote %5 of %6 "
+                               "before that. Read the measure and see what is there.")
+                .arg(i + 1).arg(notes.at(i).midiPitch).arg(describeDuration(durations.at(i)))
+                .arg(measureNumber).arg(written).arg(notes.size()));
+        }
+
+        what.append(QStringLiteral("%1 (%2)").arg(pitchName(notes.at(i).midiPitch), describeDuration(durations.at(i))));
+        ++written;
+
+        seg = writtenSeg->next1(SegmentType::ChordRest);
+    }
+
+    //! ── 4. Read it back ───────────────────────────────────────────────────────────────────────────
+    //! ⛔ "按效果验证" - the tool reports what the SCORE now holds, not what it asked for. Every failure
+    //! this project has paid for looked successful from the call site; the cheap insurance is to count
+    //! the chords that actually arrived and compare.
+    int chordsInMeasure = 0;
+    for (Segment* s = measure->first(SegmentType::ChordRest); s && s->measure() == measure;
+         s = s->next1(SegmentType::ChordRest)) {
+        ChordRest* cr = toChordRest(s->element(track));
+        if (cr && cr->isChord()) {
+            ++chordsInMeasure;
+        }
+    }
+
+    if (chordsInMeasure < written) {
+        return RecipeResult::failure(
+            QStringLiteral("wrote %1 note(s) but measure %2 now holds only %3 chord(s) - the score did "
+                           "not keep all of them. Read the measure before continuing.")
+            .arg(written).arg(measureNumber).arg(chordsInMeasure));
+    }
+
+    QString detail = QStringLiteral("measure %1 (staff %2, voice %3): wrote %4 note(s) - %5")
+                     .arg(measureNumber).arg(staffIndex + 1).arg(voice)
+                     .arg(written).arg(what.join(QStringLiteral(", ")));
+
+    if (total < measureLength) {
+        detail += QStringLiteral("; %1 of the measure is left as rests")
+                  .arg((measureLength - total).toString());
+    }
+
+    return RecipeResult::success(detail);
 }
 
 RecipeResult muse::agentharness::appendStaff(mu::engraving::Score* score, int partIndex)

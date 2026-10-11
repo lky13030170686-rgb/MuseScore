@@ -212,6 +212,10 @@ ToolResult toolTempoSet(const QJsonObject& args, const ToolContext& ctx);
 //! Write: fill the rest of a measure with rests.
 ToolResult toolMeasureFill(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: create notes in a measure that holds only rests - the one tool that writes music where there
+//! was none. Every other note tool edits a note that already exists.
+ToolResult toolMeasureInputNotes(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: add or remove a staff on a part.
 ToolResult toolStaffAdd(const QJsonObject& args, const ToolContext& ctx);
 ToolResult toolStaffRemove(const QJsonObject& args, const ToolContext& ctx);

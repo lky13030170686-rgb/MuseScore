@@ -127,6 +127,42 @@ RecipeResult addNoteToChord(mu::engraving::Score* score, const ScoreAddress& add
 RecipeResult setChordPitches(mu::engraving::Score* score, const ScoreAddress& address, int voice,
                              const QVector<int>& midiPitches);
 
+//! ── Entering notes into an empty measure ───────────────────────────────────────────────────────
+//! THE GAP THIS FILLS (found by the agent itself, 2026-10-11): every note recipe above edits a note
+//! that already exists, `addNoteToChord` needs a chord to add to, and `measure_fill` only writes
+//! RESTS. So on a measure that holds nothing but a rest - the state every new measure starts in - the
+//! assistant could not write a single note, and "fill bar 2 with four quarter notes" was answered with
+//! "the tool table cannot do that". That is the single most obvious thing a user asks a notation
+//! assistant for.
+
+//! One note to write. `duration` uses the same vocabulary `setChordDuration` takes (`quarter`,
+//! `dotted-eighth`, `16th`, ...), parsed by the same function - two vocabularies for one concept is
+//! how a caller ends up writing "quarter" in one tool and "1/4" in another.
+struct NoteSpec
+{
+    int midiPitch = -1;
+    QString duration;
+};
+
+//! Write a sequence of notes into a measure, replacing the rests they land on.
+//!
+//! ⛔ IT REFUSES A MEASURE THAT ALREADY HAS NOTES. Overwriting music the user did not ask about is the
+//! one outcome worth refusing outright; the message says which measure has notes so the caller can
+//! ask for them to be removed first (or use the note recipes on them).
+//!
+//! ⛔ THE TOTAL MUST FIT THE MEASURE. Durations that add up to more than the bar are refused with both
+//! numbers (`5/4 in a 4/4 bar`), because the alternatives are all worse: silently truncating loses a
+//! note, and letting `setNoteRest` run past the barline would write into the NEXT measure - the exact
+//! shape of 第 120 条 (a fill that wrote a rest into the following bar and reported success).
+//!
+//! ⚠️ A total that is SHORTER than the bar is fine and is reported: the rest of the measure stays
+//! rests, which is what a musician writing four notes into a 4/4 bar by hand would get if they wrote
+//! three. The detail says how much is left.
+//!
+//! ⚠️ `voice` is which voice to write into (`0` = the upper voice, what a model means by "the notes").
+RecipeResult inputNotesIntoMeasure(mu::engraving::Score* score, int measureNumber, int staffIndex, int voice,
+                                   const QVector<NoteSpec>& notes);
+
 //! ── Tie recipes ───────────────────────────────────────────────────────────────────────────────
 //! A tie joins a note to the next note OF THE SAME PITCH, which is what makes it different from a slur
 //! (a slur joins different pitches). Both of these act on the note at an address; the second note is
