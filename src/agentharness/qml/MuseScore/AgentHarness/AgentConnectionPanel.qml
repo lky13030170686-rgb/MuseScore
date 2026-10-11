@@ -28,6 +28,11 @@ import Muse.UiComponents
 /*!
     Where the agent talks to: the gateway address and the model name.
 
+    \b Where it lives. Since 第 130 条 this component IS the Connection section of
+    `AgentSettingsDialog` (the DSH-shaped settings shell), instead of a block in the Agent page's left
+    column. It was moved, not copied: the settings dialog needs exactly these editors, and a second set
+    of gateway/model fields would be two live editors of one value.
+
     \b Why this is in the UI at all. These two used to be settable ONLY by environment variables, which
     meant "can I use the agent" was decided by whoever launched the process - measured 2026-10-10: the
     assistant worked when started from a launcher script and was unusable when started from the desktop
@@ -62,6 +67,21 @@ Item {
     property bool awaitingModelList: false
 
     implicitHeight: content.implicitHeight
+
+    //! Put the fields back in step with what is actually in force, and refresh the read-back lines.
+    //! ⛔ BOTH `currentText` and the inner `inputField.text`, for the reason 第 126 条 is about: once the
+    //! user has typed in a `TextInputField`, the inner field no longer follows `currentText`, so assigning
+    //! the property alone would leave the OLD text on screen while the value behind it is the new one.
+    //! ⚠️ Called when the dialog OPENS, so a draft the user typed but never applied (no Enter) does not
+    //! survive as "the gateway" - the section always shows what is in force, which is the only thing the
+    //! read-back line can honestly describe.
+    function reload() {
+        root.refresh()
+        gatewayField.currentText = root.appliedGateway
+        gatewayField.inputField.text = root.appliedGateway
+        modelField.currentText = root.appliedModel
+        modelField.inputField.text = root.appliedModel
+    }
 
     function refresh() {
         if (!root.field) {
@@ -104,12 +124,10 @@ Item {
 
     //! ⚠️ Seeded HERE and not in the fields' own `Component.onCompleted`: a child completes BEFORE its
     //! parent, so seeding there would copy the still-empty `appliedGateway` into the fields and leave
-    //! them blank while the "in use" line below showed the real values - the panel would contradict
+    //! them blank while the "in use" line below showed the real values - the section would contradict
     //! itself on first open.
     Component.onCompleted: {
-        root.refresh()
-        gatewayField.currentText = root.appliedGateway
-        modelField.currentText = root.appliedModel
+        root.reload()
     }
 
     ColumnLayout {
@@ -158,21 +176,33 @@ Item {
             Layout.fillWidth: true
             spacing: 4
 
-            TextInputField {
-                id: modelField
-
+            //! ⛔ `TextInputField` reports `implicitWidth: parent.width`, which INSIDE a layout is a
+            //! self-reference: the RowLayout asks the field how wide it would like to be, the field answers
+            //! "as wide as my parent", and Qt gives up arranging ("Detected recursive rearrange. Aborting
+            //! after two iterations", measured 2026-10-11 - the dialog's geometry came out wrong for
+            //! exactly this reason). The wrapper breaks the cycle: the LAYOUT sizes the wrapper, and the
+            //! field fills it. ⚠️ The same trap would apply to any upstream component with a
+            //! `parent.width` implicit size used as a direct layout child.
+            Item {
                 Layout.fillWidth: true
-                accessible.name: qsTrc("agentharness", "Model")
-                hint: qsTrc("agentharness", "Model, e.g. deepseek-chat")
+                Layout.preferredHeight: modelField.implicitHeight
 
-                onTextChanged: function(newTextValue) {
-                    modelField.currentText = newTextValue
-                }
+                TextInputField {
+                    id: modelField
 
-                onAccepted: {
-                    if (root.field && modelField.currentText.length > 0) {
-                        root.field.setAgentModel(modelField.currentText)
-                        root.refresh()
+                    anchors.fill: parent
+                    accessible.name: qsTrc("agentharness", "Model")
+                    hint: qsTrc("agentharness", "Model, e.g. deepseek-chat")
+
+                    onTextChanged: function(newTextValue) {
+                        modelField.currentText = newTextValue
+                    }
+
+                    onAccepted: {
+                        if (root.field && modelField.currentText.length > 0) {
+                            root.field.setAgentModel(modelField.currentText)
+                            root.refresh()
+                        }
                     }
                 }
             }

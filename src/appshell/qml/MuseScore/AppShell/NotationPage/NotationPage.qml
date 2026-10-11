@@ -674,11 +674,34 @@ DockPage {
     //! ⚠️ It calls `openAgentPanel()` (→ the `dock-set-open` action the View menu also uses) and NOT
     //! `agentPanel.open()`: `open()` sets the item's `visible` and calls the dock widget's `open()`,
     //! which the layout restore undoes. Both were measured (第 123 条).
+    //!
+    //! ⛔ AND IT IS BOUNDED (第 130 条). `agentPanel.isOpen()` keeps reporting FALSE while the panel is in
+    //! fact visible - its `DockBase::isOpen()` asserts `m_dockWidget` and returns early during startup
+    //! (the assertion is in the log) - so an unbounded `!isOpen()` condition fires `dock-set-open` every
+    //! 150 ms for as long as the application runs. Measured 2026-10-11: **444 dispatches in 66 seconds**,
+    //! and the notation toolbar stayed greyed out the whole time because the window never stopped
+    //! churning. The panel is open within the first few attempts; after this many the hook says so once
+    //! and stops, so a broken hook can no longer masquerade as a busy application.
     Timer {
-        running: PanelConfig.forceOpen && !agentPanel.isOpen()
+        id: agentPanelOpenRetry
+
+        property int attempts: 0
+        readonly property int maxAttempts: 40
+
+        running: PanelConfig.forceOpen && attempts < maxAttempts && !agentPanel.isOpen()
         interval: 150
         repeat: true
-        onTriggered: root.pageModel.openAgentPanel()
+
+        onTriggered: {
+            ++attempts
+            root.pageModel.openAgentPanel()
+
+            if (attempts >= maxAttempts) {
+                console.warn("[agent-panel] the dock still does not report itself open after "
+                             + maxAttempts + " attempts; giving up (the panel may well be visible -"
+                             + " DockBase::isOpen() is not a reliable answer at startup)")
+            }
+        }
     }
 
     tours: [

@@ -21,6 +21,8 @@
  */
 #include "agentloop.h"
 
+#include <algorithm>
+
 #include <QJsonDocument>
 
 #include "log.h"
@@ -52,6 +54,14 @@ QJsonObject stepData(int turn, int step)
 AgentLoop::AgentLoop(SessionLog* session, LlmTransport* transport, FieldController* field, QObject* parent)
     : QObject(parent), m_session(session), m_transport(transport), m_field(field)
 {
+}
+
+void AgentLoop::setMaxStepsPerTurn(int steps)
+{
+    //! Clamped, not rejected: a settings field or an environment variable that asks for 0 or for 100000
+    //! still gets a working agent, and the value it gets is the value the UI will read back
+    //! (`maxStepsPerTurn()`), so nothing has to guess what was actually applied (第 130 条).
+    m_maxStepsPerTurn = std::clamp(steps, MIN_STEPS_PER_TURN, MAX_STEPS_PER_TURN);
 }
 
 void AgentLoop::submitUserMessage(const QString& text)
@@ -100,6 +110,18 @@ void AgentLoop::submitUserMessage(const QString& text)
 
 void AgentLoop::runNextStep()
 {
+    //! ⛔ A CLOSED TURN MUST NOT START ANOTHER STEP, and this guard is not theoretical: the step ceiling
+    //! ends the turn from INSIDE the tool-call path (`executeToolCalls` runs the tools the model already
+    //! asked for, then `closeTurn(false, "stopped after N steps...")`), and those tools' own continuations
+    //! call back into here when they finish. Measured 2026-10-11 with the ceiling set to 2: the log showed
+    //! `turn finished FAILED error="stopped after 2 steps"` and, in the same millisecond,
+    //! `turn0 step3 messages=7` - a THIRD request that the ceiling was supposed to prevent, and that the
+    //! user pays for. The check lives here rather than at each caller because "the turn is over" is the
+    //! loop's own state and every continuation has to respect it.
+    if (!m_running) {
+        return;
+    }
+
     ++m_step;
     m_session->append(SessionEvent::STEP_START, stepData(m_turn, m_step));
 

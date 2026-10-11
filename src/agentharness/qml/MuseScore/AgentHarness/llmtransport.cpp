@@ -474,7 +474,18 @@ void LlmTransport::onReplyFinished()
         //! ⛔ Distinguish "we never got a stream" from "the stream was cut short". A body carrying a
         //! non-2xx status usually has the real reason in it, and dropping it would leave the user
         //! with "connection closed" for what is actually "your key is wrong".
-        const QByteArray body = m_reply->readAll();
+        //!
+        //! ⛔⛔ AND THE REASON IS OFTEN ALREADY IN `m_buffer`, NOT IN `readAll()`. `readyRead` fires for an
+        //! error body just as it does for a stream, and this class' handler drains the reply into the
+        //! buffer - so by the time `finished` arrives there is nothing left to read, and the honest
+        //! sentence the server sent is sitting one member away. Measured 2026-10-11: a 400 whose body was
+        //! `{"error":{"message":"Provider error 400: Upstream request failed: [invalid_request_error] The
+        //! reasoning_content in the thinking mode must be passed back to the API."}} reached the log as
+        //! `HTTP 400: ... server replied: Bad Request` - the app's own diagnostics, pointing at nothing.
+        QByteArray body = m_reply->readAll();
+        if (body.isEmpty()) {
+            body = m_buffer;
+        }
         QString detail = QString::fromUtf8(body).left(400);
         if (detail.isEmpty()) {
             detail = m_reply->errorString();

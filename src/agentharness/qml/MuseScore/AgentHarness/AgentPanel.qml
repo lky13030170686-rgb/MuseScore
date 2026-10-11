@@ -128,6 +128,27 @@ Item {
                     root.timelineExpanded = !root.timelineExpanded
                 }
             }
+
+            //! ── Settings, the collapsed-rail shape (第 130 条) ───────────────────────────────
+            //! DSH's settings trigger is a full row in the wide sidebar and a 36x36 icon button when the
+            //! rail is collapsed. A dock panel is the collapsed case: there is no room for a label, and a
+            //! gear at the end of this row is where the eye already is. ⚠️ It opens the SAME dialog the
+            //! Agent page opens - the settings are one record, and a panel-only settings screen would be
+            //! the second place to keep "what the gateway is" right.
+            FlatButton {
+                Layout.preferredWidth: 28
+                Layout.preferredHeight: 28
+                Layout.alignment: Qt.AlignVCenter
+                backgroundRadius: 28
+                transparent: true
+                icon: IconCode.SETTINGS_COG
+                accessible.name: qsTrc("agentharness", "Agent settings")
+                toolTipTitle: qsTrc("agentharness", "Settings")
+
+                onClicked: {
+                    panelSettingsDialog.open()
+                }
+            }
         }
 
         AgentTimelineList {
@@ -155,5 +176,14 @@ Item {
             Layout.fillWidth: true
             field: root.field
         }
+    }
+
+    //! The same settings surface the Agent page opens (第 130 条). ⚠️ `layoutResettable` stays false: the
+    //! column widths belong to the Agent page, and a dialog that claimed to reset something it cannot
+    //! reach would be this project's least favourite kind of lie.
+    AgentSettingsDialog {
+        id: panelSettingsDialog
+
+        field: root.field
     }
 }

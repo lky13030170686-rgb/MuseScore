@@ -225,6 +225,10 @@ public:
     Q_INVOKABLE bool lastToolOk() const { return m_lastToolOk; }
     //! Tool names, for diagnostics and (later) the prompt's tool list.
     Q_INVOKABLE QStringList availableTools() const;
+    //! How many tools the table has. A CONSTANT property (the table is compiled in) so QML can show the
+    //! number without an invokable read that no binding can follow (第 125 条).
+    Q_PROPERTY(int toolCount READ toolCount CONSTANT)
+    int toolCount() const;
 
     //! ── The agent loop's log ──────────────────────────────────────────────────────────────────
     //! The session log is the single source of truth for a conversation: the model's history is
@@ -266,6 +270,13 @@ public:
     //! complaint as a gateway they have to retype.
     Q_PROPERTY(int agentSidebarWidth READ agentSidebarWidth NOTIFY fieldChanged)
     Q_PROPERTY(int agentRightbarWidth READ agentRightbarWidth NOTIFY fieldChanged)
+    //! How many model round-trips one turn may take. Read back from the LOOP (not from a second copy), and
+    //! clamped there - the number the UI shows is the number that will be enforced.
+    Q_PROPERTY(int agentMaxSteps READ agentMaxSteps NOTIFY fieldChanged)
+    //! The bounds the guard is clamped to, read from `AgentLoop` rather than repeated in QML: a stepper
+    //! whose range disagrees with the clamp offers values that silently snap back.
+    Q_PROPERTY(int agentMaxStepsMin READ agentMaxStepsMin CONSTANT)
+    Q_PROPERTY(int agentMaxStepsMax READ agentMaxStepsMax CONSTANT)
 
     //! Send a user message and run a turn. Returns immediately: the loop is asynchronous, and
     //! blocking here would freeze the editor for the length of a model response.
@@ -297,10 +308,30 @@ public:
     //! draws the columns (`AgentWorkbench.qml`'s `sidebarMinWidth` and friends), and a second copy of them
     //! in C++ is a second thing to keep in step. The page clamps what it reads, so a stored outlier is
     //! harmless - and a rejected one would silently lose the user's drag.
+    //! ⚠️ `0` IS ACCEPTED and means "no preference": that is what "reset the columns" stores, and refusing
+    //! it would make the reset a no-op that still reported success (第 130 条).
     Q_INVOKABLE void setAgentSidebarWidth(int width);
     Q_INVOKABLE void setAgentRightbarWidth(int width);
     int agentSidebarWidth() const;
     int agentRightbarWidth() const;
+
+    //! The per-turn step guard, as a preference (第 130 条). It used to be environment-only, and the
+    //! failure that produced was one-sided: the loop stopped with "stopped after 8 steps", the log named
+    //! the number, and the USER had no way to see or change a limit that is ours, not theirs.
+    Q_INVOKABLE void setAgentMaxSteps(int steps);
+    int agentMaxSteps() const;
+    int agentMaxStepsMin() const;
+    int agentMaxStepsMax() const;
+
+    //! Where the preferences above are actually stored. Shown in the settings dialog so "it is saved"
+    //! stops being a claim: the file is named, and the dialog can reveal it.
+    Q_INVOKABLE QString agentSettingsFilePath() const;
+
+    //! Put every agent preference back to its default: gateway, model, column widths, step guard.
+    //! ⛔ NOT `Settings::reset()`: that clears the whole application's settings, which is somebody else's
+    //! data (the user's MuseScore preferences). This touches the four keys this subsystem owns, and
+    //! nothing else. The API KEY is untouched by design - it was never written to disk (交接文档 §六).
+    Q_INVOKABLE void resetAgentPreferences();
 
     //! Whether a turn is currently running.
     bool agentRunning() const;

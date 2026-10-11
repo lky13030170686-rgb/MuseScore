@@ -36,6 +36,8 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/spill_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/sessionlog_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/llmclient_tests.cpp
+    # The per-turn step guard, now that its value arrives from a settings field (第 130 条).
+    ${CMAKE_CURRENT_LIST_DIR}/agentloop_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/systemprompt_tests.cpp
 )
 

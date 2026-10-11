@@ -71,13 +71,30 @@ public:
     //! Model id and thinking settings. Defaults are the DeepSeek ones; the caller may override.
     void setModel(const QString& model) { m_model = model; }
     QString model() const { return m_model; }
+    //! The model this loop ships with. Exposed so "reset the preferences" restores THE default instead of
+    //! a copy of it that can drift (第 130 条).
+    static QString defaultModel() { return QStringLiteral("deepseek-chat"); }
     void setThinking(bool thinking) { m_thinking = thinking; }
     void setReasoningEffort(const QString& effort) { m_effort = effort; }
 
     //! How many tool rounds one turn may take before the loop stops asking. A model that keeps calling
     //! tools without converging would otherwise run until the user notices; a bounded loop ends with a
     //! clear reason instead.
-    void setMaxStepsPerTurn(int steps) { m_maxStepsPerTurn = steps; }
+    //!
+    //! ⛔ CLAMPED, because this number became USER-EDITABLE (Agent 页的 设置 → 助手, 第 130 条). The guard
+    //! exists to bound runaway cost, and "the value came from a settings field" is not a reason to remove
+    //! the bound: `0` would stop every turn before the first tool ran, and `100000` is the unbounded loop
+    //! the guard was written against. The bounds live HERE, next to the check that enforces them
+    //! (`agentloop.cpp`), so the clamp and the limit cannot disagree.
+    static constexpr int MIN_STEPS_PER_TURN = 1;
+    static constexpr int MAX_STEPS_PER_TURN = 100;
+    //! What a turn gets when nobody says otherwise. ⚠️ `FieldController` does NOT repeat this number: it
+    //! asks the loop for the value it actually holds (`agentMaxSteps()`), and its reset uses THIS constant
+    //! - so there is one default, not two.
+    static constexpr int DEFAULT_STEPS_PER_TURN = 8;
+
+    void setMaxStepsPerTurn(int steps);
+    int maxStepsPerTurn() const { return m_maxStepsPerTurn; }
 
 signals:
     //! Live stream, for the panel. These are *not* the durable record - the log is.
@@ -101,9 +118,9 @@ private:
     bool m_running = false;
     int m_turn = 0;
     int m_step = 0;
-    int m_maxStepsPerTurn = 8;
+    int m_maxStepsPerTurn = DEFAULT_STEPS_PER_TURN;
 
-    QString m_model = QStringLiteral("deepseek-chat");
+    QString m_model = defaultModel();
     bool m_thinking = false;
     QString m_effort = QStringLiteral("high");
 

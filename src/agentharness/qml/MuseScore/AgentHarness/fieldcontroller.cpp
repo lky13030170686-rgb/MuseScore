@@ -86,6 +86,9 @@ static const Settings::Key AGENT_MODEL_KEY("agentharness", "agent/model");
 //! The Agent page's column widths. Stored, not secret - see the note on the properties in the header.
 static const Settings::Key AGENT_SIDEBAR_WIDTH_KEY("agentharness", "agent/sidebarWidth");
 static const Settings::Key AGENT_RIGHTBAR_WIDTH_KEY("agentharness", "agent/rightbarWidth");
+//! The per-turn step guard, as a preference (第 130 条). Stored like the gateway and the model: it is a
+//! PREFERENCE (how much work one message may cost), not a secret.
+static const Settings::Key AGENT_MAX_STEPS_KEY("agentharness", "agent/maxSteps");
 static const QString DEFAULT_BASE_URL = QStringLiteral("https://api.deepseek.com");
 
 //! Command types and element types share one histogram; this keeps them from colliding.
@@ -831,6 +834,13 @@ QStringList FieldController::availableTools() const
     return toolNames();
 }
 
+int FieldController::toolCount() const
+{
+    //! Asked of the table itself, never a literal: the count in the docs and the count in the UI have both
+    //! been wrong before while the table was right (第 128 条把 31 改成 32 时，四处数字要一起改).
+    return int(toolTable().size());
+}
+
 bool FieldController::isCommandEnabled(const QString& command) const
 {
     if (command.isEmpty()) {
@@ -1354,10 +1364,16 @@ void FieldController::ensureAgentLoop()
     //! ("stopped after N steps without the model finishing"). The guard has to stay - a runaway loop
     //! costs real money - but a real multi-part task ("fill every measure, check each pitch, report")
     //! legitimately needs more than the default 8, and a user watching it stop early has no way to
-    //! know the limit is ours. Raisable per run without a rebuild; `0`/unset keeps the default.
-    const int maxSteps = qEnvironmentVariableIntValue("MUSE_AGENT_MAX_STEPS");
-    if (maxSteps > 0) {
-        m_loop->setMaxStepsPerTurn(maxSteps);
+    //! know the limit is ours. ⚠️ Since 第 130 条 it is editable in the settings dialog; the same
+    //! precedence applies as for the gateway and the model - environment, then the stored preference,
+    //! then the loop's own default - so a scripted run still cannot be at the mercy of what was last
+    //! clicked. `0`/unset in the environment means "not specified".
+    const int envMaxSteps = qEnvironmentVariableIntValue("MUSE_AGENT_MAX_STEPS");
+    const int storedMaxSteps = Settings::instance()->value(AGENT_MAX_STEPS_KEY).toInt();
+    if (envMaxSteps > 0) {
+        m_loop->setMaxStepsPerTurn(envMaxSteps);
+    } else if (storedMaxSteps > 0) {
+        m_loop->setMaxStepsPerTurn(storedMaxSteps);
     }
 
     connect(m_loop.get(), &AgentLoop::assistantText, this, [this](const QString&) {
@@ -1517,9 +1533,9 @@ QString FieldController::agentModelsError() const
 
 void FieldController::setAgentSidebarWidth(int width)
 {
-    //! Read back through `agentSidebarWidth()`, so what is stored and what is reported are the same
-    //! number even if a caller passes something odd.
-    if (width <= 0) {
+    //! ⚠️ 0 means "no preference" and IS stored - that is how the settings dialog's reset puts the columns
+    //! back. Only a negative value is refused, because it cannot mean anything (第 130 条).
+    if (width < 0) {
         return;
     }
 
@@ -1529,7 +1545,7 @@ void FieldController::setAgentSidebarWidth(int width)
 
 void FieldController::setAgentRightbarWidth(int width)
 {
-    if (width <= 0) {
+    if (width < 0) {
         return;
     }
 
@@ -1548,6 +1564,78 @@ int FieldController::agentSidebarWidth() const
 int FieldController::agentRightbarWidth() const
 {
     return Settings::instance()->value(AGENT_RIGHTBAR_WIDTH_KEY).toInt();
+}
+
+void FieldController::setAgentMaxSteps(int steps)
+{
+    ensureAgentLoop();
+
+    //! The clamp lives in `AgentLoop::setMaxStepsPerTurn` (next to the check that enforces the limit), so
+    //! a value that arrives from QML is bounded exactly like one that arrives from the environment.
+    m_loop->setMaxStepsPerTurn(steps);
+
+    //! ⛔ Store what the loop ACTUALLY holds, not what the caller asked for: storing the request would
+    //! make the settings file disagree with the running loop, and the next launch would load a number
+    //! that was never in force (第 127 条的同一形状: 状态与界面说法不一致).
+    Settings::instance()->setSharedValue(AGENT_MAX_STEPS_KEY, Val(m_loop->maxStepsPerTurn()));
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] max steps per turn set to" << m_loop->maxStepsPerTurn()
+               << "(asked for" << steps << ")";
+    }
+
+    emit fieldChanged();
+}
+
+int FieldController::agentMaxSteps() const
+{
+    //! Read back from the loop, never from the settings: the loop is what enforces the guard, and a UI
+    //! that displayed its own remembered value would be free to disagree with it.
+    const_cast<FieldController*>(this)->ensureAgentLoop();
+    return m_loop ? m_loop->maxStepsPerTurn() : 0;
+}
+
+int FieldController::agentMaxStepsMin() const
+{
+    return AgentLoop::MIN_STEPS_PER_TURN;
+}
+
+int FieldController::agentMaxStepsMax() const
+{
+    return AgentLoop::MAX_STEPS_PER_TURN;
+}
+
+QString FieldController::agentSettingsFilePath() const
+{
+    return Settings::instance()->filePath().toQString();
+}
+
+void FieldController::resetAgentPreferences()
+{
+    ensureAgentLoop();
+
+    Settings::instance()->setSharedValue(AGENT_BASE_URL_KEY, Val(DEFAULT_BASE_URL));
+    Settings::instance()->setSharedValue(AGENT_SIDEBAR_WIDTH_KEY, Val(0));
+    Settings::instance()->setSharedValue(AGENT_RIGHTBAR_WIDTH_KEY, Val(0));
+    Settings::instance()->setSharedValue(AGENT_MODEL_KEY, Val(std::string()));
+
+    m_transport->setBaseUrl(DEFAULT_BASE_URL);
+    m_loop->setModel(AgentLoop::defaultModel());
+    //! The default is the loop's own constant, NOT a number written here: a second copy of "8" is a second
+    //! thing to keep in step, and the clamp would silently turn a wrong guess into a working-looking value.
+    m_loop->setMaxStepsPerTurn(AgentLoop::DEFAULT_STEPS_PER_TURN);
+
+    //! The model list belonged to the gateway that was just forgotten.
+    m_agentModelIds.clear();
+    m_agentModelsError.clear();
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] agent preferences reset: base=" << m_transport->baseUrl()
+               << "model=" << m_loop->model() << "maxSteps=" << m_loop->maxStepsPerTurn();
+    }
+
+    //! ⛔ Notify: every one of these is a QML binding (第 127 条).
+    emit fieldChanged();
 }
 
 void FieldController::setAgentApiKey(const QString& key)

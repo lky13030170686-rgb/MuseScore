@@ -66,14 +66,21 @@ Item {
     readonly property int rightbarMaxWidth: 420
     readonly property int centerMinWidth: 400
 
-    //! The dragged width. ⚠️ Seeded from the stored preference ONCE: the moment the user drags, this
-    //! becomes the authority (the binding is replaced by the assignment) and the new value is written
-    //! back on release. That is the same one-way-then-authoritative shape the connection panel's fields
-    //! use, and the reason it is not a two-way binding is that a two-way one would fight the drag.
-    property int sidebarWidth: (root.field && root.field.agentSidebarWidth > 0)
-                               ? root.field.agentSidebarWidth : root.sidebarDefaultWidth
-    property int rightbarWidth: (root.field && root.field.agentRightbarWidth > 0)
-                                ? root.field.agentRightbarWidth : root.rightbarDefaultWidth
+    //! The width the user dragged to, or -1 while the stored preference (then the default) decides.
+    //! ⛔ A SEPARATE "dragged" value rather than assigning over the effective one: assigning to a property
+    //! breaks its binding, and that binding is what lets "reset the preferences" put the columns back.
+    //! (第 129 条 assigned straight to `sidebarWidth`; the reset added in 第 130 条 is why this changed.)
+    property int draggedSidebarWidth: -1
+    property int draggedRightbarWidth: -1
+
+    readonly property int sidebarWidth: root.draggedSidebarWidth >= 0
+                                        ? root.draggedSidebarWidth
+                                        : (root.field && root.field.agentSidebarWidth > 0
+                                           ? root.field.agentSidebarWidth : root.sidebarDefaultWidth)
+    readonly property int rightbarWidth: root.draggedRightbarWidth >= 0
+                                         ? root.draggedRightbarWidth
+                                         : (root.field && root.field.agentRightbarWidth > 0
+                                            ? root.field.agentRightbarWidth : root.rightbarDefaultWidth)
 
     //! The centred content axis: the transcript column and (slightly wider) the composer card.
     readonly property real contentWidth: Math.max(520, Math.min(920, centerColumn.width * 0.72))
@@ -94,18 +101,16 @@ Item {
     //! Clamp and apply. The BOUNDS live here, next to the constants they come from - the handle and the
     //! stored preference both stay ignorant of them.
     function applySidebarDrag(delta) {
-        const next = Math.max(root.sidebarMinWidth,
-                              Math.min(root.sidebarMaxWidth, root.dragStartSidebarWidth + delta))
-        root.sidebarWidth = next
+        root.draggedSidebarWidth = Math.max(root.sidebarMinWidth,
+                                            Math.min(root.sidebarMaxWidth, root.dragStartSidebarWidth + delta))
     }
 
     function applyRightbarDrag(delta) {
         //! ⛔ NEGATED: the right column is on the RIGHT, so dragging its boundary left must make it WIDER.
         //! Without this the boundary moves the wrong way, which reads as a broken drag rather than as a
         //! sign error.
-        const next = Math.max(root.rightbarMinWidth,
-                              Math.min(root.rightbarMaxWidth, root.dragStartRightbarWidth - delta))
-        root.rightbarWidth = next
+        root.draggedRightbarWidth = Math.max(root.rightbarMinWidth,
+                                             Math.min(root.rightbarMaxWidth, root.dragStartRightbarWidth - delta))
     }
 
     //! Persist on RELEASE, not on every move: a drag emits a move per pixel, and writing the preference on
@@ -116,6 +121,16 @@ Item {
         }
         root.field.setAgentSidebarWidth(root.sidebarWidth)
         root.field.setAgentRightbarWidth(root.rightbarWidth)
+    }
+
+    //! Drop the local drag values, so the effective widths fall back to the stored preference (which the
+    //! settings dialog has just set to "never dragged") and then to the defaults. ⛔ This has to happen
+    //! HERE and not in the dialog: the widths are this page's live layout state, and a stored preference
+    //! that changed while the page kept its old numbers would be exactly the "it says it reset and
+    //! nothing moved" failure this project keeps refusing.
+    function resetLayout() {
+        root.draggedSidebarWidth = -1
+        root.draggedRightbarWidth = -1
     }
 
     RowLayout {
@@ -151,24 +166,65 @@ Item {
 
                 SeparatorLine {}
 
-                //! Where the agent talks to, editable in the app. Before this, the gateway and the model
-                //! could only be set by environment variables - so "can I use the agent" depended on who
-                //! launched the process (第 127 条). The key stays in the composer and is never saved.
-                AgentConnectionPanel {
+                //! ── The settings trigger, at the FOOT of the column (第 130 条) ────────────────────
+                //! DSH puts it exactly here: a sidebar-foot row - a full-width button with the gear and
+                //! the label, and a connection indicator at its right end. ⚠️ The gateway and model
+                //! FIELDS moved into the settings panel (they are settings), but their panel did not: the
+                //! dialog embeds this very component, so there is still one place that knows how to apply
+                //! and read them back. Showing both would be two live editors of one value.
+                RowLayout {
                     Layout.fillWidth: true
-                    field: root.field
-                }
+                    spacing: 8
 
-                //! The key's provenance still deserves a line: "it works on my machine" is usually an
-                //! environment variable someone forgot they set, and a key that came from the environment
-                //! cannot be cleared from here.
-                StyledTextLabel {
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignLeft
-                    elide: Text.ElideRight
-                    color: ui.theme.fontSecondaryColor
-                    text: qsTrc("agentharness", "Key: %1")
-                          .arg(root.field ? root.field.agentApiKeySource : "none")
+                    FlatButton {
+                        id: settingsTrigger
+
+                        Layout.fillWidth: true
+                        accessible.name: qsTrc("agentharness", "Agent settings")
+                        text: qsTrc("agentharness", "Settings")
+                        icon: IconCode.SETTINGS_COG
+                        transparent: true
+
+                        onClicked: {
+                            settingsDialog.open()
+                        }
+                    }
+
+                    //! ── The connection indicator (DSH's `ConnectionIndicator`) ─────────────────────
+                    //! DSH shows it next to the trigger and only when something is worth saying: while a
+                    //! turn runs, or when the last one failed. ⚠️ Ours is the same idea with the states
+                    //! this program actually has - and it is a real button, so "open the connection
+                    //! settings" is reachable instead of being a coloured dot.
+                    FlatButton {
+                        id: connectionIndicator
+
+                        readonly property bool hasProblem:
+                            root.field ? root.field.agentLastError.length > 0 : false
+
+                        visible: root.running || connectionIndicator.hasProblem
+                        Layout.preferredWidth: 28
+                        Layout.preferredHeight: 28
+                        backgroundRadius: 28
+                        transparent: true
+                        icon: connectionIndicator.hasProblem ? IconCode.INFO : IconCode.CLOCK
+                        //! ⚠️ `ui.theme` has no error colour (themeapi.h)，so a problem is shown with
+                        //! the same token the transcript's error rows use (`buttonColor` on the accent
+                        //! side) plus the INFO glyph - inventing a colour name would compile and then
+                        //! fail at runtime (第 124 条的教训).
+                        iconColor: connectionIndicator.hasProblem ? ui.theme.buttonColor
+                                                                  : ui.theme.accentColor
+                        accessible.name: root.running
+                                         ? qsTrc("agentharness", "The agent is working")
+                                         : qsTrc("agentharness", "The last turn failed - open the settings")
+                        toolTipTitle: root.running
+                                      ? qsTrc("agentharness", "Working…")
+                                      : (root.field ? root.field.agentLastError : "")
+
+                        onClicked: {
+                            settingsDialog.activeSection = "connection"
+                            settingsDialog.open()
+                        }
+                    }
                 }
             }
         }
@@ -373,6 +429,22 @@ Item {
                     field: root.field
                 }
             }
+        }
+    }
+
+    //! ══ The settings surface ══════════════════════════════════════════════════════════════════════
+    //! One instance per surface, both reading the same field: the dialog is a VIEW of the settings, not a
+    //! second copy of them (which is the rule this subsystem applies to the transcript and the timeline as
+    //! well). ⚠️ `layoutResettable` is true only here, because the widths are this page's live state - the
+    //! panel's dialog can change the stored preference but cannot move columns it does not own.
+    AgentSettingsDialog {
+        id: settingsDialog
+
+        field: root.field
+        layoutResettable: true
+
+        onLayoutResetRequested: {
+            root.resetLayout()
         }
     }
 }

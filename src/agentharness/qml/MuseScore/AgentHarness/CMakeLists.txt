@@ -95,6 +95,10 @@ qt_add_qml_module(agentharness_qml
         AgentFactsPanel.qml
         AgentToolInspector.qml
         AgentConnectionPanel.qml
+        # The settings surface, shaped like the DSH web client's shell (mask + centered panel + nav rail).
+        # It embeds AgentConnectionPanel as its Connection section, so the gateway/model editors stay one
+        # implementation; the panel and the page each open their own instance of this dialog.
+        AgentSettingsDialog.qml
 
     IMPORTS
         TARGET muse_ui_qml
