@@ -65,11 +65,11 @@ FocusScope {
     id: root
 
     //! The message. Read-only ON PURPOSE - see the note above; `clear()` is how it is emptied.
+    //! ⚠️ There is deliberately NO `hasText` / `fieldActiveFocus` here even though `TextInputField` has
+    //! them: this component's contract is what the composer actually uses. A property nothing reads is
+    //! a property nobody keeps correct - and "the composer hides a hint while you type" was tried and
+    //! rejected, because the composer then changes height under the pointer (第 129 条).
     readonly property string currentText: input.text
-    readonly property bool hasText: input.text.length > 0
-    //! True while the caret is in the text. The composer uses it to show the key hint only when a
-    //! key is about to be pressed into this field.
-    readonly property bool fieldActiveFocus: input.activeFocus
 
     property alias hint: input.placeholderText
 
