@@ -135,7 +135,11 @@ void AgentLoop::runNextStep()
     //! The request is assembled from the LOG, never from a live message list. That is the whole point
     //! of the projection: what the model is sent is a function of what was recorded, so "what did the
     //! model see" is answerable after the fact.
-    const QVector<WireMessage> messages = m_session->deriveMessages();
+    //! ⚠️ `m_thinking` is passed in because the wire shape depends on it in one place: in thinking mode an
+    //! assistant turn that carries tool calls must send `reasoning_content` even when it is empty
+    //! (第 133 条 - the upstream says the field "must be passed back", and a step whose model did not think
+    //! was the one shape we sent without it).
+    const QVector<WireMessage> messages = m_session->deriveMessages(m_thinking);
 
     QJsonArray wireMessages;
     for (const WireMessage& m : messages) {

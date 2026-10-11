@@ -75,6 +75,11 @@ struct WireMessage
     //! Assistant reasoning, echoed back on tool-call turns. DeepSeek requires it in thinking mode
     //! when the turn carries tool calls; it is ignored elsewhere.
     QString reasoning;
+    //! Send `reasoning_content` even when `reasoning` is empty. Set for assistant turns that requested
+    //! tools while thinking mode is on: the upstream requires the FIELD to be present there, and a step
+    //! whose model produced no reasoning would otherwise go out without it (第 133 条 - see the note in
+    //! `deriveMessages`; the failure it addresses is real and recurring, the root cause is not proven).
+    bool echoReasoning = false;
     //! Set on an assistant turn that requested tools.
     QVector<QJsonObject> toolCalls;
     //! Set on a `role: "tool"` message: which call it answers.
@@ -118,7 +123,11 @@ public:
     //!   - `tool/result` renders as a `role: "tool"` message. A tool result with no preceding call is
     //!     DROPPED: the wire format pairs them by id and an orphan makes the whole request invalid.
     //!   - everything else (turn/step markers, attempts, request headers) is log-only.
-    QVector<WireMessage> deriveMessages() const;
+    //!
+    //! `thinkingMode` decides one thing only: whether an assistant turn that carries tool calls must send
+    //! `reasoning_content` even when there was no reasoning (the upstream requires the field to be present
+    //! in thinking mode - see `WireMessage::echoReasoning`).
+    QVector<WireMessage> deriveMessages(bool thinkingMode = false) const;
 
     //! JSONL: one flat JSON object per line, in order. This is the durable form.
     QByteArray toJsonLines() const;

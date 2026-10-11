@@ -73,7 +73,10 @@ QJsonObject WireMessage::toWire() const
         //! tool-call-only turn is exactly the case where it would otherwise be null. The empty
         //! string is the agreed spelling of "no text this turn".
         obj.insert(QStringLiteral("content"), content);
-        if (!reasoning.isEmpty()) {
+        //! ⛔ `echoReasoning` (第 133 条): in thinking mode the upstream requires the field to be PRESENT on
+        //! an assistant turn that requested tools, even when the model produced no reasoning. See the note
+        //! where the flag is set in `deriveMessages`.
+        if (!reasoning.isEmpty() || echoReasoning) {
             obj.insert(QStringLiteral("reasoning_content"), reasoning);
         }
         if (!toolCalls.isEmpty()) {
@@ -151,7 +154,7 @@ bool SessionLog::isTurnOpen() const
     return false;
 }
 
-QVector<WireMessage> SessionLog::deriveMessages() const
+QVector<WireMessage> SessionLog::deriveMessages(bool thinkingMode) const
 {
     QVector<WireMessage> messages;
 
@@ -198,6 +201,23 @@ QVector<WireMessage> SessionLog::deriveMessages() const
                 m.toolCalls.append(call);
                 knownCallIds.insert(call.value(QStringLiteral("id")).toString());
             }
+
+            //! ⛔ THE FIELD THE UPSTREAM ASKS FOR IS ALWAYS SENT WHEN IT APPLIES (第 133 条).
+            //!
+            //! Measured 2026-10-11, three times in one day: a turn dies mid-task with
+            //! `Provider error 400: The reasoning_content in the thinking mode must be passed back to the
+            //! API`, and the log shows the failing step is an assistant turn that requested tools whose
+            //! model produced NO reasoning. Until this line, that message went out WITHOUT the field at
+            //! all (it is only inserted when the reasoning is non-empty).
+            //!
+            //! ⚠️ What is proven and what is not. NOT proven: that this is the trigger - six controlled
+            //! probes (same session / new session x reasoning present / field absent / empty string) all
+            //! returned HTTP 200, so the failure has never been reproduced in isolation. Proven: the error
+            //! says the field "must be passed back", and our request was the one shape that does not carry
+            //! it. Sending it - empty when the model really did not think - is what the error asks for, it
+            //! costs one empty string on a handful of messages, and it cannot make a request less valid.
+            //! This is a request that matches the documented requirement, not a guess at the root cause.
+            m.echoReasoning = thinkingMode && !m.toolCalls.isEmpty();
 
             //! An assistant turn with neither text nor tool calls carries nothing the model needs to
             //! see. Emitting it would add an empty turn to the history for no reason.

@@ -234,6 +234,39 @@ TEST(AgentHarness_SessionLog, ReasoningIsCarriedBackOnAssistantTurns)
     EXPECT_EQ(wire.value(QStringLiteral("reasoning_content")).toString(), QStringLiteral("thinking..."));
 }
 
+TEST(AgentHarness_SessionLog, AToolCallTurnInThinkingModeAlwaysCarriesTheReasoningField)
+{
+    //! ⛔ 第 133 条. The upstream's own error says the field "must be passed back" in thinking mode, and the
+    //! one shape we used to send WITHOUT it is exactly the failing case measured three times in one day:
+    //! an assistant turn that requested tools, in a step where the model happened to produce no reasoning.
+    //! An empty string is the truth there - and the field being present is what the requirement is about.
+    SessionLog log;
+    log.append(SessionEvent::USER_MESSAGE, data({ { QStringLiteral("content"), QStringLiteral("go") } }));
+    log.append(SessionEvent::ASSISTANT_MESSAGE,
+               data({ { QStringLiteral("content"), QStringLiteral("") },
+                      { QStringLiteral("toolCalls"),
+                        QJsonArray { toolCall(QStringLiteral("c1"), QStringLiteral("t"), QStringLiteral("{}")) } } }));
+
+    const QVector<WireMessage> thinking = log.deriveMessages(true);
+    const auto assistantWithCalls = [](const QVector<WireMessage>& msgs) {
+        for (const WireMessage& m : msgs) {
+            if (m.role == QLatin1String("assistant") && !m.toolCalls.isEmpty()) {
+                return m;
+            }
+        }
+        return WireMessage();
+    };
+
+    const QJsonObject wire = assistantWithCalls(thinking).toWire();
+    ASSERT_TRUE(wire.contains(QStringLiteral("reasoning_content"))) << "the field must be PRESENT, empty or not";
+    EXPECT_TRUE(wire.value(QStringLiteral("reasoning_content")).toString().isEmpty());
+
+    //! ⚠️ And NOT in a non-thinking request: the field is a thinking-mode requirement, and adding it
+    //! everywhere would put a field the provider never asked for into every plain request.
+    const QJsonObject plain = assistantWithCalls(log.deriveMessages(false)).toWire();
+    EXPECT_FALSE(plain.contains(QStringLiteral("reasoning_content")));
+}
+
 //! ── Persistence ───────────────────────────────────────────────────────────────────────────────
 
 TEST(AgentHarness_SessionLog, JsonLinesRoundTrip)

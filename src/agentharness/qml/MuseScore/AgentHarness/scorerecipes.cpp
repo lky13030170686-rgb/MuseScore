@@ -1628,7 +1628,40 @@ RecipeResult muse::agentharness::toggleArticulation(mu::engraving::Score* score,
                                      .arg(formatAddress(address)));
     }
 
-    return RecipeResult::success(QStringLiteral("%1: added %2").arg(formatAddress(address), name));
+    //! ⛔⛔ VERIFIED BY EFFECT, NOT BY REQUEST (第 133 条). The model caught this one itself, in its own
+    //! words, on a real turn: it asked for `articStaccatoAbove`, this function reported "added
+    //! articStaccatoAbove", and the score READ BACK as `articStaccatoBelow` - upstream places the dot
+    //! according to where the note sits on the staff, so the symbol on the chord can differ from the one
+    //! that was asked for. A message that repeats the request is a claim about the CALLER, not about the
+    //! score, and the agent has no way to tell the difference.
+    //! ⚠️ The write itself succeeded, so this stays a success - but the symbol that is actually on the chord
+    //! is named, and a difference is stated rather than smoothed over.
+    QStringList present;
+    for (const mu::engraving::Articulation* existing : chord->articulations()) {
+        present.append(QString::fromLatin1(mu::engraving::SymNames::nameForSymId(existing->symId()).ascii()));
+    }
+
+    const QString wanted = name.trimmed();
+    if (present.contains(wanted)) {
+        //! ⚠️ AND THE SIDE IS NOT OURS TO PROMISE. Measured on a real turn 2026-10-11: right after this call
+        //! the chord really does hold the symbol that was asked for, and the score READS BACK with the
+        //! opposite one - upstream decides Above/Below from where the note sits on the staff, and that
+        //! decision is taken when the score is LAID OUT, i.e. after this function has returned. So for the
+        //! placement-paired symbols the message says where the answer can be found instead of implying the
+        //! side is settled. (The model found this by itself: "the staccato exists, but on the wrong side".)
+        if (wanted.endsWith(QLatin1String("Above")) || wanted.endsWith(QLatin1String("Below"))) {
+            return RecipeResult::success(
+                QStringLiteral("%1: added %2 - the dot's side follows the note's position on the staff, so "
+                               "read the measure back to see where it landed")
+                .arg(formatAddress(address), wanted));
+        }
+        return RecipeResult::success(QStringLiteral("%1: added %2").arg(formatAddress(address), wanted));
+    }
+
+    return RecipeResult::success(QStringLiteral("%1: added %2, and the score now holds %3 - the placement "
+                                                "follows the note's position on the staff")
+                                 .arg(formatAddress(address), wanted,
+                                      present.isEmpty() ? QStringLiteral("nothing") : present.join(QStringLiteral(", "))));
 }
 
 RecipeResult muse::agentharness::moveNote(mu::engraving::Score* score, const ScoreAddress& from,

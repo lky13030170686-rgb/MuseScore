@@ -28,6 +28,10 @@
 #include "engraving/tests/utils/scorerw.h"
 
 #include "agentharness/qml/MuseScore/AgentHarness/scoredigest.h"
+//! The WRITE side, on purpose: the point of these tests is the loop the agent actually runs - write with
+//! a recipe, then read the measure back through the digest. Testing the digest against hand-built
+//! engraving objects would test my idea of what the score looks like instead of what the tools create.
+#include "agentharness/qml/MuseScore/AgentHarness/scorerecipes.h"
 
 using namespace mu::engraving;
 using namespace muse::agentharness;
@@ -184,4 +188,153 @@ TEST(AgentHarness_ScoreDigest, WindowClampsTheUpperEndToTheScore)
 TEST(AgentHarness_ScoreDigest, WindowOfNoScoreSaysSo)
 {
     EXPECT_EQ(buildMeasureWindow(nullptr, 1, 1), QStringLiteral("(no score)"));
+}
+
+//! ── Window: can the reader see what the writer just did? (第 133 条) ───────────────────────────
+//!
+//! ⛔ WHY THESE EXIST. Measured 2026-10-11: asked to add a staccato and then read the measure back, the
+//! agent could not confirm it - the window reported pitches and durations only, while the toolset could
+//! create articulations, ties, slurs and dynamics. **A read tool that cannot see its own toolset's writes
+//! is half a tool**: the agent cannot verify its work, and cannot see the marks that were already there
+//! before it decides what to change. Each test below therefore WRITES with the same recipe the tool calls
+//! and then READS through the digest - the exact loop the agent runs.
+
+namespace {
+//! A fresh score per test: the recipes write into it, and one test's articulation must not appear in
+//! another's read-back.
+std::shared_ptr<MasterScore> freshScore()
+{
+    return loadScore();
+}
+
+ScoreAddress firstBeat()
+{
+    ScoreAddress address;
+    address.measure = 1;
+    address.beat = 1;
+    return address;
+}
+} // namespace
+
+TEST(AgentHarness_ScoreDigest, WindowShowsAnArticulationThatWasJustAdded)
+{
+    const std::shared_ptr<MasterScore> score = freshScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const RecipeResult written = toggleArticulation(score.get(), firstBeat(), 1, 0,
+                                                    QStringLiteral("articStaccatoAbove"));
+    ASSERT_TRUE(written.ok) << written.problem.toStdString();
+
+    const QString text = buildMeasureWindow(score.get(), 1, 1);
+
+    //! ⚠️ The SAME SMuFL name the writer took: `SymNames::nameForSymId` is the inverse of the
+    //! `symIdByName` the write path validates with, so "add articStaccatoAbove" and "read it back" speak
+    //! one vocabulary. A digest that printed an enum number would make the round trip unverifiable.
+    //! ⛔ And the assertion is against what the SCORE holds, not against the name that was asked for: a
+    //! real turn caught upstream placing the dot BELOW while the tool reported "added …Above" (第 133 条),
+    //! so this reads the symbol out of the digest and requires the tool's message to agree with it. The
+    //! assertion cannot be wrong about the input - it compares two observations, not an expectation.
+    const int idx = text.indexOf(QStringLiteral("art="));
+    ASSERT_GE(idx, 0) << text.toStdString();
+    const QString onTheChord = text.mid(idx + 4).section(QLatin1Char(' '), 0, 0);
+
+    EXPECT_TRUE(written.detail.contains(onTheChord))
+        << "the tool said: " << written.detail.toStdString()
+        << " / the score holds: " << onTheChord.toStdString();
+
+    //! ⚠️ And for the placement-paired symbols the message must NOT imply the side is settled: the flip is
+    //! decided at LAYOUT time, i.e. after the recipe returned, so what this call can honestly say is where
+    //! to look. (Without layout in a unit test the symbol does not flip - which is exactly why the message,
+    //! not the test, has to carry the caveat.)
+    EXPECT_TRUE(written.detail.contains(QStringLiteral("read the measure back"))) << written.detail.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowShowsADynamicThatWasJustAdded)
+{
+    const std::shared_ptr<MasterScore> score = freshScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const RecipeResult written = addDynamic(score.get(), firstBeat(), QStringLiteral("mf"));
+    ASSERT_TRUE(written.ok) << written.problem.toStdString();
+
+    const QString text = buildMeasureWindow(score.get(), 1, 1);
+
+    //! `mf`, not a number: `Dynamic::dynamicText` is the inverse of the `setDynamicType(String)` the write
+    //! path uses, so the marking comes back as the string that went in.
+    EXPECT_TRUE(text.contains(QStringLiteral("dyn=mf"))) << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowShowsATieBetweenTwoNotes)
+{
+    const std::shared_ptr<MasterScore> score = freshScore();
+    ASSERT_TRUE(score != nullptr);
+
+    //! The test score's measure 1 is C4 D4 E4 F4, and a tie needs the SAME pitch twice - so beat 2 is
+    //! turned into another C4 first. ⚠️ Two writes rather than a hand-built tie: the point is the loop the
+    //! agent runs, and the agent would have to do exactly this.
+    ScoreAddress second;
+    second.measure = 1;
+    second.beat = 2;
+    const RecipeResult retuned = setNotePitch(score.get(), second, 1, 0, 60);
+    ASSERT_TRUE(retuned.ok) << retuned.problem.toStdString();
+
+    const RecipeResult written = addTie(score.get(), firstBeat(), 1, 0);
+    ASSERT_TRUE(written.ok) << written.problem.toStdString();
+
+    const QString text = buildMeasureWindow(score.get(), 1, 1);
+
+    EXPECT_TRUE(text.contains(QStringLiteral(" tie"))) << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowShowsWhereASlurStartsAndEnds)
+{
+    const std::shared_ptr<MasterScore> score = freshScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const RecipeResult written = addSlur(score.get(), firstBeat(), 1);
+    ASSERT_TRUE(written.ok) << written.problem.toStdString();
+
+    const QString text = buildMeasureWindow(score.get(), 1, 1);
+
+    //! ⛔ Both ends, because "a slur exists somewhere" is not actionable: the reader has to know WHICH
+    //! notes it covers. ⚠️ These come from the score's spanner map - if `Score::addSlur` ever stops
+    //! registering there, this test goes red rather than the digest quietly reporting nothing.
+    EXPECT_TRUE(text.contains(QStringLiteral("slur→"))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QStringLiteral("slur←"))) << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowShowsTheKeyAndWhereItChanges)
+{
+    const std::shared_ptr<MasterScore> score = freshScore();
+    ASSERT_TRUE(score != nullptr);
+
+    //! Two flats from measure 1. The window must state it, because a reader who asks for measures 1..1
+    //! alone has no other way to learn what key that bar is in (第 132 条 added it to the overview; a
+    //! window that starts mid-score needs it just as much).
+    const RecipeResult written = setKeySignature(score.get(), 1, -2);
+    ASSERT_TRUE(written.ok) << written.problem.toStdString();
+
+    const QString text = buildMeasureWindow(score.get(), 1, 1);
+
+    EXPECT_TRUE(text.contains(QStringLiteral("key=2 flats"))) << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowReportsAKeyChangeOnlyWhereItChanges)
+{
+    const std::shared_ptr<MasterScore> score = freshScore();
+    ASSERT_TRUE(score != nullptr);
+
+    //! m1 keeps the score's own key (none), m2 gets two flats. A key printed on EVERY line would be noise
+    //! that grows with the window; printed only where it changes (plus the first line), the reader sees
+    //! the modulation and nothing else.
+    const RecipeResult written = setKeySignature(score.get(), 2, -2);
+    ASSERT_TRUE(written.ok) << written.problem.toStdString();
+
+    const QString text = buildMeasureWindow(score.get(), 1, 2);
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    ASSERT_GE(lines.size(), 3) << text.toStdString();
+
+    //! Line 0 is the "measures 1..2 of 2" header; the per-measure lines follow.
+    EXPECT_TRUE(lines[1].contains(QStringLiteral("key=no sharps or flats"))) << text.toStdString();
+    EXPECT_TRUE(lines[2].contains(QStringLiteral("key=2 flats"))) << text.toStdString();
 }
