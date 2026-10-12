@@ -38,10 +38,28 @@ using namespace muse::agentharness;
 
 namespace {
 const muse::String DIGEST_SCORE(u"data/test.mscx");
+//! ⛔ A SECOND score, because clefs, repeats and endings cannot be made to appear in `test.mscx` without
+//! changing what every other test in this file reads (第 101 条: three of that round's test failures came
+//! from elements the test score already had). Measured on 2026-10-11, the layout score is:
+//!   m1 `|:` C4 D4 E4 F4 · m2 `:|` ×3 with the 1st ending, C4 D4 E4 F4 ·
+//!   m3 the 2nd ending, a BASS CLEF at its start, C3 D3 E3 F3 ·
+//!   m4 two bars in bass clef, a TREBLE CLEF change at t960, two bars in treble clef, and a double bar.
+//! ⚠️ Every fact in it was put there by hand-editing the XML, so the tests below are also the check that
+//! the FILE READER and this digest agree about what the file says - a clef change that never reached the
+//! engraving layer's clef list would read as "no clef change" here rather than as an error.
+//! ⛔ And each volta in it must keep BOTH halves (`<next>` at its start, `<prev>` where it ends): a file
+//! with only the first half loads cleanly and has no volta at all (see `LayoutTestScoreReallyContainsThe
+//! Endings` for the mechanism - it cost an hour of looking at the digest).
+const muse::String LAYOUT_SCORE(u"data/layout-test.mscx");
 
 std::shared_ptr<MasterScore> loadScore()
 {
     return std::shared_ptr<MasterScore>(mu::engraving::ScoreRW::readScore(DIGEST_SCORE));
+}
+
+std::shared_ptr<MasterScore> loadLayoutScore()
+{
+    return std::shared_ptr<MasterScore>(mu::engraving::ScoreRW::readScore(LAYOUT_SCORE));
 }
 } // namespace
 
@@ -337,4 +355,203 @@ TEST(AgentHarness_ScoreDigest, WindowReportsAKeyChangeOnlyWhereItChanges)
     //! Line 0 is the "measures 1..2 of 2" header; the per-measure lines follow.
     EXPECT_TRUE(lines[1].contains(QStringLiteral("key=no sharps or flats"))) << text.toStdString();
     EXPECT_TRUE(lines[2].contains(QStringLiteral("key=2 flats"))) << text.toStdString();
+}
+
+//! ── Window: the layout facts - clefs, repeats, endings (第 134 条) ─────────────────────────────
+//!
+//! ⛔ WHY THESE EXIST. The window could describe pitch, duration, key, time signature, articulations,
+//! dynamics, ties and slurs - and said NOTHING about the clef (which decides what every printed pitch
+//! MEANS) or the repeat structure (which decides how many times a passage is played at all). Both halves
+//! were reachable and invisible on 2026-10-11: the toolset itself can add a clef
+//! (`command://notation/add-clef-violin` / `add-clef-bass` are in the list the agent is handed), and the
+//! repeat signs come from the user's own hands. A read tool that cannot see either is describing a
+//! different score from the one on the screen.
+//!
+//! ⚠️ The assertions read the digest of a file whose contents were fixed by hand, so a clef that the
+//! engraving layer never learned about shows up here as a missing token rather than as a silent success.
+
+namespace {
+//! The per-measure line for `m<N>` out of a window, so a test can say WHICH measure it is talking about
+//! instead of "the window contains this string somewhere" (which would pass even if every token were on
+//! the wrong line).
+QString lineForMeasure(const QString& window, int measure)
+{
+    const QStringList lines = window.split(QLatin1Char('\n'));
+    const QString prefix = QStringLiteral("m%1 ").arg(measure);
+    for (const QString& line : lines) {
+        if (line.startsWith(prefix)) {
+            return line;
+        }
+    }
+    return QString();
+}
+} // namespace
+
+TEST(AgentHarness_ScoreDigest, WindowShowsTheClefAndOnlyWhereItChanges)
+{
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const QString text = buildMeasureWindow(score.get(), 1, 4);
+
+    //! The clef is stated on the window's first measure - a reader who asks for measures 5..8 alone has
+    //! no other way to learn it - and afterwards only where it changes, exactly like `key=`.
+    EXPECT_TRUE(lineForMeasure(text, 1).contains(QStringLiteral("clef=G"))) << text.toStdString();
+    EXPECT_TRUE(lineForMeasure(text, 3).contains(QStringLiteral("clef=F"))) << text.toStdString();
+    //! ⛔ Measure 2 is in the SAME clef as measure 1, so it must say nothing: a clef repeated on every
+    //! bar is the noise this rule exists to avoid.
+    EXPECT_FALSE(lineForMeasure(text, 2).contains(QStringLiteral("clef="))) << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowStatesAClefEvenWhenTheWindowStartsMidScore)
+{
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    //! ⛔ A window that starts at measure 3 must not answer "no clef mentioned" - the clef in force is a
+    //! fact about that bar whether or not the window saw the change happen.
+    const QString text = buildMeasureWindow(score.get(), 3, 3);
+    EXPECT_TRUE(lineForMeasure(text, 3).contains(QStringLiteral("clef=F"))) << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowReportsAClefChangeInsideAMeasureAtItsOwnTick)
+{
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    //! ⛔ A clef change is NOT measure-aligned: this one is at t960 of the LAST measure. An
+    //! implementation that sampled the clef at measure starts would report measure 4 as bass clef and
+    //! never mention the change at all - so this assertion is what pins the position-accurate walk.
+    const QString text = buildMeasureWindow(score.get(), 4, 4);
+    const QString line = lineForMeasure(text, 4);
+    ASSERT_FALSE(line.isEmpty()) << text.toStdString();
+
+    EXPECT_TRUE(line.contains(QStringLiteral("t960 s1 clef=G"))) << text.toStdString();
+    //! And measure 4 itself starts in the OLD clef (bass), so the prefix must say F: a mid-measure change
+    //! reported as if it were the measure's clef would be wrong about the first two beats.
+    EXPECT_TRUE(line.contains(QStringLiteral("clef=F"))) << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowPutsAClefChangeInFrontOfTheNotesItAppliesTo)
+{
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const QString line = lineForMeasure(buildMeasureWindow(score.get(), 4, 4), 4);
+    ASSERT_FALSE(line.isEmpty());
+
+    //! ⛔ Order is meaning here: a clef changes what the notes AFTER it are. Printing the token after them
+    //! would describe the same objects while telling the reader the opposite thing.
+    const int clefAt = line.indexOf(QStringLiteral("clef=G"));
+    const int noteAfter = line.indexOf(QStringLiteral("[G4]"));
+    ASSERT_GE(clefAt, 0) << line.toStdString();
+    ASSERT_GE(noteAfter, 0) << line.toStdString();
+    EXPECT_LT(clefAt, noteAfter) << line.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowReportsRepeatsAndHowManyTimesTheyPlay)
+{
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const QString text = buildMeasureWindow(score.get(), 1, 2);
+
+    EXPECT_TRUE(lineForMeasure(text, 1).contains(QStringLiteral("start-repeat"))) << text.toStdString();
+    //! ⛔ The COUNT, not just "there is a repeat": `:|` with a 3 over it is played three times, and a
+    //! reader that only learns "there is a repeat here" will count the bars wrong.
+    EXPECT_TRUE(lineForMeasure(text, 2).contains(QStringLiteral("end-repeat×3"))) << text.toStdString();
+    //! ⚠️ And the score's own file says `<endRepeat>3</endRepeat>`, so this also checks that the repeat
+    //! count survived the file reader - not just that the token is spelled the way the writer meant.
+}
+
+TEST(AgentHarness_ScoreDigest, LayoutTestScoreReallyContainsTheEndings)
+{
+    //! ⛔ THE INPUT, PINNED FIRST. Everything below reads the endings out of this file, and on 2026-10-11
+    //! the file was WRONG in a way that looks exactly like the digest being wrong: a spanner is written in
+    //! TWO halves (`<Spanner><Volta>…<next><location>` where it starts, `<Spanner><prev>…` where it ends),
+    //! and `ReadContext::addConnectorInfo` only adds a chain to the score once `finished()` holds - so a
+    //! file carrying the `<next>` half alone loads without a single warning and simply has no volta. The
+    //! digest then reported no endings, which is the right answer about the score it was handed and the
+    //! wrong answer about the score I meant to write (第 100 条的形状: 三件各自为真的事拼出一个合理但全错的
+    //! 故事 - there, a stale `Measure*`; here, a half-written spanner).
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    std::vector<Fraction> starts;
+    for (const auto& entry : score->spannerMap().map()) {
+        const Spanner* spanner = entry.second;
+        if (spanner && spanner->isVolta()) {
+            starts.push_back(spanner->tick());
+        }
+    }
+
+    ASSERT_EQ(starts.size(), 2u) << "the test score no longer carries its two voltas - check that each one "
+                                    "still has BOTH halves (`<next>` at its start, `<prev>` at its end)";
+    //! m2 (tick 1920) and m3 (tick 3840) in 4/4 - the 1st and 2nd endings the window test below names.
+    //! ⚠️ Compared as TICKS: `Fraction` normalises (`1920/1920` is `1/1`), so asserting `Fraction(1920, 1)`
+    //! compares against a whole note and fails for a reason that has nothing to do with the score.
+    ASSERT_EQ(starts[0].ticks(), 1920);
+    ASSERT_EQ(starts[1].ticks(), 3840);
+}
+
+TEST(AgentHarness_ScoreDigest, WindowNamesTheEndingsAndTheMeasuresTheyCover)
+{
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const QString text = buildMeasureWindow(score.get(), 1, 4);
+
+    //! ⛔ Both ends of each ending, because "there is a volta here" is not actionable: the reader needs
+    //! to know WHICH bars are the first time through and which are the second.
+    EXPECT_TRUE(text.contains(QStringLiteral("endings (voltas): 1st ending m2-m2, 2nd ending m3-m3")))
+        << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowLeavesOutEndingsThatDoNotTouchIt)
+{
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    //! ⛔ The failure this guards: a per-score line pasted into every window. A reader asking about
+    //! measure 1 would be told about endings in measures 2-3 and could go looking for them there.
+    const QString text = buildMeasureWindow(score.get(), 1, 1);
+    EXPECT_FALSE(text.contains(QStringLiteral("endings"))) << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, WindowReportsANonNormalBarline)
+{
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const QString text = buildMeasureWindow(score.get(), 1, 4);
+    EXPECT_TRUE(lineForMeasure(text, 4).contains(QStringLiteral("barline=double"))) << text.toStdString();
+    //! ⚠️ An ordinary barline is not reported - otherwise every measure of every score carries a token
+    //! that says nothing.
+    EXPECT_FALSE(lineForMeasure(text, 1).contains(QStringLiteral("barline="))) << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, OverviewReportsTheRepeatStructure)
+{
+    const std::shared_ptr<MasterScore> score = loadLayoutScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const QString text = buildScoreOverview(score.get());
+
+    EXPECT_TRUE(text.contains(QStringLiteral("repeats: m1-m2 ×3"))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QStringLiteral("endings (voltas): 1st ending m2-m2, 2nd ending m3-m3")))
+        << text.toStdString();
+}
+
+TEST(AgentHarness_ScoreDigest, OverviewSaysSoWhenThereAreNoRepeats)
+{
+    const std::shared_ptr<MasterScore> score = loadScore();
+    ASSERT_TRUE(score != nullptr);
+
+    const QString text = buildScoreOverview(score.get());
+
+    //! ⛔ An absent line and "there are none" are different answers, and only one of them can be acted
+    //! on: a reader that finds no `repeats:` line cannot tell whether the score has no repeats or
+    //! whether the tool forgot to look. Same reason the overview says `empty measures: none`.
+    EXPECT_TRUE(text.contains(QStringLiteral("repeats: none"))) << text.toStdString();
+    EXPECT_FALSE(text.contains(QStringLiteral("endings"))) << text.toStdString();
 }

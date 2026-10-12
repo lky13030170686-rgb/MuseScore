@@ -1678,17 +1678,25 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
     static const std::vector<ToolSpec> table = {
         ToolSpec{
             QStringLiteral("score_overview"),
-            QStringLiteral("Summarise the open score: title, measures, parts/staves, time signatures, "
-                           "per-staff note counts and pitch ranges, and which measures are empty. "
+            QStringLiteral("Summarise the open score: title, measures, parts/staves, time signatures, key "
+                           "signatures, the repeat structure and any 1st/2nd endings, per-staff note counts "
+                           "and pitch ranges, and which measures are empty. "
                            "Bounded in size, so it is always safe to call first."),
             schemaObject({}),
             toolScoreOverview,
         },
         ToolSpec{
             QStringLiteral("score_window"),
-            QStringLiteral("Read one measure range of the open score as compact per-measure lines "
-                           "(pitch names, staff, voice, duration in ticks, and rests). "
-                           "Measures are 1-based and inclusive."),
+            QStringLiteral("Read one measure range of the open score. Each line is "
+                           "`m<N> <timesig> key=… clef=… <repeat marks>: <tokens>`, and a token is "
+                           "`t<tick> s<staff> v<voice>` plus what is there: `[C4 E4]/480` (pitches and "
+                           "duration in ticks), `rest/480`, `art=<symbol>`, `dyn=<marking>`, ` tie`, "
+                           "`slur→`/`slur←`. `clef=G`/`clef=F`/`clef=C3` (etc.) is the clef in force, and a "
+                           "clef change inside a measure appears as its own token at the tick it takes "
+                           "effect; `start-repeat` / `end-repeat×N` are repeat barlines (the section is "
+                           "played N times, so ×2 is the ordinary single repeat), `barline=` is any other "
+                           "non-normal barline, and a line above the measures lists the endings (voltas) "
+                           "with their measure numbers. Measures are 1-based and inclusive."),
             schemaObject({
                 { QStringLiteral("first"), intProperty(QStringLiteral("First measure (1-based).")) },
                 { QStringLiteral("last"), intProperty(QStringLiteral("Last measure (1-based, inclusive). Defaults to `first`.")) },

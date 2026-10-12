@@ -21,6 +21,7 @@
  */
 #include "scoredigest.h"
 
+#include <algorithm>
 #include <QMap>
 #include <QStringList>
 
@@ -39,6 +40,7 @@
 #include "engraving/dom/note.h"
 #include "engraving/dom/tie.h"
 #include "engraving/dom/staff.h"
+#include "engraving/dom/volta.h"
 #include "engraving/types/symnames.h"
 #include "engraving/types/typesconv.h"
 
@@ -228,6 +230,287 @@ QString keySignatureLine(const Score* score)
 
     return line;
 }
+
+//! ══ Layout facts: clefs, repeat structure, endings (第 134 条) ══════════════════════════════════════
+//!
+//! ⛔ WHY THIS EXISTS. The window could describe pitch, duration, key, time signature, articulations,
+//! dynamics, ties and slurs - and said NOTHING about the two layout facts that decide how the page and the
+//! playback are actually organised: **the clef** (which decides what every printed pitch MEANS) and **the
+//! repeat structure** (which decides how many times a passage is played at all).
+//!
+//! Measured 2026-10-11, both halves were reachable and invisible:
+//!   * the CLEF is writable by the toolset itself - `command://notation/add-clef-violin` /
+//!     `add-clef-bass` are in the command list the agent is given, and they end in
+//!     `EditClef::undoChangeClef` - so the agent could change the clef and then be unable to see it;
+//!   * the REPEAT signs come from the user's own hands (`Measure::drop` for a barline ->
+//!     `undoChangeProperty(Pid::REPEAT_START/REPEAT_END)`), which is the half of the score the timeline
+//!     records but no tool can read back.
+
+//! A measure index (1-based) for a tick, or -1 when the tick is in no measure at all.
+//! ⚠️ The digest counts measures by POSITION (`firstMeasure()` + `nextMeasure()`), not by
+//! `Measure::measureNumber()`: an anacrusis or a numbering offset would make the two disagree, and every
+//! other line in this file (and every address the write tools take) speaks positions.
+int measurePositionAtTick(const Score* score, const Fraction& tick)
+{
+    int index = 1;
+    for (const Measure* measure = score->firstMeasure(); measure; measure = measure->nextMeasure(), ++index) {
+        if (tick >= measure->tick() && tick < measure->endTick()) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+//! The clef in force on a staff at a tick, as the FILE FORMAT's own tag ("G", "F", "C3", "PERC", "TAB8"...).
+//!
+//! ⛔ `TConv::toXml(ClefType)`, NOT `TConv::userName`: the user name is TRANSLATABLE ("Treble clef" /
+//! 高音谱号), so using it would make the same score read differently depending on the UI language - and a
+//! fact that changes with the locale is not something two readers can agree on. The xml tag is also the
+//! exact string `TConv::fromXml` accepts, so the read side and any future write side speak one vocabulary
+//! (the same rule `describeKeySignature` and `TConv::toXml(DynamicType)` already follow here).
+//!
+//! ⚠️ Read from `Staff::clef()`, i.e. the CLEF LIST, rather than by scanning `Clef` elements:
+//!   * the list is what the engraving layer itself asks when it needs to know which clef applies at a
+//!     tick (it is maintained by `Segment::add` whenever a clef element is added - including while the
+//!     file is being read), so it cannot disagree with the drawn clef;
+//!   * it answers for ticks where NO clef element exists at all: a staff with no explicit clef still has
+//!     one, coming from the instrument via `Staff::clefType`'s fallback. A segment scan would report
+//!     "no clef" for every ordinary staff in the score.
+QString clefNameAt(const Score* score, size_t staffIdx, const Fraction& tick)
+{
+    const Staff* staff = score ? score->staff(staffIdx) : nullptr;
+    if (!staff) {
+        return QString();
+    }
+
+    return QString(TConv::toXml(staff->clef(tick)).toQLatin1String());
+}
+
+//! One clef change: the tick it TAKES EFFECT at, which staff, and what it is.
+struct ClefChange
+{
+    Fraction tick;
+    int staff = 0;          //!< 0-based, printed as `s<staff + 1>`
+    QString name;
+};
+
+//! Every clef change that takes effect inside `[from, to)`, all staves, in tick order.
+//!
+//! ⛔ WHY NOT "sample the clef at each measure start and report the difference". A clef change is NOT
+//! measure-aligned: MuseScore writes the clef that starts the next bar at the END of the previous one
+//! (that is where it is drawn - before the barline), and a change in the middle of a measure is ordinary
+//! notation. Sampling measure starts would report a mid-measure change one measure LATE - a
+//! plausible-looking wrong bar number, which is the one failure this subsystem exists to refuse.
+//!
+//! ⚠️ The walk goes through `Staff::nextClefTick()`, which returns `score->endTick()` as its "there is no
+//! next clef" sentinel. That sentinel can never become a phantom change here: the range is half-open, so
+//! a tick equal to the window's end is excluded, and the window's end is never past the score's.
+std::vector<ClefChange> clefChangesIn(const Score* score, const Fraction& from, const Fraction& to)
+{
+    std::vector<ClefChange> out;
+    if (!score || to <= from) {
+        return out;
+    }
+
+    for (size_t i = 0; i < score->nstaves(); ++i) {
+        const Staff* staff = score->staff(i);
+        if (!staff) {
+            continue;
+        }
+
+        Fraction cursor = from;
+        while (true) {
+            const Fraction next = staff->nextClefTick(cursor);
+            //! `next <= cursor` cannot happen with the current implementation (the lookup is an
+            //! `upper_bound`), but a loop whose exit depends on that is a hang waiting for an upstream
+            //! change - so it is checked rather than assumed.
+            if (next <= cursor || next >= to) {
+                break;
+            }
+
+            const QString name = clefNameAt(score, i, next);
+            if (!name.isEmpty()) {
+                out.push_back(ClefChange { next, int(i), name });
+            }
+            cursor = next;
+        }
+    }
+
+    std::stable_sort(out.begin(), out.end(), [](const ClefChange& a, const ClefChange& b) {
+        return a.tick < b.tick;
+    });
+
+    return out;
+}
+
+//! `1st`, `2nd`, `3rd`, `11th`... for the volta endings. Plain English on purpose: the digest does not go
+//! through the translation layer (see `clefNameAt`), and "ending 2" alone does not say whether it is a
+//! number of an ending or a count of them.
+QString ordinal(int n)
+{
+    const int lastTwo = n % 100;
+    QString suffix = QStringLiteral("th");
+    if (lastTwo < 11 || lastTwo > 13) {
+        switch (n % 10) {
+        case 1: suffix = QStringLiteral("st");
+            break;
+        case 2: suffix = QStringLiteral("nd");
+            break;
+        case 3: suffix = QStringLiteral("rd");
+            break;
+        default:
+            break;
+        }
+    }
+
+    return QString::number(n) + suffix;
+}
+
+//! The endings (voltas, "1st/2nd time bars") that INTERSECT `[from, to)`, as `1st ending m3-m4`.
+//!
+//! ⛔ An ending is a SPAN, which is why this is a window-level line rather than a per-measure token: a
+//! token printed only where the ending starts hides that the following measures are inside it, and one
+//! repeated on every measure it covers costs a token per bar to say the same thing. Two explicit measure
+//! numbers answer "how does this repeat work" in one line.
+//!
+//! ⛔ `tick2()` is the tick the ending ENDS AT, i.e. the beginning of the measure after it - so the last
+//! covered measure is the one containing `tick2 - 1 tick`, not the one containing `tick2`. Getting this
+//! wrong prints an ending one measure too long, and a range that is off by one reads completely ordinary
+//! (第 101 条 was exactly this shape with a hairpin's end).
+QStringList voltaSpans(const Score* score, const Fraction& from, const Fraction& to)
+{
+    QStringList out;
+    if (!score || !score->firstMeasure()) {
+        return out;
+    }
+
+    for (const auto& entry : score->spannerMap().map()) {
+        const Spanner* spanner = entry.second;
+        if (!spanner || !spanner->isVolta()) {
+            continue;
+        }
+
+        const Fraction start = spanner->tick();
+        const Fraction end = spanner->tick2();
+        //! Half-open on both sides: an ending that merely touches the window is not in it.
+        if (end <= from || start >= to) {
+            continue;
+        }
+
+        const Volta* volta = toVolta(spanner);
+        QStringList names;
+        for (int ending : volta->endings()) {
+            names.append(ordinal(ending));
+        }
+        const QString what = names.isEmpty()
+                             ? QStringLiteral("unnumbered ending")
+                             : QStringLiteral("%1 ending").arg(names.join(QLatin1Char('+')));
+
+        const int firstMeasure = measurePositionAtTick(score, start);
+        const int lastMeasure = measurePositionAtTick(score, Fraction::fromTicks(std::max(end.ticks() - 1, start.ticks())));
+        if (firstMeasure < 1 || lastMeasure < 1) {
+            //! Said rather than guessed: an ending anchored outside any measure is a broken score, and
+            //! inventing a measure number for it would be the digest making something up.
+            out.append(QStringLiteral("%1 (measures could not be resolved)").arg(what));
+        } else {
+            out.append(QStringLiteral("%1 m%2-m%3").arg(what).arg(firstMeasure).arg(lastMeasure));
+        }
+    }
+
+    return out;
+}
+
+//! The repeat structure of the whole score: every `|: ... :|` section as `m1-m4 ×2`.
+//!
+//! ⛔ `repeatStart()` / `repeatEnd()` are the measures' own flags, not the drawn barlines. They are what
+//! the file format stores (`<startRepeat/>`, `<endRepeat>N</endRepeat>`), what the user's own "drop a
+//! repeat barline" path sets (`Measure::drop` -> `undoChangeProperty(Pid::REPEAT_START/REPEAT_END)`), and
+//! what the playback order (`RepeatList`) is computed from. Reading the glyphs instead would answer a
+//! different question than "how many times does this actually play".
+//!
+//! ⚠️ `×N` is the number of times the section is PLAYED (the "play count" MuseScore prints over the
+//! barline); ×2 is the ordinary single repeat. It is written out even when it is 2: a bare `end-repeat`
+//! would leave the reader to guess a convention that lives only in the tool description.
+QString repeatStructure(const Score* score)
+{
+    if (!score || !score->firstMeasure()) {
+        return QStringLiteral("none");
+    }
+
+    QStringList sections;
+    int openedAt = -1;          //!< 1-based position of the `|:`, -1 while no repeat is open
+    int index = 0;
+
+    for (const Measure* measure = score->firstMeasure(); measure; measure = measure->nextMeasure(), ++index) {
+        if (measure->repeatStart() && openedAt < 0) {
+            openedAt = index + 1;
+        }
+        if (measure->repeatEnd()) {
+            //! An `:|` with no `|:` repeats from the beginning of the piece - that is the notation's own
+            //! meaning, so measure 1 is the honest answer rather than a missing one.
+            const int start = openedAt >= 0 ? openedAt : 1;
+            sections.append(QStringLiteral("m%1-m%2 ×%3").arg(start).arg(index + 1).arg(measure->repeatCount()));
+            openedAt = -1;
+        }
+    }
+
+    //! A `|:` that never closes changes nothing about playback - saying so is better than dropping it
+    //! silently, which would read as "this score has no repeats here".
+    if (openedAt >= 0) {
+        sections.append(QStringLiteral("m%1- (start-repeat with no end-repeat)").arg(openedAt));
+    }
+
+    return sections.isEmpty() ? QStringLiteral("none") : sections.join(QStringLiteral(", "));
+}
+
+//! The layout tokens of one measure that belong to its HEAD (before the notes): the clef(s) in force at
+//! its start, the repeat marks, and any non-normal barline.
+//!
+//! `lastClef` carries the last clef this digest PRINTED per staff, so the state is written on the window's
+//! first measure and afterwards only where it changes - the same rule `key=` follows, and for the same
+//! reason: a reader who asks for measures 5..8 alone must still learn the clef, and a reader of the whole
+//! score must not be told the same clef eleven times.
+QString measureLayoutTokens(const Score* score, const Measure* measure, bool firstOfWindow, QMap<int, QString>& lastClef)
+{
+    QStringList tokens;
+
+    for (size_t i = 0; i < score->nstaves(); ++i) {
+        const QString name = clefNameAt(score, i, measure->tick());
+        if (name.isEmpty()) {
+            continue;
+        }
+        if (firstOfWindow || lastClef.value(int(i)) != name) {
+            //! Staff 1 bare (`clef=G`), the others named - the same shape `key signatures (staff 1)` uses
+            //! in the overview: the common single-staff case stays short, and a grand staff still says
+            //! which staff it means.
+            tokens.append(i == 0 ? QStringLiteral("clef=%1").arg(name)
+                                 : QStringLiteral("clef(s%1)=%2").arg(i + 1).arg(name));
+        }
+        lastClef[int(i)] = name;
+    }
+
+    if (measure->repeatStart()) {
+        tokens.append(QStringLiteral("start-repeat"));
+    }
+    if (measure->repeatEnd()) {
+        tokens.append(QStringLiteral("end-repeat×%1").arg(measure->repeatCount()));
+    }
+
+    //! Any other non-normal end barline (`double`, `end`, `dashed`, `heavy`, ...). The repeat barline
+    //! types are deliberately NOT repeated here: the two tokens above already say it, and saying one fact
+    //! twice in two vocabularies invites the reader to look for a difference between them.
+    const BarLineType barline = measure->endBarLineType();
+    if (barline != BarLineType::NORMAL && barline != BarLineType::START_REPEAT && barline != BarLineType::END_REPEAT
+        && barline != BarLineType::END_START_REPEAT) {
+        tokens.append(QStringLiteral("barline=%1").arg(QString(TConv::toXml(barline).toQLatin1String())));
+    }
+
+    if (tokens.isEmpty()) {
+        return QString();
+    }
+
+    return QStringLiteral(" ") + tokens.join(QLatin1Char(' '));
+}
 } // namespace
 
 QString buildScoreOverview(const Score* score)
@@ -262,6 +545,23 @@ QString buildScoreOverview(const Score* score)
     const QString keys = keySignatureLine(score);
     if (!keys.isEmpty()) {
         lines.append(keys);
+    }
+
+    //! ── The shape of the piece (第 134 条) ────────────────────────────────────────────────
+    //! The repeat structure and the endings are score-level facts: they are what decides how many times a
+    //! passage is heard and which bar is played when. Both are printed here (with `none` said out loud
+    //! for the repeats, the way `empty measures: none` is) because "this score has no repeats" is itself
+    //! an answer a reader needs before counting bars.
+    lines.append(QStringLiteral("repeats: %1").arg(repeatStructure(score)));
+
+    //! ⚠️ Guarded rather than passed `firstMeasure()->tick()` directly: a score with no measures at all
+    //! (which this function is reachable with - the window builder reports it as "(score has no
+    //! measures)") would otherwise be dereferenced on the way into a function that handles it fine.
+    if (score->firstMeasure()) {
+        const QStringList endings = voltaSpans(score, score->firstMeasure()->tick(), score->endTick());
+        if (!endings.isEmpty()) {
+            lines.append(QStringLiteral("endings (voltas): %1").arg(endings.join(QStringLiteral(", "))));
+        }
     }
 
     //! ── Per staff ────────────────────────────────────────────────────────────────────────
@@ -387,19 +687,42 @@ QString buildMeasureWindow(const Score* score, int firstMeasure, int lastMeasure
 
     const int last = std::min(lastMeasure, total);
 
-    QStringList lines;
-    lines.append(QStringLiteral("measures %1..%2 of %3").arg(firstMeasure).arg(last).arg(total));
-
     //! The key in force, carried across the loop so a change can be reported and a repeat cannot.
     QString previousKey;
 
-    //! The slurs that can touch this window, read once (see `slursInWindow`).
-    const Measure* lastMeasurePtr = score->firstMeasure();
-    for (int i = 1; lastMeasurePtr && i < last; ++i) {
+    //! The window's own tick range, and the measure pointers that define it. Everything that is a SPAN
+    //! (slurs, endings) or a tick-keyed fact (clefs) is read once against this range instead of per
+    //! measure.
+    const Measure* firstMeasurePtr = score->firstMeasure();
+    for (int i = 1; firstMeasurePtr && i < firstMeasure; ++i) {
+        firstMeasurePtr = firstMeasurePtr->nextMeasure();
+    }
+    const Measure* lastMeasurePtr = firstMeasurePtr;
+    for (int i = firstMeasure; lastMeasurePtr && i < last; ++i) {
         lastMeasurePtr = lastMeasurePtr->nextMeasure();
     }
+    const Fraction windowStart = firstMeasurePtr ? firstMeasurePtr->tick() : score->firstMeasure()->tick();
     const Fraction windowEnd = lastMeasurePtr ? lastMeasurePtr->endTick() : Fraction(0, 1);
-    const std::vector<SlurSpan> slurs = slursInWindow(score, score->firstMeasure()->tick(), windowEnd);
+
+    QStringList lines;
+    lines.append(QStringLiteral("measures %1..%2 of %3").arg(firstMeasure).arg(last).arg(total));
+
+    //! ⛔ The endings (voltas) that touch this window, as a WINDOW-level line rather than a per-measure
+    //! token: an ending is a span, so "1st ending m3-m4" answers "how does this repeat work" in one line -
+    //! a token printed only where the ending starts would hide that the following bars are inside it, and
+    //! one repeated per covered bar would spend a token per bar to say the same thing (第 134 条).
+    const QStringList endings = voltaSpans(score, windowStart, windowEnd);
+    if (!endings.isEmpty()) {
+        lines.append(QStringLiteral("endings (voltas): %1").arg(endings.join(QStringLiteral(", "))));
+    }
+
+    //! The slurs and the clef changes that can touch this window, read once (see `slursInWindow` /
+    //! `clefChangesIn`).
+    const std::vector<SlurSpan> slurs = slursInWindow(score, windowStart, windowEnd);
+    const std::vector<ClefChange> clefs = clefChangesIn(score, windowStart, windowEnd);
+
+    //! The clef this digest has already PRINTED per staff (see `measureLayoutTokens`).
+    QMap<int, QString> lastClef;
 
     const auto slurStartsAt = [&slurs](const Fraction& tick, int track) {
         for (const SlurSpan& span : slurs) {
@@ -430,11 +753,37 @@ QString buildMeasureWindow(const Score* score, int firstMeasure, int lastMeasure
         const TimeSigFrac timesig(measure->timesig());
         QStringList content;
 
+        //! ⛔ Clef changes that take effect INSIDE this measure, in tick order. The one at the measure's
+        //! very start is the layout prefix's job; these are printed in front of the notes they apply to,
+        //! because a clef changes what the notes AFTER it mean - a token printed after them would read as
+        //! if it applied to what came before.
+        //! ⚠️ The cursor only moves forward, so a change at a tick where no chordrest segment exists (an
+        //! empty beat) is attached to the next segment in the same measure; the token still prints the
+        //! clef's OWN tick, so the reader is not told the wrong position.
+        std::vector<ClefChange> insideClefs;
+        for (const ClefChange& change : clefs) {
+            if (change.tick > measure->tick() && change.tick < measure->endTick()) {
+                insideClefs.push_back(change);
+            }
+        }
+        size_t clefCursor = 0;
+
         for (const Segment* segment = measure->first(SegmentType::ChordRest); segment;
              segment = segment->next(SegmentType::ChordRest)) {
             //! Relative tick inside the measure, because that is what the address layer speaks
             //! (`{measure, beat}`) and repeating an absolute tick would invite arithmetic errors.
             const Fraction rel = segment->tick() - measure->tick();
+
+            while (clefCursor < insideClefs.size() && insideClefs[clefCursor].tick <= segment->tick()) {
+                const ClefChange& change = insideClefs[clefCursor++];
+                content.append(QStringLiteral("t%1 s%2 clef=%3")
+                               .arg((change.tick - measure->tick()).ticks())
+                               .arg(change.staff + 1)
+                               .arg(change.name));
+                //! Recorded as printed, so the next measure's prefix does not repeat a clef the reader
+                //! has already been told about.
+                lastClef[change.staff] = change.name;
+            }
 
             for (track_idx_t track = 0; track < score->ntracks(); ++track) {
                 EngravingItem* item = segment->element(track);
@@ -557,14 +906,35 @@ QString buildMeasureWindow(const Score* score, int firstMeasure, int lastMeasure
             previousKey = key;
         }
 
+        //! ⚠️ Guarded rather than assumed: with the current `nextClefTick` a change always lands on a
+        //! chordrest segment's tick or before one, but a measure whose only clef change sits after its
+        //! last segment (and which therefore has no chordrest segment at all) would otherwise be dropped
+        //! SILENTLY - and an omission is indistinguishable from "there is no clef change".
+        while (clefCursor < insideClefs.size()) {
+            const ClefChange& change = insideClefs[clefCursor++];
+            content.append(QStringLiteral("t%1 s%2 clef=%3")
+                           .arg((change.tick - measure->tick()).ticks())
+                           .arg(change.staff + 1)
+                           .arg(change.name));
+            lastClef[change.staff] = change.name;
+        }
+
+        //! ── The layout of this measure (第 134 条) ────────────────────────────────────────────
+        //! The clef(s) in force, the repeat marks and any non-normal barline - see `measureLayoutTokens`.
+        //! Placed with the key, i.e. as part of the measure's HEAD: these are properties of the whole bar,
+        //! not of a note in it.
+        const QString layoutPrefix = measureLayoutTokens(score, measure, measureIndex == firstMeasure - 1, lastClef);
+
         if (content.isEmpty()) {
-            lines.append(QStringLiteral("m%1 %2/%3%4: (empty)")
-                         .arg(measureIndex + 1).arg(timesig.numerator()).arg(timesig.denominator())
-                         .arg(keyPrefix));
-        } else {
-            lines.append(QStringLiteral("m%1 %2/%3%4: %5")
+            lines.append(QStringLiteral("m%1 %2/%3%4%5: (empty)")
                          .arg(measureIndex + 1).arg(timesig.numerator()).arg(timesig.denominator())
                          .arg(keyPrefix)
+                         .arg(layoutPrefix));
+        } else {
+            lines.append(QStringLiteral("m%1 %2/%3%4%5: %6")
+                         .arg(measureIndex + 1).arg(timesig.numerator()).arg(timesig.denominator())
+                         .arg(keyPrefix)
+                         .arg(layoutPrefix)
                          .arg(content.join(QStringLiteral(" | "))));
         }
     }
