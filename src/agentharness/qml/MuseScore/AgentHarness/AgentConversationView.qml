@@ -28,11 +28,16 @@ import Muse.UiComponents
 /*!
     The agent conversation: the transcript, the live stream, and the last error.
 
-    \b Why it is a component. The notation page's Agent panel and the Agent page both show this
-    conversation, and they must show the SAME thing: the transcript is derived from the session log
-    (`agentTranscript()`), so two hand-written lists would be two projections of one record - free to
-    disagree about what was said. The two surfaces differ only in how much room they get, and that is
-    the caller's business (it sets `Layout.fillHeight` and a minimum), not this file's.
+    \b Why it is a component. The notation page's Agent panel, the Agent page's centre column and that
+    page's right column (its "Conversation" tab, 第 135 条) all show this conversation, and they must show
+    the SAME thing: the transcript is derived from the session log (`agentTranscript()`), so two
+    hand-written lists would be two projections of one record - free to disagree about what was said. The
+    surfaces differ only in how much room they get, and that is the caller's business (it sets
+    `Layout.fillHeight` and a minimum), not this file's.
+
+    \b What it deliberately does NOT contain: the composer. Every surface that can send a message composes
+    this view with `AgentComposer` beside it, so "can this be sent" is decided in exactly one place
+    (第 124 条) - which is also what makes this component safe to show twice at once.
 
     \b Why the stream and the error live in here too. They sit between the list and the input, in that
     order, on both surfaces: the stream is what the agent is saying right now, the error is why it

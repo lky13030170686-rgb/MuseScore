@@ -207,6 +207,24 @@ ToolResult muse::agentharness::toolCommandDispatch(const QJsonObject& args, cons
         return ToolResult::failure(QStringLiteral("`command` is required (a command://notation/... URI)"));
     }
 
+    //! ── The enabled gate (第 136 条) ─────────────────────────────────────────────────────────────
+    //! ⛔ WHY THIS IS NOT REDUNDANT WITH THE HANDLER'S OWN CHECK. The notation handler refuses a disabled
+    //! command by returning `NotSupported`, and that refusal NEVER REACHES THIS TOOL: `dispatch()` is
+    //! asynchronous (`make_promise` -> `Async::call`), so the response settles after `dispatchCommand`
+    //! has already read its error string - which is still empty. Measured 2026-10-13: both
+    //! `command://notation/copy` with nothing selected and `command://notation/add-clef-bass` with no
+    //! cursor came back as `dispatched …` while nothing happened, and 第 134 条's agent then spent its
+    //! whole step budget retrying a write that could never land.
+    //! ⚠️ The predicate is EXACTLY the handler's (`NotationActionController::registerCommand` refuses on
+    //! `!commandsState()->commandState(command).enabled`, and `FieldController::isCommandEnabled` asks the
+    //! same state object), so a command that would have worked cannot be refused here - the only change is
+    //! that the caller is TOLD instead of being left to infer it from a score that did not move.
+    //! ⚠️ An unknown URI is caught too: the state's module lookup fails and the default `CommandState` is
+    //! `enabled = false`.
+    if (!ctx.field->isCommandEnabled(command)) {
+        return ToolResult::failure(commandNotEnabledMessage(command));
+    }
+
     //! ── The fence ─────────────────────────────────────────────────────────────────────────────
     //! `expectRevision` is OPTIONAL, and that is a deliberate compromise. Requiring it would make every
     //! write fail for a model that has not read the score yet, and the first thing it would do is
@@ -2321,4 +2339,10 @@ QStringList muse::agentharness::toolNames()
         names.append(spec.name);
     }
     return names;
+}
+
+QString muse::agentharness::commandNotEnabledMessage(const QString& command)
+{
+    return QStringLiteral("`%1` is not enabled right now, so dispatching it would be silently "
+                          "ignored").arg(command);
 }

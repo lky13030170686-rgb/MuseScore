@@ -92,6 +92,22 @@ static const std::vector<Command> UNDO_REDO_COMMANDS = {
     REDO_COMMAND
 };
 
+//! The two clef commands and the clef each inserts - the SAME pairing the handlers are registered with in
+//! `notationactioncontroller.cpp` (a third clef command has to be added in both places; this one is what
+//! makes a no-op impossible to report as success).
+//!
+//! ⛔ WHY THESE TWO NEED A PREDICATE AT ALL. Every other command is either always meaningful or covered by
+//! a generic rule above. These two end in `EditClef::canInsertClef`, which needs the input state's cursor
+//! and otherwise returns SILENTLY - so with the default "enabled" answer a dispatcher was told "success"
+//! for a write that never happened. Measured 2026-10-12 (第 134 条): the agent dispatched
+//! `command://notation/add-clef-bass`, the tool reported `dispatched`, and reading the measure back still
+//! said `clef=G` with `revision` unchanged; with note input mode entered first, the same command worked.
+//! 第 136 条 makes the state ask the handler's own question.
+static const std::map<Command, ClefType> CLEF_COMMANDS = {
+    { ADD_CLEF_VIOLIN_COMMAND, ClefType::G },
+    { ADD_CLEF_BASS_COMMAND, ClefType::F }
+};
+
 static const std::vector<Command> TEXT_EDITING_COMMANDS = {
     EDITTEXT_TOGGLE_BOLD_COMMAND,
     EDITTEXT_TOGGLE_ITALIC_COMMAND,
@@ -336,6 +352,9 @@ void NotationCommandsState::init()
         updateCommandStates(LAYOUT_BREAK_COMMANDS);
         updateCommandStates(TAB_COMMANDS);
         updateCommandStates(JIANPU_COMMANDS);
+        //! The clef commands live and die by the cursor, and the cursor moves with the selection
+        //! (`InputState::update`): without this the state would answer for wherever the user was before.
+        updateCommandStates(commands(CLEF_COMMANDS));
     });
 
     controller()->stackChanged().onNotify(this, [this]() {
@@ -386,6 +405,10 @@ void NotationCommandsState::init()
         updateCommandStates(NOTE_COMMANDS);
         updateCommandStates(NOTE_OR_REST_SELECTED_COMMANDS);
         updateCommandStates(JIANPU_COMMANDS);
+        //! Entering note input mode is the OTHER way a cursor appears (`NotationNoteInput::updateInputState`
+        //! runs on selection changes; note input sets its own), so the clef commands are refreshed here
+        //! too - and this is the branch the measured working case went through (第 134 条's A/B).
+        updateCommandStates(commands(CLEF_COMMANDS));
     });
 
     controller()->scoreConfigChanged().onReceive(this, [this](ScoreConfigType configType) {
@@ -453,6 +476,15 @@ CommandState NotationCommandsState::doCommandState(const Command& command) const
 
     if (muse::contains(MOVE_SELECTION_COMMANDS, command)) {
         return CommandState(controller()->isMoveSelectionAvailable(MOVE_SELECTION_COMMANDS.at(command)), false);
+    }
+
+    //! The two clef commands: enabled exactly when a clef could actually be inserted (see CLEF_COMMANDS).
+    //! ⚠️ The type matters to the predicate even though today's two commands only differ in which clef they
+    //! ask for - passing the real one is what keeps this from silently answering a different question if
+    //! `EditClef::canInsertClef` ever becomes type-sensitive (it already rejects `ClefType::INVALID`).
+    auto clefCommand = CLEF_COMMANDS.find(command);
+    if (clefCommand != CLEF_COMMANDS.end()) {
+        return CommandState(controller()->canInsertClef(clefCommand->second), false);
     }
 
     if (command == UNDO_COMMAND) {

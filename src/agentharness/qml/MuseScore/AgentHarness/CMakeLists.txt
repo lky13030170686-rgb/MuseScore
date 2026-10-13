@@ -97,6 +97,10 @@ qt_add_qml_module(agentharness_qml
         AgentConversationView.qml
         AgentTimelineList.qml
         AgentComposer.qml
+        # The Agent page's right column can show two things now (its timeline or the conversation), so it
+        # needs the one control that says which - shaped like the DSH dock kit's tab strip, with every
+        # chip a real `FlatButton` so the strip is reachable from the automation tree (第 135 条).
+        AgentTabStrip.qml
         # The composer's message field. Its own file because it is the one control with a keyboard
         # contract to get right (Enter sends, Shift+Enter adds a line) - and because `TextInputField`
         # could not carry it: that one is single-line, and `TextInputArea`'s Enter inserts a line.

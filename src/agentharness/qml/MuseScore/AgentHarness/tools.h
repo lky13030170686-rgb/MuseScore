@@ -119,6 +119,14 @@ bool isBatchableTool(const QString& name);
 //! Every tool name, for diagnostics.
 QStringList toolNames();
 
+//! The one wording for "this command is not enabled, so dispatching it would do nothing".
+//!
+//! ⛔ WHY IT IS A FUNCTION AND NOT A STRING IN TWO PLACES. Two callers refuse disabled commands - the
+//! single `command_dispatch` and `patch_apply`'s pre-flight over a batch - and they must refuse them the
+//! same way: a caller that reads two different sentences for one condition learns two different rules
+//! (第 104 条 made the same call for the batch's own contract). 第 136 条 added the second caller.
+QString commandNotEnabledMessage(const QString& command);
+
 //! ── Tool implementations ─────────────────────────────────────────────────────────────────────
 
 //! Read: bounded summary of the score (the digest's overview size).

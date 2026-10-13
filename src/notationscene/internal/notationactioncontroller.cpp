@@ -3203,6 +3203,16 @@ bool NotationActionController::isNoteOrRestSelected() const
     return selection && selection->elementsSelected(NOTE_REST_TYPES);
 }
 
+//! The same predicate `insertClef` refuses on, exposed so the COMMAND STATE can ask it too.
+//! ⛔ This is not a second implementation of the rule: `EditClef::canInsertClef` stays the one definition
+//! and this only reaches it through the interaction - which is what keeps the state and the handler from
+//! drifting apart. That drift is what produced "dispatched, but the score did not change" (第 136 条).
+bool NotationActionController::canInsertClef(mu::engraving::ClefType type) const
+{
+    INotationInteractionPtr interaction = currentNotationInteraction();
+    return interaction && interaction->canInsertClef(type);
+}
+
 const mu::engraving::Harmony* NotationActionController::editedChordSymbol() const
 {
     INotationInteractionPtr interaction = currentNotationInteraction();

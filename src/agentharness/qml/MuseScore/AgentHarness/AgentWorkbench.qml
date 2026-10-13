@@ -44,11 +44,12 @@ import Muse.UiComponents
     REMEMBERS them (第 129 条), and so does this: the widths are stored through `FieldController`, the
     same place the gateway and the model live.
 
-    \b What is NOT copied, and why. The web client's sidebar lists sessions and it has a tab strip for
-    conversation/trajectory views. This harness runs exactly one session per process and has no second
-    view to switch to, so those two would be furniture with nothing behind them. The left column shows
-    what is real (score facts, the session record, the tool table) and the right column is the
-    information field's timeline plus the newest tool call.
+    \b What is NOT copied, and why. The web client's sidebar lists sessions; this harness runs exactly
+    one session per process, so that list would be furniture with nothing behind it. Its right column's
+    tab strip WAS in the same category until now - "no second view to switch to" - and stopped being so
+    when the column gained one: the same conversation the centre shows, without the composer. The strip
+    is therefore built (第 135 条), and the reason is worth keeping: a tab bar is not chrome, it is a
+    claim that there are two things to look at.
 */
 Item {
     id: root
@@ -56,6 +57,25 @@ Item {
     //! The information field, created at window level and shared with the notation page's panel. Two
     //! fields would be two records of the same score, which is the one thing this subsystem refuses.
     property var field
+
+    //! ── The right column's two views (第 135 条) ─────────────────────────────────────────────────
+    //! `trajectory` = what happened (the information field's timeline + the newest tool call);
+    //! `conversation` = what was said (the transcript, the live stream, the last error).
+    //! ⛔ The two are NOT two copies of one record: the timeline includes the edits the USER made with
+    //! the mouse, which the transcript cannot know, and the transcript includes the rejected tool calls
+    //! and the model's own reasoning, which the timeline cannot know (第 90 条).
+    //! ⚠️ In-memory on purpose. DSH keeps a session's tab layout in the session record; this harness has
+    //! one session per process and no record to keep it in, so a stored preference here would outlive
+    //! the thing it describes (and 第 130 条's lesson is that a persisted number nobody can see the
+    //! effect of is worse than no number).
+    property string rightTab: "trajectory"
+
+    //! The chips, in DSH's order: the record of what happened first (it is what the column showed before
+    //! this existed, so the default view does not move), then the conversation.
+    readonly property var rightTabs: [
+        { "id": "trajectory", "label": qsTrc("agentharness", "Trajectory") },
+        { "id": "conversation", "label": qsTrc("agentharness", "Conversation") }
+    ]
 
     //! ── The web client's column constants ────────────────────────────────────────────────────────
     readonly property int sidebarDefaultWidth: 280
@@ -379,7 +399,7 @@ Item {
             }
         }
 
-        //! ══ 3. Right: what happened, and what the newest tool call actually was ═══════════════════
+        //! ══ 3. Right: two views of the same session, one at a time ════════════════════════════════
         Rectangle {
             Layout.preferredWidth: root.rightbarWidth
             Layout.minimumWidth: root.rightbarMinWidth
@@ -393,42 +413,92 @@ Item {
                 anchors.margins: 12
                 spacing: 6
 
-                StyledTextLabel {
+                //! The strip is the column's head, and the body below it is whichever chip is active.
+                AgentTabStrip {
                     Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignLeft
-                    font: ui.theme.bodyBoldFont
-                    //! The REAL total from the field, not `recentOps.length`: the display list is capped,
-                    //! and a header that said "6" when the score has 40 edits would be a quiet lie.
-                    text: qsTrc("agentharness", "What happened (%1)")
-                          .arg(root.field ? root.field.eventCount : 0)
+                    tabs: root.rightTabs
+                    activeId: root.rightTab
+
+                    onActivated: function(id) {
+                        root.rightTab = id
+                    }
                 }
 
-                //! The same timeline the panel shows, with no row cap: the page has the room, and a
-                //! scrollable full record is the reason to open the page at all.
-                AgentTimelineList {
+                //! ── Trajectory: what happened ────────────────────────────────────────────────────
+                ColumnLayout {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.minimumHeight: 120
-                    field: root.field
-                    visibleRows: 0
+                    visible: root.rightTab === "trajectory"
+                    spacing: 6
+
+                    StyledTextLabel {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignLeft
+                        font: ui.theme.bodyBoldFont
+                        //! The REAL total from the field, not `recentOps.length`: the display list is
+                        //! capped, and a header that said "6" when the score has 40 edits would be a
+                        //! quiet lie.
+                        text: qsTrc("agentharness", "What happened (%1)")
+                              .arg(root.field ? root.field.eventCount : 0)
+                    }
+
+                    //! The same timeline the panel shows, with no row cap: the page has the room, and a
+                    //! scrollable full record is the reason to open the page at all.
+                    AgentTimelineList {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: 120
+                        field: root.field
+                        visibleRows: 0
+                    }
+
+                    SeparatorLine {}
+
+                    StyledTextLabel {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignLeft
+                        font: ui.theme.bodyBoldFont
+                        text: qsTrc("agentharness", "Newest tool call")
+                    }
+
+                    AgentToolInspector {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: 160
+                        field: root.field
+                    }
                 }
 
-                SeparatorLine {}
+                //! ── Conversation: what was said ──────────────────────────────────────────────────
+                //! ⛔ `AgentConversationView` is exactly the right body for this column: it is the
+                //! transcript, the live stream, the reasoning toggle and the error - and NOT the composer.
+                //! A second input row here would be a second place that decides "can this be sent", which
+                //! is the one thing the shared components exist to prevent (第 124 条).
+                //! ⚠️ A `Loader`, not a hidden item: the transcript model is a `Q_PROPERTY` that is rebuilt
+                //! on every streamed token, so a second always-alive view would double that work for a
+                //! view nobody is looking at. Deactivating destroys it - and with it the per-view fold and
+                //! scroll state, which is the right trade for a view that is off screen.
+                Loader {
+                    id: conversationInRightColumn
 
-                StyledTextLabel {
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignLeft
-                    font: ui.theme.bodyBoldFont
-                    text: qsTrc("agentharness", "Newest tool call")
-                }
-
-                AgentToolInspector {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.minimumHeight: 160
-                    field: root.field
+                    active: root.rightTab === "conversation"
+                    visible: active
+                    sourceComponent: rightColumnConversation
                 }
             }
+        }
+    }
+
+    //! The right column's conversation body. Same component, same field, same style as the centre
+    //! column's - one record, three surfaces (panel, centre, this column).
+    Component {
+        id: rightColumnConversation
+
+        AgentConversationView {
+            field: root.field
+            webStyle: true
         }
     }
 

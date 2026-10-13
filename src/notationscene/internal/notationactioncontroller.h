@@ -104,6 +104,7 @@ public:
     bool isNoteInputActionAllowed() const override;
     bool isNoteOrRestSelected() const override;
     bool isMoveSelectionAvailable(MoveSelectionType type) const override;
+    bool canInsertClef(mu::engraving::ClefType type) const override;
 
     bool isToggleLayoutBreakAvailable() const override;
 

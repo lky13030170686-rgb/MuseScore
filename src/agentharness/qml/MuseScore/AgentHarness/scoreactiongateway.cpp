@@ -110,8 +110,9 @@ void ScoreActionGateway::performBatch(const QVector<WriteOp>& ops, const QString
                 }
                 if (!field->isCommandEnabled(op.command)) {
                     r.ok = false;
-                    r.error = QStringLiteral("`%1` is not enabled right now, so dispatching it would be "
-                                             "silently ignored").arg(op.command);
+                    //! The wording lives in one place: the single `command_dispatch` refuses the same
+                    //! condition and must say the same sentence (第 136 条 gave it that check).
+                    r.error = commandNotEnabledMessage(op.command);
                     state->results.append(r);
                     state->failure = QStringLiteral("%1: %2").arg(op.command, r.error);
                     state->allOk = false;

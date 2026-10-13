@@ -76,6 +76,16 @@ public:
     virtual bool isNoteOrRestSelected() const = 0;
     virtual bool isMoveSelectionAvailable(MoveSelectionType type) const = 0;
 
+    //! Whether a clef of `type` can be inserted at the current position.
+    //! ⛔ WHY THIS PREDICATE EXISTS. `add-clef-violin` / `add-clef-bass` end in `EditClef::canInsertClef`,
+    //! which needs the input state's CURSOR (`score->inputState().cr()` - a range selection or note input
+    //! mode); with none, the handler returns silently. Without this predicate the two commands reported
+    //! themselves enabled no matter what, so a dispatcher was told "success" for a write that never
+    //! happened: measured 2026-10-12 (第 134 条) with the agent dispatching `add-clef-bass` and reading
+    //! `clef=G` back afterwards, `revision` unchanged. The state must ask the same question the handler
+    //! does - a command that declines silently must not say it is ready (第 136 条).
+    virtual bool canInsertClef(engraving::ClefType type) const = 0;
+
     virtual bool isToggleLayoutBreakAvailable() const = 0;
 
     virtual ScoreConfig scoreConfig() const = 0;
