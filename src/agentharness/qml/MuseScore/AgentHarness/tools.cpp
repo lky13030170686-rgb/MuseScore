@@ -181,18 +181,40 @@ ToolResult muse::agentharness::toolCommandList(const QJsonObject&, const ToolCon
     }
 
     const QStringList names = ctx.field->enabledCommandNames();
-    if (names.isEmpty()) {
-        return ToolResult::success(QStringLiteral("no notation commands are enabled right now"));
+    //! ⛔ The OTHER HALF of the register, and it is not decoration: the enabled list alone reads as "what
+    //! exists", so a blocked capability looks like a missing one. Measured 2026-10-13: asked to add a bass
+    //! clef, the model answered *"命令表里也没有 add-clef"* - the command existed and was merely disabled at
+    //! that moment (no input cursor). See `FieldController::blockedCommandNames` (第 137 条).
+    const QStringList blocked = ctx.field->blockedCommandNames();
+
+    if (names.isEmpty() && blocked.isEmpty()) {
+        return ToolResult::success(QStringLiteral("no notation commands are registered"));
     }
 
     QJsonObject meta;
     meta.insert(QStringLiteral("count"), int(names.size()));
+    meta.insert(QStringLiteral("blockedCount"), int(blocked.size()));
 
     QStringList lines;
     lines.append(QStringLiteral("%1 enabled notation commands:").arg(names.size()));
     for (const QString& n : names) {
         lines.append(QStringLiteral("  %1").arg(n));
     }
+
+    if (!blocked.isEmpty()) {
+        //! ⚠️ The wording says what the state MEANS rather than what to do about it: the reason a command is
+        //! disabled is not part of the command state (it is a fact about the editor, not about the command),
+        //! and inventing one per command here would be the kind of plausible-looking wrong explanation this
+        //! subsystem keeps refusing. What is knowable is: it exists, it will be ignored if sent, and the
+        //! reason is somewhere in the editor's current state.
+        lines.append(QStringLiteral("%1 more exist but are NOT enabled right now (sending one would be "
+                                    "ignored; the reason is in the editor's current state, e.g. what is "
+                                    "selected or whether note input is on):").arg(blocked.size()));
+        for (const QString& n : blocked) {
+            lines.append(QStringLiteral("  %1").arg(n));
+        }
+    }
+
     return ToolResult::success(lines.join(QLatin1Char('\n')), meta);
 }
 
@@ -1119,6 +1141,97 @@ ToolResult muse::agentharness::toolMeasureRemove(const QJsonObject& args, const 
     meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
+
+ToolResult muse::agentharness::toolRepeatSet(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int measure = 0;
+    if (!readInt(args, QStringLiteral("measure"), measure)) {
+        return ToolResult::failure(QStringLiteral("`measure` is required: the 1-based measure to mark"));
+    }
+
+    const QString mode = args.value(QStringLiteral("mode")).toString();
+    if (mode.isEmpty()) {
+        return ToolResult::failure(QStringLiteral("`mode` is required: `start` (|: here), `end` (:| here), "
+                                                  "`both`, or `none` to clear them"));
+    }
+
+    //! 2 is the ordinary single repeat, and it is also upstream's own default for a repeat that was just
+    //! created - so "I did not say how many times" means the same thing to this tool as it does to the
+    //! Inspector.
+    int playCount = 2;
+    if (args.contains(QStringLiteral("playCount")) && !readInt(args, QStringLiteral("playCount"), playCount)) {
+        return ToolResult::failure(QStringLiteral("`playCount` must be an integer"));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Set repeat"), [&](mu::engraving::Score* score) {
+        return setRepeat(score, measure, mode, playCount);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    meta.insert(QStringLiteral("measure"), measure);
+    return ToolResult::success(result.detail, meta);
+}
+
+ToolResult muse::agentharness::toolVoltaAdd(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int first = 0;
+    if (!readInt(args, QStringLiteral("firstMeasure"), first)) {
+        return ToolResult::failure(QStringLiteral("`firstMeasure` is required: the 1-based first measure the "
+                                                  "ending covers"));
+    }
+
+    //! Defaults to a one-measure ending, which is the common case and one argument rather than two that have
+    //! to agree (same rule as `measure_remove`).
+    int last = first;
+    if (args.contains(QStringLiteral("lastMeasure")) && !readInt(args, QStringLiteral("lastMeasure"), last)) {
+        return ToolResult::failure(QStringLiteral("`lastMeasure` must be an integer"));
+    }
+
+    int ending = 0;
+    if (!readInt(args, QStringLiteral("ending"), ending)) {
+        return ToolResult::failure(QStringLiteral("`ending` is required: which time through, 1 for the "
+                                                  "first-time bar (`1.`), 2 for the second (`2.`), ..."));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Add ending"), [&](mu::engraving::Score* score) {
+        return addVolta(score, first, last, ending);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    meta.insert(QStringLiteral("firstMeasure"), first);
+    meta.insert(QStringLiteral("lastMeasure"), last);
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteMove(const QJsonObject& args, const ToolContext& ctx)
 {
     if (!ctx.field) {
@@ -1731,7 +1844,9 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
         },
         ToolSpec{
             QStringLiteral("command_list"),
-            QStringLiteral("List the notation commands that are enabled right now. Use this before "
+            QStringLiteral("List the notation commands that are enabled right now, plus the ones that exist "
+                           "but are not enabled at this moment (those are ignored if sent - the reason is in "
+                           "the editor's current state, e.g. what is selected). Use this before "
                            "command_dispatch when unsure what the score currently allows."),
             schemaObject({}),
             toolCommandList,
@@ -2039,6 +2154,49 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             toolMeasureRemove,
         },
         ToolSpec{
+            QStringLiteral("repeat_set"),
+            QStringLiteral("Set one measure's repeat marks: `mode` = `start` (a |: at this measure), `end` "
+                           "(a :| here), `both`, or `none` to clear them. `playCount` is how many times the "
+                           "repeated section is played - 2 (the default) is the ordinary single repeat, and "
+                           "MuseScore prints a bare `:|` for it. `score_window` reads them back as "
+                           "`start-repeat` / `end-repeat×N`. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("measure"), intProperty(QStringLiteral(
+                                                             "1-based measure that carries the marks.")));
+                props.insert(QStringLiteral("mode"), stringProperty(QStringLiteral(
+                                                          "`start`, `end`, `both`, or `none`.")));
+                props.insert(QStringLiteral("playCount"), intProperty(QStringLiteral(
+                                                             "Optional. How many times the section is played (default 2 = the "
+                                                             "ordinary single repeat). Only meaningful with `end`.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure"), QStringLiteral("mode") }),
+            toolRepeatSet,
+        },
+        ToolSpec{
+            QStringLiteral("volta_add"),
+            QStringLiteral("Put an ending (volta, the 1st/2nd-time bracket) over a measure range: `ending` 1 "
+                           "is the first-time bar (`1.`), 2 the second (`2.`). `score_window` reads them back "
+                           "on its `endings (voltas):` line. Refused if that exact ending is already there. "
+                           "Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("firstMeasure"), intProperty(QStringLiteral(
+                                                                   "1-based first measure the ending covers.")));
+                props.insert(QStringLiteral("lastMeasure"), intProperty(QStringLiteral(
+                                                                  "Optional. 1-based last measure. Defaults to `firstMeasure`, i.e. a "
+                                                                  "one-measure ending.")));
+                props.insert(QStringLiteral("ending"), intProperty(QStringLiteral(
+                                                           "Which time through: 1 = first-time bar, 2 = second, ...")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("firstMeasure"), QStringLiteral("ending") }),
+            toolVoltaAdd,
+        },
+        ToolSpec{
             QStringLiteral("note_move"),
             QStringLiteral("Move one note's pitch from one beat to another - e.g. take the C4 on beat 1 and "
                            "put it on beat 3. Refused if the destination already has that pitch, if it is "
@@ -2317,6 +2475,7 @@ bool muse::agentharness::isBatchableTool(const QString& name)
         //! signatures and structure
         QStringLiteral("key_signature_set"), QStringLiteral("time_signature_set"),
         QStringLiteral("measure_insert"), QStringLiteral("measure_remove"),
+        QStringLiteral("repeat_set"), QStringLiteral("volta_add"),
         QStringLiteral("measure_fill"),
         QStringLiteral("tempo_set"), QStringLiteral("transpose_range"),
     };

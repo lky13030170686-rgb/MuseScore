@@ -880,6 +880,26 @@ QStringList FieldController::enabledCommandNames() const
     return names;
 }
 
+QStringList FieldController::blockedCommandNames() const
+{
+    //! ⛔ WHY THE ENABLED LIST ALONE IS NOT ENOUGH (measured 2026-10-13, 第 137 条). `command_list` answers
+    //! "what can I do right now", and a model that reads it as "what EXISTS" draws a false conclusion:
+    //! asked whether it could add a bass clef, it answered *"命令表里也没有 add-clef"* - the clef commands
+    //! were disabled at that moment (no input cursor, 第 136 条) and therefore absent from the list. The
+    //! capability was there the whole time; only its VISIBILITY was lost, which is the gap 第 89/92 条 named.
+    //! So the same walk is done once more for the other half, and the tool prints both.
+    QStringList names;
+    for (const muse::rcommand::CommandInfo& info : commandsRegister()->commandInfoList()) {
+        if (!info.isValid()) {
+            continue;
+        }
+        if (!commandsState()->commandState(info.command).enabled) {
+            names.append(QString::fromStdString(info.command.toString()));
+        }
+    }
+    return names;
+}
+
 namespace {
 //! Translate a tool's JSON arguments into the command layer's `Params`.
 //!

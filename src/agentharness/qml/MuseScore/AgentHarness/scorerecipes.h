@@ -404,6 +404,24 @@ RecipeResult insertMeasures(mu::engraving::Score* score, int beforeMeasure, int 
 //! measure exists.
 RecipeResult removeMeasures(mu::engraving::Score* score, int first, int last);
 
+//! ── Repeats and endings ───────────────────────────────────────────────────────────────────────
+//! The read side has reported these since 第 134 条 (`start-repeat`, `end-repeat×N`, `endings (voltas)`),
+//! and until 第 137 条 nothing could WRITE them: measured 2026-10-13, asked to add a repeat or a 1st
+//! ending, the agent answered "no entry point for this" - and it was right. The tool table had none, and
+//! `command_list`'s 485 enabled commands contain no repeat or barline command at all.
+
+//! Set the repeat marks of ONE measure.
+//!
+//! @param mode `start` (`|:` at this measure), `end` (`:|` at this measure), `both`, or `none`.
+//! @param playCount how many times the repeated section is played; 2 (the default) is the ordinary single
+//!                  repeat, which is what MuseScore prints as a bare `:|`. Only meaningful with `end`.
+RecipeResult setRepeat(mu::engraving::Score* score, int measureNumber, const QString& mode, int playCount);
+
+//! Put an ending (volta) over measures `firstMeasure`..`lastMeasure` inclusive (1-based).
+//!
+//! @param ending which time through: 1 is the first-time bar (`1.`), 2 the second (`2.`), ...
+RecipeResult addVolta(mu::engraving::Score* score, int firstMeasure, int lastMeasure, int ending);
+
 //! ── Dynamics and hairpins ─────────────────────────────────────────────────────────────────────
 //! These are the first elements that are NOT notes and NOT text: they attach to a beat and belong to a
 //! staff, and they are what makes a score sound like something.

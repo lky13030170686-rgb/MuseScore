@@ -400,6 +400,12 @@ public:
     bool isCommandEnabled(const QString& command) const;
     //! Names of the commands that are enabled right now.
     QStringList enabledCommandNames() const;
+    //! Names of the commands that EXIST but are disabled right now - the other half of the register.
+    //! ⛔ The enabled list alone reads as "what exists", and that reading is wrong: asked whether it could
+    //! add a bass clef, the model answered "there is no add-clef command" because the clef commands were
+    //! disabled at that moment (measured 2026-10-13, 第 137 条). Printing both halves is what keeps a
+    //! blocked capability from looking like a missing one (第 89/92 条's gap, third occurrence).
+    QStringList blockedCommandNames() const;
     //! Dispatch one notation command. Empty return means it was dispatched; otherwise the reason.
     //! NOTE this goes through the notation command layer, NOT through a bare `Score::undoXxx`, so
     //! the edit lands on the same undo stack as the user's own actions and Ctrl+Z takes it back.

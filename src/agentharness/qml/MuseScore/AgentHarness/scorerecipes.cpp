@@ -80,6 +80,13 @@
 #include "notelocator.h"
 #include "scoredigest.h"
 
+//! Repeats and endings (第 137 条). The repeat marks are FLAGS on the measure (that is what the file
+//! format, `RepeatList` and the drawn barline all read), and an ending is a measure-anchored spanner whose
+//! address-based entry point is `EditSpanner`'s segment overload - the point-based one takes a drop
+//! position, i.e. it is the palette path.
+#include "engraving/dom/volta.h"
+#include "engraving/editing/editspanner.h"
+
 #include "log.h"
 
 using namespace muse::agentharness;
@@ -1834,9 +1841,236 @@ RecipeResult muse::agentharness::removeMeasures(mu::engraving::Score* score, int
                        "shifted back by %4)").arg(first).arg(last).arg(now).arg(last - first + 1));
 }
 
+//! ══ Repeats and endings (第 137 条) ═════════════════════════════════════════════════════════════════
+//!
+//! ⛔ WHY THE READ SIDE CAME FIRST. 第 134 条 made `score_window` report `start-repeat` / `end-repeat×N` /
+//! `endings (voltas)`, and 第 137 条 closes the loop with the write side. That order was not a preference:
+//! the only way to know these writes landed is to read them back, and the tokens were already there.
+//!
+//! ⛔⛔ THE REPEAT MARKS ARE MEASURE FLAGS, NOT BARLINE ELEMENTS. `Measure::repeatStart()/repeatEnd()` is
+//! what the file format stores (`<startRepeat/>`, `<endRepeat>N</endRepeat>`), what the playback order
+//! (`RepeatList`) is computed from, and what the drawn `|:`/`:|` comes from - upstream's own palette path
+//! sets exactly these flags and nothing else (`Measure::drop`, the `BAR_LINE` branch: `undoChangeProperty(
+//! Pid::REPEAT_START/REPEAT_END)`). Creating a `BarLine` element by hand would produce a glyph that the
+//! repeat logic does not know about.
+namespace {
+//! The measure with 1-based position `number`, or null. Same walk as the other measure recipes: the digest
+//! and the addressing layer count by POSITION, not by `Measure::measureNumber()` (an anacrusis or a
+//! numbering offset makes those two disagree).
+mu::engraving::Measure* measureAt(mu::engraving::Score* score, int number)
+{
+    int index = 0;
+    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure(), ++index) {
+        if (index + 1 == number) {
+            return m;
+        }
+    }
+    return nullptr;
+}
+
+//! How a measure's repeat marks read, for the "was"/"now" halves of the report.
+QString describeRepeat(const mu::engraving::Measure* measure)
+{
+    if (!measure) {
+        return QStringLiteral("(no measure)");
+    }
+    if (measure->repeatStart() && measure->repeatEnd()) {
+        return QStringLiteral("both");
+    }
+    if (measure->repeatStart()) {
+        return QStringLiteral("start");
+    }
+    if (measure->repeatEnd()) {
+        return QStringLiteral("end×%1").arg(measure->repeatCount());
+    }
+    return QStringLiteral("none");
+}
+} // namespace
+
+RecipeResult muse::agentharness::setRepeat(mu::engraving::Score* score, int measureNumber, const QString& mode,
+                                           int playCount)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+
+    const QString wanted = mode.trimmed().toLower();
+    if (wanted != QLatin1String("start") && wanted != QLatin1String("end") && wanted != QLatin1String("both")
+        && wanted != QLatin1String("none")) {
+        return RecipeResult::failure(
+            QStringLiteral("`%1` is not a repeat mode. Use `start` (|: here), `end` (:| here), `both`, or "
+                           "`none` to clear them.").arg(mode));
+    }
+
+    //! ⚠️ A play count of 1 is accepted because upstream accepts it (the Inspector offers it), and because
+    //! it is a real, if unusual, notation: a repeat sign that does not repeat anything. Refusing it here
+    //! would be inventing a rule the score format does not have - the report says what it means instead.
+    if (playCount < 1) {
+        return RecipeResult::failure(QStringLiteral("a repeat is played at least once, so `playCount` must "
+                                                    "be 1 or more (got %1); 2 is the ordinary repeat")
+                                     .arg(playCount));
+    }
+
+    mu::engraving::Measure* measure = measureAt(score, measureNumber);
+    if (!measure) {
+        return RecipeResult::failure(QStringLiteral("there is no measure %1; the score has %2")
+                                     .arg(measureNumber).arg(score->nmeasures()));
+    }
+
+    const bool wantStart = wanted == QLatin1String("start") || wanted == QLatin1String("both");
+    const bool wantEnd = wanted == QLatin1String("end") || wanted == QLatin1String("both");
+    const QString was = describeRepeat(measure);
+
+    //! ⛔ EVERY LINKED SCORE, not just this one. A repeat that exists in the master but not in a part is a
+    //! different piece of music in the part - and this is what upstream's own drop path does
+    //! (`for (Score* lscore : score()->scoreList())` in `Measure::drop`), so it is the score's rule rather
+    //! than our precaution.
+    for (mu::engraving::Score* linked : score->scoreList()) {
+        mu::engraving::Measure* m = linked->tick2measure(measure->tick());
+        if (!m) {
+            continue;
+        }
+        m->undoChangeProperty(mu::engraving::Pid::REPEAT_START, wantStart);
+        m->undoChangeProperty(mu::engraving::Pid::REPEAT_END, wantEnd);
+        if (wantEnd) {
+            m->undoChangeProperty(mu::engraving::Pid::REPEAT_COUNT, playCount);
+        }
+    }
+
+    //! ⚠️ The play-count text above the barline is created/updated here, exactly as upstream's own drop path
+    //! does it (`Measure::drop`'s END_REPEAT branch). ⛔ Whether that text is DRAWN is a STYLE setting, not
+    //! this recipe's decision: `Score::undoUpdatePlayCountText` shows it only when `Sid::repeatPlayCountShow`
+    //! is on, and files older than 4.70 are forced to `false` by a compat fixup
+    //! (`MStyle::applyCompatStyleVals`). Measured 2026-10-13 on a 3.01 test score: the page shows a bare
+    //! `:|` while `score_window` says `end-repeat×3` - the two are agreeing, not contradicting each other,
+    //! and the data (which is what plays back) is right either way.
+    if (wantEnd) {
+        score->undoUpdatePlayCountText(measure);
+    }
+
+    const QString now = describeRepeat(measure);
+    if (was == now) {
+        return RecipeResult::success(QStringLiteral("measure %1 already had these repeat marks (%2); "
+                                                    "nothing changed").arg(measureNumber).arg(now));
+    }
+
+    QString detail = QStringLiteral("measure %1: repeat %2 -> %3").arg(measureNumber).arg(was, now);
+    if (wantEnd) {
+        detail += playCount == 1
+                  ? QStringLiteral(" (played once - a repeat sign that does not repeat anything)")
+                  : QStringLiteral(" (the section is played %1 times)").arg(playCount);
+    }
+    return RecipeResult::success(detail);
+}
+
+RecipeResult muse::agentharness::addVolta(mu::engraving::Score* score, int firstMeasure, int lastMeasure,
+                                          int ending)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+    if (firstMeasure < 1 || lastMeasure < firstMeasure) {
+        return RecipeResult::failure(QStringLiteral("give a range like `firstMeasure` <= `lastMeasure`, both "
+                                                    "at least 1 (got %1 to %2)")
+                                     .arg(firstMeasure).arg(lastMeasure));
+    }
+    if (ending < 1) {
+        return RecipeResult::failure(QStringLiteral("`ending` counts the time through, so it starts at 1 "
+                                                    "(1 = the first-time bar); got %1").arg(ending));
+    }
+
+    mu::engraving::Measure* first = measureAt(score, firstMeasure);
+    mu::engraving::Measure* last = measureAt(score, lastMeasure);
+    if (!first || !last) {
+        return RecipeResult::failure(QStringLiteral("the score has %1 measures, so %2..%3 is not a range in "
+                                                    "it").arg(score->nmeasures()).arg(firstMeasure).arg(lastMeasure));
+    }
+
+    //! ⛔ An EXACT duplicate is refused: the same ending starting at the same measure is a second bracket
+    //! drawn over the first, and the caller almost certainly meant to edit the existing one. A DIFFERENT
+    //! ending over the same measures is legal notation (that is what 1st/2nd endings are), so it is allowed.
+    for (const auto& entry : score->spannerMap().map()) {
+        const mu::engraving::Spanner* spanner = entry.second;
+        if (!spanner || !spanner->isVolta() || spanner->tick() != first->tick()) {
+            continue;
+        }
+        const mu::engraving::Volta* existing = mu::engraving::toVolta(spanner);
+        if (existing->endings() == std::vector<int> { ending }) {
+            return RecipeResult::failure(
+                QStringLiteral("measure %1 already carries a %2 ending, so adding it again would draw a "
+                               "second bracket over the first").arg(firstMeasure).arg(ending));
+        }
+    }
+
+    mu::engraving::Volta* volta = mu::engraving::Factory::createVolta(score->dummy());
+    volta->setEndings(std::vector<int> { ending });
+    //! ⛔ `setEndings` does NOT set the drawn text (measured: it only stores and sorts the list), so without
+    //! this the bracket would be drawn with no number on it - and the file would round-trip to a volta whose
+    //! `<beginText>` is empty.
+    volta->setText(muse::String(QStringLiteral("%1.").arg(ending)));
+
+    //! ⚠️ The SEGMENT overload, not the point one: the point overload takes a drop position (that is the
+    //! palette path, and for the palette it is the selection that decides the span). This one is told the
+    //! range outright and computes the ticks itself - including the measure-anchored snap that keeps an
+    //! ending from ending mid-bar.
+    //! ⛔ `endSegment` must be the LAST segment of the LAST covered measure: `tick2` becomes that segment's
+    //! tick, and passing the measure's first segment would end the ending one measure early (the range is
+    //! inclusive by construction, not by hope).
+    mu::engraving::Transaction& tx = score->transactionManager()->currentOrDummyTransaction();
+    mu::engraving::EditSpanner::addSpanner(tx, score, volta, 0 /* staffIdx: voltas belong to the system */,
+                                           first->first(), last->last(), false /* ctrlModifier */);
+
+    //! ── Read back (第 133 条's rule: report the result, not the request) ─────────────────────────────
+    //! ⛔ The measure numbers come from the spanner's own ticks, and the LAST covered measure is the one
+    //! containing `tick2 - 1 tick`: `tick2` is the tick the ending ends AT, i.e. the beginning of the
+    //! measure after it. Comparing `tick2measure(tick2)` against `last` would look right and be off by one
+    //! (第 101 条 lost a round to exactly that, on a hairpin's end).
+    const auto measureNumberOfTick = [score](const mu::engraving::Fraction& tick) -> int {
+        int index = 0;
+        for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure(), ++index) {
+            if (tick >= m->tick() && tick < m->endTick()) {
+                return index + 1;
+            }
+        }
+        return -1;
+    };
+
+    for (const auto& entry : score->spannerMap().map()) {
+        const mu::engraving::Spanner* spanner = entry.second;
+        if (!spanner || !spanner->isVolta() || spanner->tick() != first->tick()) {
+            continue;
+        }
+        const mu::engraving::Volta* added = mu::engraving::toVolta(spanner);
+        const std::vector<int> endings = added->endings();
+        if (endings.size() != 1 || endings.front() != ending) {
+            continue;
+        }
+
+        const int start = measureNumberOfTick(spanner->tick());
+        const int end = measureNumberOfTick(
+            mu::engraving::Fraction::fromTicks(spanner->tick2().ticks() - 1));
+        if (start != firstMeasure || end != lastMeasure) {
+            return RecipeResult::failure(
+                QStringLiteral("the ending was created over measures %1-%2 instead of %3-%4; the score's "
+                               "spanner map is the authority here, so treat this as failed")
+                .arg(start).arg(end).arg(firstMeasure).arg(lastMeasure));
+        }
+
+        return RecipeResult::success(QStringLiteral("measures %1-%2 now carry the %3 ending (the bracket is "
+                                                    "drawn over them; read the window back to confirm)")
+                                     .arg(firstMeasure).arg(lastMeasure).arg(ending));
+    }
+
+    //! ⚠️ Falling through means the spanner was created but is not in the map at all. Saying so is the whole
+    //! point: a silent success here would be a bracket nobody can find.
+    return RecipeResult::failure(
+        QStringLiteral("the ending was created but does not read back over measures %1-%2 - the score's "
+                       "spanner map does not show it, so treat this as failed")
+        .arg(firstMeasure).arg(lastMeasure));
+}
+
 namespace {
 //! The chord or rest at an address, as a `ChordRest*`, for elements that hang off a beat.
-//!
 //! ⚠️ Dynamics and hairpins attach to the SEGMENT, not to a note, so no note index is involved - which is
 //! why this returns the chord rest rather than going through `noteAt`.
 mu::engraving::ChordRest* chordRestAt(mu::engraving::Score* score, const ScoreAddress& address,

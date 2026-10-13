@@ -23,6 +23,9 @@
 
 #include <memory>
 
+#include <QDir>
+#include <QFile>
+
 #include "engraving/dom/chord.h"
 #include "engraving/dom/masterscore.h"
 #include "engraving/automation/automationdata.h"
@@ -49,6 +52,10 @@
 #include "agentharness/qml/MuseScore/AgentHarness/addressing.h"
 #include "agentharness/qml/MuseScore/AgentHarness/notelocator.h"
 #include "agentharness/qml/MuseScore/AgentHarness/scorerecipes.h"
+//! The digest, on purpose: the repeats and endings recipes (第 137 条) are verified by READING THEM BACK
+//! through the same tool the agent uses - the tokens were already there (第 134 条), and "the write landed"
+//! is a claim about what the window says, not about what the recipe returned.
+#include "agentharness/qml/MuseScore/AgentHarness/scoredigest.h"
 
 using namespace mu::engraving;
 using namespace muse::agentharness;
@@ -2660,4 +2667,242 @@ TEST(AgentHarness_ScoreRecipes, TransposeRangeReportsAPartialResultAsAFailure)
     EXPECT_FALSE(result.ok) << "a partly-transposed passage must not be reported as done";
     EXPECT_TRUE(result.problem.contains(QStringLiteral("could be transposed")))
         << result.problem.toStdString();
+}
+
+//! ── Repeats and endings (第 137 条) ────────────────────────────────────────────────────────────
+//!
+//! ⛔ WHY THESE WRITES ARE READ BACK THROUGH THE DIGEST. The repeat marks and the endings have been VISIBLE
+//! to the read side since 第 134 条 (`start-repeat`, `end-repeat×N`, `endings (voltas)`), and until this
+//! round nothing could write them. So the assertion that matters is not "the recipe returned ok" but "the
+//! window the agent reads says so" - that is the loop the tool actually closes, and it is the same shape
+//! 第 133 条 settled on for the note-level recipes.
+
+namespace {
+//! The `endings (voltas):` line the digest prints for a window, or an empty string when there is none.
+QString endingsLine(const Score* score, int first, int last)
+{
+    const QStringList lines = buildMeasureWindow(score, first, last).split(QLatin1Char('\n'));
+    for (const QString& line : lines) {
+        if (line.startsWith(QStringLiteral("endings (voltas):"))) {
+            return line;
+        }
+    }
+    return QString();
+}
+
+//! How many volta spanners the score holds.
+int voltaCount(const Score* score)
+{
+    int count = 0;
+    for (const auto& entry : score->spannerMap().map()) {
+        if (entry.second && entry.second->isVolta()) {
+            ++count;
+        }
+    }
+    return count;
+}
+} // namespace
+
+TEST(AgentHarness_ScoreRecipes, SetRepeatMarksTheMeasureAndTheWindowSaysSo)
+{
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    //! A start repeat on bar 1 and an end repeat on bar 2 with a play count of 3: the smallest score that
+    //! can carry a complete repeated section.
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 1, QStringLiteral("start"), 2);
+    }).ok);
+    const RecipeResult end = runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 2, QStringLiteral("end"), 3);
+    });
+    ASSERT_TRUE(end.ok) << end.problem.toStdString();
+
+    //! The flags are the state (file format, playback order, the drawn barline), so they are what is
+    //! asserted first - and then the tokens the agent reads.
+    EXPECT_TRUE(score->firstMeasure()->repeatStart());
+    EXPECT_TRUE(score->firstMeasure()->nextMeasure()->repeatEnd());
+    EXPECT_EQ(score->firstMeasure()->nextMeasure()->repeatCount(), 3);
+
+    const QString window = buildMeasureWindow(score.get(), 1, 2);
+    EXPECT_TRUE(window.contains(QStringLiteral("start-repeat"))) << window.toStdString();
+    EXPECT_TRUE(window.contains(QStringLiteral("end-repeat×3"))) << window.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, SetRepeatBothThenNoneClearsThem)
+{
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 1, QStringLiteral("both"), 2);
+    }).ok);
+    EXPECT_TRUE(score->firstMeasure()->repeatStart());
+    EXPECT_TRUE(score->firstMeasure()->repeatEnd());
+
+    const RecipeResult cleared = runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 1, QStringLiteral("none"), 2);
+    });
+    ASSERT_TRUE(cleared.ok) << cleared.problem.toStdString();
+
+    EXPECT_FALSE(score->firstMeasure()->repeatStart());
+    EXPECT_FALSE(score->firstMeasure()->repeatEnd());
+    const QString window = buildMeasureWindow(score.get(), 1, 1);
+    EXPECT_FALSE(window.contains(QStringLiteral("start-repeat"))) << window.toStdString();
+    EXPECT_FALSE(window.contains(QStringLiteral("end-repeat"))) << window.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, SetRepeatSaysSoWhenNothingChanged)
+{
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 1, QStringLiteral("start"), 2);
+    }).ok);
+
+    //! Asking twice is not an error, but the answer must not read like an edit that just happened.
+    const RecipeResult again = runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 1, QStringLiteral("start"), 2);
+    });
+    ASSERT_TRUE(again.ok) << again.problem.toStdString();
+    EXPECT_TRUE(again.detail.contains(QStringLiteral("already"))) << again.detail.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, SetRepeatRejectsWhatItCannotDo)
+{
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    const RecipeResult mode = runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 1, QStringLiteral("repeat"), 2);
+    });
+    EXPECT_FALSE(mode.ok);
+    //! The message must name the vocabulary rather than just refusing.
+    EXPECT_TRUE(mode.problem.contains(QStringLiteral("`none`"))) << mode.problem.toStdString();
+
+    const RecipeResult range = runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 99, QStringLiteral("start"), 2);
+    });
+    EXPECT_FALSE(range.ok);
+    //! ⚠️ The count is part of the answer: "there is no measure 99" without it leaves the caller guessing
+    //! how far the score actually goes.
+    EXPECT_TRUE(range.problem.contains(QStringLiteral("2"))) << range.problem.toStdString();
+
+    const RecipeResult count = runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 1, QStringLiteral("end"), 0);
+    });
+    EXPECT_FALSE(count.ok);
+
+    //! ⛔ And nothing was written by any of the three: a refusal that leaves half a mark behind is worse
+    //! than no refusal.
+    EXPECT_FALSE(score->firstMeasure()->repeatStart());
+    EXPECT_FALSE(score->firstMeasure()->repeatEnd());
+}
+
+TEST(AgentHarness_ScoreRecipes, AddVoltaCoversExactlyTheMeasuresItWasGiven)
+{
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    const RecipeResult added = runRecipe(score.get(), [&] {
+        return addVolta(score.get(), 1, 2, 1);
+    });
+    ASSERT_TRUE(added.ok) << added.problem.toStdString();
+
+    ASSERT_EQ(voltaCount(score.get()), 1);
+    //! ⛔ The RANGE, not just "a volta exists": `tick2` is the tick the ending ends AT, so a span that is
+    //! one measure too long reads perfectly ordinary (第 101 条 lost a round to exactly that).
+    const QString line = endingsLine(score.get(), 1, 2);
+    EXPECT_EQ(line, QStringLiteral("endings (voltas): 1st ending m1-m2")) << line.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, AddVoltaRefusesTheExactDuplicateButAllowsAnotherEnding)
+{
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return addVolta(score.get(), 1, 1, 1);
+    }).ok);
+
+    const RecipeResult duplicate = runRecipe(score.get(), [&] {
+        return addVolta(score.get(), 1, 1, 1);
+    });
+    EXPECT_FALSE(duplicate.ok);
+    EXPECT_TRUE(duplicate.problem.contains(QStringLiteral("already"))) << duplicate.problem.toStdString();
+    EXPECT_EQ(voltaCount(score.get()), 1) << "a refused duplicate must not have created a second bracket";
+
+    //! ⛔ A DIFFERENT ending over the same measures is legal notation - that is what 1st/2nd endings are -
+    //! so it must not be caught by the duplicate rule.
+    const RecipeResult second = runRecipe(score.get(), [&] {
+        return addVolta(score.get(), 1, 1, 2);
+    });
+    ASSERT_TRUE(second.ok) << second.problem.toStdString();
+    EXPECT_EQ(voltaCount(score.get()), 2);
+    EXPECT_TRUE(endingsLine(score.get(), 1, 1).contains(QStringLiteral("2nd ending")))
+        << endingsLine(score.get(), 1, 1).toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, AddVoltaRejectsWhatItCannotDo)
+{
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    EXPECT_FALSE(runRecipe(score.get(), [&] {
+        return addVolta(score.get(), 2, 1, 1);
+    }).ok);
+    EXPECT_FALSE(runRecipe(score.get(), [&] {
+        return addVolta(score.get(), 1, 99, 1);
+    }).ok);
+    EXPECT_FALSE(runRecipe(score.get(), [&] {
+        return addVolta(score.get(), 1, 1, 0);
+    }).ok);
+
+    //! Nothing was created by the three refusals.
+    EXPECT_EQ(voltaCount(score.get()), 0);
+}
+
+TEST(AgentHarness_ScoreRecipes, RepeatsAndEndingsSurviveSaveAndReload)
+{
+    //! ⛔ WHY A FILE ROUND TRIP AND NOT JUST THE IN-MEMORY FLAGS. These are the only writes in this file
+    //! whose whole point is what the FILE says - `<startRepeat/>`, `<endRepeat>N</endRepeat>`, and a volta,
+    //! which the format stores as TWO halves (`<next>` and a matching `<prev>`). 第 134 条 measured what
+    //! happens when that is wrong: a file with only the first half loads cleanly, with no warning, and has
+    //! no volta at all. So the claim "the write is real" has to survive being written out and read back.
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 1, QStringLiteral("start"), 2);
+    }).ok);
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setRepeat(score.get(), 2, QStringLiteral("end"), 3);
+    }).ok);
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return addVolta(score.get(), 2, 2, 1);
+    }).ok);
+
+    //! ⚠️ An absolute path in the temp directory, not a name under the test data root: a test that writes
+    //! into the source tree leaves junk behind whenever it fails halfway.
+    const QString path = QDir::tempPath() + QStringLiteral("/agentharness-repeat-roundtrip.mscx");
+    ASSERT_TRUE(mu::engraving::ScoreRW::saveScore(score.get(), muse::String(path)))
+        << "the score could not be written to " << path.toStdString();
+
+    const std::shared_ptr<MasterScore> reloaded(
+        std::shared_ptr<MasterScore>(mu::engraving::ScoreRW::readScore(muse::String(path), true)));
+    ASSERT_TRUE(reloaded != nullptr) << "the score we just wrote could not be read back";
+
+    EXPECT_TRUE(reloaded->firstMeasure()->repeatStart());
+    EXPECT_TRUE(reloaded->firstMeasure()->nextMeasure()->repeatEnd());
+    EXPECT_EQ(reloaded->firstMeasure()->nextMeasure()->repeatCount(), 3);
+    EXPECT_EQ(voltaCount(reloaded.get()), 1) << "the ending did not survive the file format";
+
+    const QString window = buildMeasureWindow(reloaded.get(), 1, 2);
+    EXPECT_TRUE(window.contains(QStringLiteral("start-repeat"))) << window.toStdString();
+    EXPECT_TRUE(window.contains(QStringLiteral("end-repeat×3"))) << window.toStdString();
+    EXPECT_EQ(endingsLine(reloaded.get(), 1, 2), QStringLiteral("endings (voltas): 1st ending m2-m2"))
+        << window.toStdString();
+
+    QFile::remove(path);
 }

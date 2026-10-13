@@ -211,6 +211,14 @@ ToolResult toolMeasureInsert(const QJsonObject& args, const ToolContext& ctx);
 //! Write: remove a range of measures.
 ToolResult toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: set a measure's repeat marks (`start` / `end` / `both` / `none`, with a play count), and put an
+//! ending (volta) over a measure range.
+//! ⛔ WHY THESE EXIST: the read side has reported both since 第 134 条 (`start-repeat`, `end-repeat×N`,
+//! `endings (voltas)`), while NOTHING could write them - measured 2026-10-13, asked to add a repeat or a
+//! 1st ending the agent answered "no entry point for this", and it was right (第 137 条).
+ToolResult toolRepeatSet(const QJsonObject& args, const ToolContext& ctx);
+ToolResult toolVoltaAdd(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: transpose every note in a measure range.
 ToolResult toolTransposeRange(const QJsonObject& args, const ToolContext& ctx);
 
