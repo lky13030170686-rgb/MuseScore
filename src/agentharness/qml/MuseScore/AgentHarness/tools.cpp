@@ -118,7 +118,6 @@ ToolResult muse::agentharness::toolScoreOverview(const QJsonObject&, const ToolC
     QJsonObject meta;
     meta.insert(QStringLiteral("measures"), ctx.field->measureCount());
     meta.insert(QStringLiteral("staves"), ctx.field->staffCount());
-    meta.insert(QStringLiteral("revision"), ctx.field->revision());
     return ToolResult::success(text, meta);
 }
 
@@ -281,7 +280,6 @@ ToolResult muse::agentharness::toolCommandDispatch(const QJsonObject& args, cons
 
     QJsonObject meta;
     meta.insert(QStringLiteral("command"), command);
-    meta.insert(QStringLiteral("revision"), ctx.field->revision());
     return ToolResult::success(QStringLiteral("dispatched %1").arg(command), meta);
 }
 
@@ -402,7 +400,6 @@ ToolResult muse::agentharness::toolNoteSetPitch(const QJsonObject& args, const T
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 
@@ -451,7 +448,6 @@ ToolResult muse::agentharness::toolNoteTranspose(const QJsonObject& args, const 
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 
@@ -501,7 +497,6 @@ ToolResult muse::agentharness::toolNoteSetDuration(const QJsonObject& args, cons
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 
@@ -545,7 +540,6 @@ ToolResult muse::agentharness::toolNoteRemove(const QJsonObject& args, const Too
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolNoteAdd(const QJsonObject& args, const ToolContext& ctx)
@@ -593,7 +587,6 @@ ToolResult muse::agentharness::toolNoteAdd(const QJsonObject& args, const ToolCo
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 
@@ -652,7 +645,6 @@ ToolResult muse::agentharness::toolNoteTie(const QJsonObject& args, const ToolCo
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolNoteToRest(const QJsonObject& args, const ToolContext& ctx)
@@ -695,7 +687,6 @@ ToolResult muse::agentharness::toolNoteToRest(const QJsonObject& args, const Too
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolNoteSlur(const QJsonObject& args, const ToolContext& ctx)
@@ -751,7 +742,6 @@ ToolResult muse::agentharness::toolNoteSlur(const QJsonObject& args, const ToolC
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolChordSetPitches(const QJsonObject& args, const ToolContext& ctx)
@@ -809,7 +799,6 @@ ToolResult muse::agentharness::toolChordSetPitches(const QJsonObject& args, cons
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolTextAdd(const QJsonObject& args, const ToolContext& ctx)
@@ -870,7 +859,6 @@ ToolResult muse::agentharness::toolTextAdd(const QJsonObject& args, const ToolCo
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolKeySignature(const QJsonObject& args, const ToolContext& ctx)
@@ -914,7 +902,6 @@ ToolResult muse::agentharness::toolKeySignature(const QJsonObject& args, const T
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 
@@ -961,7 +948,6 @@ ToolResult muse::agentharness::toolTimeSignature(const QJsonObject& args, const 
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 namespace {
@@ -1019,7 +1005,6 @@ ToolResult muse::agentharness::toolDynamicAdd(const QJsonObject& args, const Too
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 
@@ -1067,7 +1052,6 @@ ToolResult muse::agentharness::toolHairpinAdd(const QJsonObject& args, const Too
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolMeasureInsert(const QJsonObject& args, const ToolContext& ctx)
@@ -1102,7 +1086,6 @@ ToolResult muse::agentharness::toolMeasureInsert(const QJsonObject& args, const 
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 
@@ -1140,7 +1123,6 @@ ToolResult muse::agentharness::toolMeasureRemove(const QJsonObject& args, const 
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 
@@ -1184,7 +1166,6 @@ ToolResult muse::agentharness::toolRepeatSet(const QJsonObject& args, const Tool
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     meta.insert(QStringLiteral("measure"), measure);
     return ToolResult::success(result.detail, meta);
 }
@@ -1229,7 +1210,6 @@ ToolResult muse::agentharness::toolVoltaAdd(const QJsonObject& args, const ToolC
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     meta.insert(QStringLiteral("firstMeasure"), first);
     meta.insert(QStringLiteral("lastMeasure"), last);
     return ToolResult::success(result.detail, meta);
@@ -1274,7 +1254,6 @@ ToolResult muse::agentharness::toolSelectRange(const QJsonObject& args, const To
     QJsonObject meta;
     //! ⚠️ `revision` is reported for the same reason every other tool reports it, and here it makes a point:
     //! it does NOT move. A caller that assumes every tool advances it learns otherwise from the number.
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     meta.insert(QStringLiteral("firstMeasure"), first);
     meta.insert(QStringLiteral("lastMeasure"), last);
     return ToolResult::success(result.detail, meta);
@@ -1311,7 +1290,6 @@ ToolResult muse::agentharness::toolSelectNote(const QJsonObject& args, const Too
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolNoteMove(const QJsonObject& args, const ToolContext& ctx)
@@ -1365,7 +1343,6 @@ ToolResult muse::agentharness::toolNoteMove(const QJsonObject& args, const ToolC
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolNoteArticulation(const QJsonObject& args, const ToolContext& ctx)
@@ -1404,7 +1381,6 @@ ToolResult muse::agentharness::toolNoteArticulation(const QJsonObject& args, con
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 namespace {
@@ -1463,7 +1439,6 @@ ToolResult muse::agentharness::toolStaffAdd(const QJsonObject& args, const ToolC
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 
@@ -1494,7 +1469,6 @@ ToolResult muse::agentharness::toolStaffRemove(const QJsonObject& args, const To
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolMeasureFill(const QJsonObject& args, const ToolContext& ctx)
@@ -1523,7 +1497,6 @@ ToolResult muse::agentharness::toolMeasureFill(const QJsonObject& args, const To
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolMeasureInputNotes(const QJsonObject& args, const ToolContext& ctx)
@@ -1590,7 +1563,6 @@ ToolResult muse::agentharness::toolMeasureInputNotes(const QJsonObject& args, co
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolTempoSet(const QJsonObject& args, const ToolContext& ctx)
@@ -1625,7 +1597,6 @@ ToolResult muse::agentharness::toolTempoSet(const QJsonObject& args, const ToolC
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolTransposeRange(const QJsonObject& args, const ToolContext& ctx)
@@ -1671,7 +1642,6 @@ ToolResult muse::agentharness::toolTransposeRange(const QJsonObject& args, const
     }
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
     return ToolResult::success(result.detail, meta);
 }
 ToolResult muse::agentharness::toolNoteCapabilities(const QJsonObject&, const ToolContext&)
@@ -1732,7 +1702,6 @@ ToolResult muse::agentharness::toolScoreRevision(const QJsonObject&, const ToolC
     const int revision = ctx.field->scoreRevision();
 
     QJsonObject meta;
-    meta.insert(QStringLiteral("revision"), revision);
 
     //! The text says what the number is FOR. A bare "3" invites the model to treat it as a count of
     //! something it can compute; naming it as the value to pass back is what makes the fence usable.

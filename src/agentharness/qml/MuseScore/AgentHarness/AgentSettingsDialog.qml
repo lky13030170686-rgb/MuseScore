@@ -558,7 +558,12 @@ Popup {
                                     if (!root.field) {
                                         return ""
                                     }
-                                    return qsTrc("agentharness", "Gateway: %1\nModel: %2\nKey: %3\nTools: %4\nSession events: %5\nScore revision: %6")
+                                    //! ⛔ "Score revision" is the FENCE (第 140 条): the number `score_revision`
+                                    //! prints and `expectRevision` compares. `Session events` above it is the
+                                    //! other number - how much this field has recorded - and the two are
+                                    //! deliberately not the same. The sibling line in `About` used to read
+                                    //! "Score revision" while printing the event count.
+                                    return qsTrc("agentharness", "Gateway: %1\nModel: %2\nKey: %3\nTools: %4\nSession events: %5\nScore revision (write fence): %6")
                                            .arg(root.field.agentBaseUrl)
                                            .arg(root.field.agentModel)
                                            .arg(root.field.agentApiKeySource)

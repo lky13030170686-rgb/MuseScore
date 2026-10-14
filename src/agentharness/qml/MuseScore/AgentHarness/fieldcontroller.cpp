@@ -166,14 +166,16 @@ void FieldController::applyDemoToolCallIfPending()
 
         LOGW() << "[agent-demo] tool call before:" << name << args
                << "measures=" << measureCount()
-               << "revision=" << revision()
+               << "scoreRevision=" << scoreRevision()
+               << "events=" << eventCount()
                << "canUndo=" << (undoStackCanUndo());
 
         const QString text = runTool(name, args);
 
         LOGW() << "[agent-demo] tool call after :" << (m_lastToolOk ? "OK" : "FAILED")
                << "measures=" << measureCount()
-               << "revision=" << revision()
+               << "scoreRevision=" << scoreRevision()
+               << "events=" << eventCount()
                << "canUndo=" << (undoStackCanUndo())
                << "result=" << text.left(300);
     }
@@ -234,6 +236,57 @@ void FieldController::applyDemoToolCallIfPending()
                    << "measures after =" << measureCount()
                    << "(must equal" << before << ")"
                    << "text=" << text.left(400);
+        } else if (mode == QLatin1String("revision")) {
+            //! ── THE JUDGE FOR 第 140 条: does the number the PANEL shows work as the fence? ─────────────
+            //!
+            //! Two different numbers were both called `revision` - "how many events this field has recorded"
+            //! (what the panel printed) and "where the score's undo stack is" (what `expectRevision` compares)
+            //! - and nothing anywhere said so. The honest test is the EFFECT, and it has to READ the number
+            //! the way the UI reads it, or it passes by construction:
+            //!   · `property("revision")` is the Q_PROPERTY QML's `field.revision` resolves to;
+            //!   · the status line is parsed, because that is the string the panel actually prints.
+            //! Then a REAL write is fenced with that number. If the panel is showing a number the fence does
+            //! not accept, the write is refused and the score is untouched - which is what gets printed, so
+            //! this mode can fail. (It did: `rev 1` against a fence of 2, measured 2026-10-14.)
+            const int propRevision = property("revision").toInt();
+            const int propEvents = property("eventCount").toInt();
+            const int fence = scoreRevision();
+
+            const QString status = statusText();
+            const int marker = status.indexOf(QStringLiteral("rev "));
+            const QString shownText = marker < 0 ? QString()
+                                                 : status.mid(marker + 4).section(QLatin1Char(' '), 0, 0);
+            const int shown = shownText.toInt();
+
+            LOGW() << "[agent-rev] panel status=\"" << status << "\""
+                   << "-> shows rev" << (shownText.isEmpty() ? QStringLiteral("(no `rev N` in it!)") : shownText)
+                   << "| property(revision)=" << propRevision
+                   << "property(eventCount)=" << propEvents
+                   << "scoreRevision()=" << fence
+                   << (propRevision == fence && shown == fence
+                       ? "(the panel and the fence agree)"
+                       : "(THE PANEL SHOWS A NUMBER THE FENCE DOES NOT ACCEPT)");
+
+            const int measuresBefore = measureCount();
+            const QString fenced = runTool(QStringLiteral("note_set_pitch"),
+                                           QStringLiteral("{\"measure\":1,\"beat\":2,\"pitch\":69,"
+                                                          "\"expectRevision\":%1}").arg(shown));
+            LOGW() << "[agent-rev] write fenced with the PANEL's number:" << (m_lastToolOk ? "OK" : "REFUSED")
+                   << "measures after =" << measureCount() << "(must equal" << measuresBefore << ")"
+                   << "text=" << fenced.left(300);
+
+            //! And the other half, when the two numbers differ: the EVENTS count is not a revision. A fence
+            //! that accepted it too would mean they were interchangeable, which is exactly the belief the
+            //! shared name was teaching.
+            if (propEvents != fence) {
+                const QString refused = runTool(QStringLiteral("note_set_pitch"),
+                                                QStringLiteral("{\"measure\":1,\"beat\":3,\"pitch\":71,"
+                                                               "\"expectRevision\":%1}").arg(propEvents));
+                LOGW() << "[agent-rev] write fenced with the EVENTS count (" << propEvents << "):"
+                       << (m_lastToolOk ? "OK (BAD! the two numbers are not interchangeable)"
+                                        : "REFUSED (correct - events is not the revision)")
+                       << "text=" << refused.left(200);
+            }
         }
     }
 
@@ -610,7 +663,10 @@ void FieldController::onScoreChanges(const ScoreChanges& changes)
     record(event);
 
     refreshScoreFacts();
-    ++m_revision;
+    //! ⛔ NO COUNTER HERE ANY MORE (第 140 条). This used to be `++m_revision`, which made `revision` mean
+    //! "how many events this field has recorded" - and the panel showed that number under the name a write
+    //! is fenced against. The revision is `scoreRevision()`, read from the undo stack, and the number of
+    //! recorded events already has its own name (`eventCount`).
     emit fieldChanged();
 }
 
@@ -653,7 +709,6 @@ void FieldController::flushHeldAutomationEvents()
     m_heldAutomationEvents.clear();
 
     refreshScoreFacts();
-    m_revision += uncovered;
     emit fieldChanged();
 }
 
@@ -783,6 +838,41 @@ QString FieldController::digestWindow(int firstMeasure, int lastMeasure) const
     return text;
 }
 
+ToolResult FieldController::finishToolResult(const QString& name, const QString& argsJson,
+                                             const ToolResult& raw, bool queued)
+{
+    ToolResult shaped = raw;
+
+    //! ⛔ THE REVISION IS STAMPED HERE AND NOWHERE ELSE (第 140 条). Every result that leaves this class
+    //! carries the same number under `meta["revision"]`, and that number is the fence's - so "what the
+    //! tool reported" and "what a write must be fenced against" cannot be two values with one name.
+    //! Read at the moment the result leaves, so for an asynchronous tool it is the revision AFTER its
+    //! transaction committed - which is the one the caller has to use next.
+    shaped.meta.insert(QStringLiteral("revision"), scoreRevision());
+
+    //! ⛔ THE SPILL POINT, AND THERE IS EXACTLY ONE OF THEM (第 110 条). Both the synchronous and the
+    //! asynchronous return paths funnel through here, so putting the check in this one function means a
+    //! tool cannot forget it and a new tool gets it for free. A per-tool check would be thirty-eight
+    //! places to keep in step - and 第 140 条 is what that costs: with the revision inserted per tool
+    //! body, two of the thirty-eight inserted a different number and nothing anywhere said so.
+    shaped.text = spillIfLarge(name, raw.text);
+
+    if (fieldTraceEnabled()) {
+        //! The meta is logged because it is otherwise INVISIBLE: the model sees only `text` (tools.h), and
+        //! neither the transcript nor the tool inspector shows structured facts. A key that is wrong but
+        //! well-formed therefore has no reader at all - which is exactly how the two wrong revisions
+        //! survived. `MUSE_AGENT_FIELD_TRACE=1` now prints it.
+        LOGW() << "[agent-tool]" << name
+               << (raw.ok ? "OK" : "FAILED")
+               << (queued ? "(async)" : "")
+               << "args=" << argsJson
+               << "meta=" << QString::fromUtf8(QJsonDocument(shaped.meta).toJson(QJsonDocument::Compact))
+               << "->" << shaped.text.left(200);
+    }
+
+    return shaped;
+}
+
 void FieldController::runToolAsync(const QString& name, const QString& argsJson,
                                    std::function<void(const ToolResult&)> done)
 {
@@ -791,7 +881,9 @@ void FieldController::runToolAsync(const QString& name, const QString& argsJson,
         ToolResult r = ToolResult::failure(QStringLiteral("no such tool: %1 (available: %2)")
                                            .arg(name, toolNames().join(QStringLiteral(", "))));
         m_lastToolOk = false;
-        done(r);
+        //! Shaped like every other result rather than handed to `done` raw: the revision stamp and the trace
+        //! line are properties of "a tool result leaving this class", not of "a tool that ran".
+        done(finishToolResult(name, argsJson, r, false));
         return;
     }
 
@@ -807,13 +899,13 @@ void FieldController::runToolAsync(const QString& name, const QString& argsJson,
             ToolResult r = ToolResult::failure(QStringLiteral("arguments are not valid JSON: %1")
                                                .arg(err.errorString()));
             m_lastToolOk = false;
-            done(r);
+            done(finishToolResult(name, argsJson, r, false));
             return;
         }
         if (!doc.isObject()) {
             ToolResult r = ToolResult::failure(QStringLiteral("arguments must be a JSON object"));
             m_lastToolOk = false;
-            done(r);
+            done(finishToolResult(name, argsJson, r, false));
             return;
         }
         args = doc.object();
@@ -835,21 +927,7 @@ void FieldController::runToolAsync(const QString& name, const QString& argsJson,
         }
         *answered = true;
         m_lastToolOk = r.ok;
-
-        //! ⛔ THE SPILL POINT, AND THERE IS EXACTLY ONE OF THEM. Both the synchronous and the asynchronous
-        //! return paths funnel through `done`, so putting the check here means a tool cannot forget it and
-        //! a new tool gets it for free. A per-tool check would be seventeen places to keep in step.
-        ToolResult shaped = r;
-        shaped.text = spillIfLarge(name, r.text);
-
-        if (fieldTraceEnabled()) {
-            LOGW() << "[agent-tool]" << name
-                   << (r.ok ? "OK" : "FAILED")
-                   << "(async) args=" << argsJson
-                   << "->" << shaped.text.left(200);
-        }
-
-        done(shaped);
+        done(finishToolResult(name, argsJson, r, /* queued */ true));
     };
 
     const ToolResult result = spec->execute(args, ctx);
@@ -863,20 +941,11 @@ void FieldController::runToolAsync(const QString& name, const QString& argsJson,
         //! It returned a real result instead.
         m_lastToolOk = result.ok;
 
-        if (fieldTraceEnabled()) {
-            LOGW() << "[agent-tool]" << name
-                   << (result.ok ? "OK" : "FAILED")
-                   << "args=" << argsJson
-                   << "->" << result.text.left(200);
-        }
-
         *answered = true;
         //! The other funnel: a tool that returned its result directly rather than through `ctx.complete`.
         //! Both paths must shape the result, or a tool that happens to be synchronous would bypass the
         //! spill - and which tools are synchronous is not something a caller can see.
-        ToolResult shaped = result;
-        shaped.text = spillIfLarge(name, result.text);
-        done(shaped);
+        done(finishToolResult(name, argsJson, result, /* queued */ false));
         return;
     }
 
@@ -2103,10 +2172,14 @@ QString FieldController::statusText() const
         return QStringLiteral("no score");
     }
 
+    //! ⛔ THE TWO NUMBERS, AND WHY THIS LINE SHOWS BOTH (第 140 条). `events` is how much this field has
+    //! recorded; `rev` is the score's revision - the number a write is fenced against (`expectRevision`),
+    //! i.e. the one a reader of this line is meant to use. They are deliberately different numbers and they
+    //! diverge as soon as anything is undone, which is why the words around them have to differ too.
     return QStringLiteral("%1 · %2 measures · %3 staves · %4 events · rev %5")
            .arg(m_scoreName.isEmpty() ? QStringLiteral("(untitled)") : m_scoreName)
            .arg(m_measureCount)
            .arg(m_staffCount)
            .arg(eventCount())
-           .arg(m_revision);
+           .arg(scoreRevision());
 }

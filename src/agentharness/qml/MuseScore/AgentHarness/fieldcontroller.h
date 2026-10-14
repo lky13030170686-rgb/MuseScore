@@ -158,10 +158,22 @@ class FieldController : public QObject, public muse::Contextable, public muse::a
     QML_ELEMENT;
 
     //! How many raw events have been recorded since the field was created. Never decreases.
+    //!
+    //! ⛔ THIS IS NOT THE REVISION (第 140 条). It counts rows in THIS field's record; the revision is a
+    //! position in the SCORE's undo stack, and the two stop agreeing the moment anything is undone - the
+    //! event count keeps climbing while the revision goes back down. Both were called "revision" in the UI
+    //! (`… 2 events · rev 2`, the same number printed twice), so the number a user read off the panel was
+    //! one the fence would have refused. One name now means one number, and this is not it.
     Q_PROPERTY(int eventCount READ eventCount NOTIFY fieldChanged)
-    //! Bumped whenever the score's contents change. Used as the optimistic-concurrency fence:
-    //! a tool call that carries an older revision is refused rather than applied to stale data.
-    Q_PROPERTY(int revision READ revision NOTIFY fieldChanged)
+    //! The score's revision - the optimistic-concurrency fence itself, read from the undo stack.
+    //! A tool call that carries an older revision is refused rather than applied to stale data.
+    //!
+    //! ⛔ THERE IS EXACTLY ONE THING CALLED `revision` (第 140 条): this property, `scoreRevision()`,
+    //! every tool's `meta["revision"]`, `score_revision`'s text and `expectRevision` are all the SAME
+    //! number, because they all come from `scoreRevision()`. Structure, not agreement - a field that
+    //! counted for itself would be a second truth about "has the score changed", and the first thing it
+    //! would miss is the edit the user made with the mouse.
+    Q_PROPERTY(int revision READ scoreRevision NOTIFY fieldChanged)
     Q_PROPERTY(QString scoreName READ scoreName NOTIFY fieldChanged)
     Q_PROPERTY(int measureCount READ measureCount NOTIFY fieldChanged)
     Q_PROPERTY(int staffCount READ staffCount NOTIFY fieldChanged)
@@ -226,6 +238,19 @@ public:
     //! cannot express that - it must return a string - so a tool that finishes later returns an empty
     //! success and reports through this channel instead. Exactly one of the two paths fires.
     void runToolAsync(const QString& name, const QString& argsJson, std::function<void(const ToolResult&)> done);
+
+    //! Shape one tool result on its way out: stamp the revision, spill a large text, and log it.
+    //!
+    //! ⛔ THE ONLY PLACE A TOOL RESULT IS FINISHED, and that is the point of it (第 140 条). Both funnels of
+    //! `runToolAsync` call this, so a tool cannot forget either half - and, more to the point here, the
+    //! `revision` in `meta` cannot come from anywhere but `scoreRevision()`. Before this, every tool body
+    //! inserted the key itself: 38 copies of one line, of which two (第 140 条 measured: `score_overview`
+    //! and `command_dispatch`) inserted the FIELD's event count instead. A wrong number under a key every
+    //! other tool spells correctly is invisible - nothing failed, nothing was logged, and the two numbers
+    //! had the same name.
+    //!
+    //! `queued` only changes the log line: it says which of the two paths the result came back through.
+    ToolResult finishToolResult(const QString& name, const QString& argsJson, const ToolResult& raw, bool queued);
     Q_INVOKABLE bool lastToolOk() const { return m_lastToolOk; }
     //! Tool names, for diagnostics and (later) the prompt's tool list.
     Q_INVOKABLE QStringList availableTools() const;
@@ -551,6 +576,10 @@ public:
     //! our own would be a second truth about "has the score changed", and the first thing it would
     //! miss is a change made by the user with the mouse - which is exactly the change an optimistic
     //! write needs to notice. `currentStateIndex()` moves on every commit, whoever made it.
+    //!
+    //! It is also the `revision` property the UI binds to, for the same reason (第 140 条): the number the
+    //! panel shows and the number a write is fenced against have to be one number, or the panel is
+    //! teaching its reader a value that will be refused.
     int scoreRevision() const;
 
     //! Whether an undo transaction is currently open on this score.
@@ -579,7 +608,6 @@ public:
     void postToEventLoop(std::function<void()> body);
 
     int eventCount() const { return int(m_events.size() + m_droppedEvents); }
-    int revision() const { return m_revision; }
     QString scoreName() const { return m_scoreName; }
     int measureCount() const { return m_measureCount; }
     int staffCount() const { return m_staffCount; }
@@ -649,7 +677,6 @@ private:
     AutomationAttribution m_automationAttribution;
     QVector<RawFieldEvent> m_heldAutomationEvents;
 
-    int m_revision = 0;
     QString m_scoreName;
     int m_measureCount = 0;
     int m_staffCount = 0;

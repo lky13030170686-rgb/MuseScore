@@ -131,13 +131,17 @@ Item {
             }
 
             FactRow {
-                //! The revision is the number a write can be fenced against (`expectRevision`), so it is
-                //! shown as the score's version rather than as an internal counter.
-                label: qsTrc("agentharness", "Revision")
+                //! ⛔ `revision` IS the fence - the same number `score_revision` returns and `expectRevision`
+                //! compares (第 140 条). It used to be a private event counter wearing this name, so the
+                //! number shown here was one a write would have refused.
+                label: qsTrc("agentharness", "Revision (write fence)")
                 value: root.field ? String(root.field.revision) : "—"
             }
 
             FactRow {
+                //! The other number, and it is NOT a revision: how many raw events this field has recorded.
+                //! It keeps climbing when the revision goes back down (undo), which is why the two rows exist
+                //! side by side instead of one line printing the same value twice.
                 label: qsTrc("agentharness", "Recorded edits")
                 value: root.field ? String(root.field.eventCount) : "—"
             }
