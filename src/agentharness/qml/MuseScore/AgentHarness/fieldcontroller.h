@@ -45,6 +45,9 @@
 #include "rcommand/icommandsregister.h"
 
 #include "addressing.h"
+//! Which action a raw notification belongs to (第 139 条): an automation change that happens inside a score
+//! transaction is part of it, not a separate event.
+#include "eventattribution.h"
 #include "modelcatalog.h"
 #include "scorerecipes.h"
 #include "sessionlog.h"
@@ -613,6 +616,9 @@ private:
     //! The AUTOMATION channel - dynamics and tempo curves. See the note where it is subscribed: without it
     //! an entire class of edit never reaches the field.
     void onAutomationChanges(const mu::engraving::AutomationChanges& changes);
+    //! Records whatever automation changes the turn left unabsorbed (第 139 条). Runs at the end of the
+    //! event-loop turn in which they arrived - see `eventattribution.h` for why the turn is the boundary.
+    void flushHeldAutomationEvents();
     void onStackChanged();
     void onUndoRedo();
     void refreshScoreFacts();
@@ -635,6 +641,13 @@ private:
     std::deque<RawFieldEvent> m_events;
     quint64 m_nextSeq = 1;
     quint64 m_droppedEvents = 0;
+
+    //! Automation changes that arrived while a score transaction was in flight (第 139 条).
+    //! ⛔ The count in `m_automationAttribution` and this vector are updated together, in the three places
+    //! the attribution reports (hold / absorbed / uncovered) - the DECISION lives there so it can be unit
+    //! tested without an application, and the payloads live here because they are `RawFieldEvent`s.
+    AutomationAttribution m_automationAttribution;
+    QVector<RawFieldEvent> m_heldAutomationEvents;
 
     int m_revision = 0;
     QString m_scoreName;

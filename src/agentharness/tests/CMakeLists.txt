@@ -37,6 +37,9 @@ set(MODULE_TEST_SRC
     # commands act on. Its own suite because what it pins - "the range is exactly what was asked for, and
     # nothing was written" - is a claim about the editor, not about the score.
     ${CMAKE_CURRENT_LIST_DIR}/editorstate_tests.cpp
+    # Which action a raw notification belongs to (第 139 条). Pure logic: one split produced four rows in
+    # the timeline, and the rule that collapses them has three branches worth pinning.
+    ${CMAKE_CURRENT_LIST_DIR}/eventattribution_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/spill_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/sessionlog_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/llmclient_tests.cpp

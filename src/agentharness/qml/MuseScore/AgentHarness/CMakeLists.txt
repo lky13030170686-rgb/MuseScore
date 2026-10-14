@@ -87,6 +87,10 @@ qt_add_qml_module(agentharness_qml
         # able to tell "did this change my music?" from the name of the thing it called (第 138 条).
         editorstate.cpp
         editorstate.h
+        # Which ACTION a raw notification belongs to (第 139 条): an automation change inside a score
+        # transaction is part of it, not a separate event. Pure logic, so it is unit-tested without an app.
+        eventattribution.cpp
+        eventattribution.h
     QML_FILES
         AgentPanel.qml
         AgentTranscriptRow.qml

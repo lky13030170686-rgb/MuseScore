@@ -25,6 +25,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+//! The end-of-turn flush for held automation changes (第 139 条).
+#include <QTimer>
 
 #include "async/async.h"
 #include "engraving/automation/automationdata.h"
@@ -483,11 +485,33 @@ void FieldController::onAutomationChanges(const mu::engraving::AutomationChanges
     event.objectCount = int(changes.affectedKeys.size());
     event.source = RawFieldEvent::Source::User;
 
-    record(event);
-
-    refreshScoreFacts();
-    ++m_revision;
-    emit fieldChanged();
+    //! ⛔⛔ IS THIS ITS OWN ACTION, OR PART OF THE EDIT THAT IS RUNNING? (第 139 条)
+    //!
+    //! A STRUCTURAL edit makes the automation data change as a CONSEQUENCE - splitting a measure forces the
+    //! tempo/repeat timeline to be rebuilt, and the rebuild notifies. Recording those as their own events
+    //! put FOUR rows in the timeline for one keystroke (measured: `split-measure` = 3 automation + 1 real,
+    //! `join-measures` = 2 + 1, a `repeat_set` batch = 1 + 1) and inflated `revision` with them, so a model
+    //! that read `revision 1` had to guess `4` afterwards.
+    //!
+    //! ⚠️ HELD, NOT DROPPED, and held for the rest of THIS EVENT-LOOP TURN rather than "while a transaction
+    //! is open": measured on the real application, the transaction test catches two of a split's three
+    //! automation changes and misses the third, because `TransactionManager::endTransaction` calls
+    //! `updateAutomation` *after* ending the transaction. What is true for all of them is the ORDER - they
+    //! arrive in the same call stack as the score event that owns them (`Channel::send` is synchronous for a
+    //! same-thread receiver) - so the end of the turn is the boundary that means something. See
+    //! `eventattribution.h`.
+    if (m_automationAttribution.hold()) {
+        //! The first one held this turn: arrange for whatever is left to be recorded when the turn ends.
+        QTimer::singleShot(0, this, [this]() {
+            flushHeldAutomationEvents();
+        });
+    }
+    m_heldAutomationEvents.append(event);
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] automation change held for this turn:" << event.action
+               << "held=" << m_automationAttribution.heldCount();
+    }
+    return;
 }
 void FieldController::onScoreChanges(const ScoreChanges& changes)
 {
@@ -515,6 +539,21 @@ void FieldController::onScoreChanges(const ScoreChanges& changes)
     const bool isUndo = m_lastStateIndex >= 0 && stateIndex >= 0 && stateIndex < m_lastStateIndex;
     const bool isRedo = false;
     m_lastStateIndex = stateIndex;
+
+    //! ⛔ THIS EVENT IS THE ACTION, so the automation changes that were held while it was running belong to
+    //! it and are NOT recorded separately (第 139 条). Upstream guarantees the order this relies on: a
+    //! same-thread `Channel::send` calls its receivers synchronously, and `updateAutomation` only runs for a
+    //! non-empty transaction - so the automation notifications always arrive just before this, in the same
+    //! call stack. `onStackChanged` releases anything left over, so nothing depends on that staying true.
+    const int absorbed = m_automationAttribution.absorb();
+    if (absorbed > 0) {
+        m_heldAutomationEvents.clear();
+        if (fieldTraceEnabled()) {
+            LOGW() << "[agent-field] absorbed" << absorbed
+                   << "automation change(s) into this transaction's event:" << changes.changedObjects.size()
+                   << "object(s) changed";
+        }
+    }
 
     RawFieldEvent event;
     event.wallClock = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
@@ -584,6 +623,37 @@ void FieldController::onStackChanged()
     //! harmless today, but the flags are consumed by the next `onScoreChanges` regardless, and
     //! keeping exactly one place that resets them is what makes the ordering auditable. The
     //! earlier version cleared them here and the `[undo]` marker never appeared.
+    //!
+    //! ⚠️ NOTE what is deliberately NOT here (第 139 条): the held automation changes are NOT released on
+    //! this notification. `commitChanges()` ends the transaction and notifies the stack, and the change
+    //! payload that owns the automation rebuild arrives *after* both - releasing here would record the very
+    //! events this round exists to collapse. The single release point is the end-of-turn flush.
+    emit fieldChanged();
+}
+
+void FieldController::flushHeldAutomationEvents()
+{
+    //! The turn ended. Anything still held was not covered by a score event, so it is an action of its own
+    //! after all - recorded now rather than dropped (第 139 条). Upstream says this cannot happen for a
+    //! commit (`updateAutomation` runs only for a non-empty transaction, which always sends an event); this
+    //! is what makes the field's guarantee independent of that.
+    const int uncovered = m_automationAttribution.release();
+    if (uncovered <= 0) {
+        return;
+    }
+
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-field] turn ended without a score event;" << uncovered
+               << "held automation change(s) are recorded after all";
+    }
+
+    for (const RawFieldEvent& held : m_heldAutomationEvents) {
+        record(held);
+    }
+    m_heldAutomationEvents.clear();
+
+    refreshScoreFacts();
+    m_revision += uncovered;
     emit fieldChanged();
 }
 
