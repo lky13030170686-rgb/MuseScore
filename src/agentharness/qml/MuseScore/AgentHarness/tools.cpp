@@ -29,6 +29,8 @@
 #include "scoreactiongateway.h"
 #include "scoredigest.h"
 #include "scorerecipes.h"
+//! The measure-range selection (第 138 条) - editor state, not score data.
+#include "editorstate.h"
 #include "semanticderive.h"
 
 using namespace muse::agentharness;
@@ -1232,6 +1234,86 @@ ToolResult muse::agentharness::toolVoltaAdd(const QJsonObject& args, const ToolC
     meta.insert(QStringLiteral("lastMeasure"), last);
     return ToolResult::success(result.detail, meta);
 }
+
+ToolResult muse::agentharness::toolSelectRange(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int first = 0;
+    if (!readInt(args, QStringLiteral("firstMeasure"), first)) {
+        return ToolResult::failure(QStringLiteral("`firstMeasure` is required: the 1-based first measure to "
+                                                  "select"));
+    }
+
+    //! One argument rather than two that have to agree, the same rule `measure_remove` and `volta_add` use.
+    int last = first;
+    if (args.contains(QStringLiteral("lastMeasure")) && !readInt(args, QStringLiteral("lastMeasure"), last)) {
+        return ToolResult::failure(QStringLiteral("`lastMeasure` must be an integer"));
+    }
+
+    //! 0 (the default) means every staff, which is what "select these bars" means.
+    int staff = 0;
+    if (args.contains(QStringLiteral("staff")) && !readInt(args, QStringLiteral("staff"), staff)) {
+        return ToolResult::failure(QStringLiteral("`staff` must be an integer"));
+    }
+
+    //! ⚠️ NO `expectRevision` HERE, and that is not an oversight: this tool writes nothing, so refusing it
+    //! because the score moved would block the one thing it is for. The fence protects edits, and the
+    //! command that follows this call is where it belongs.
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Select measures"), [&](mu::engraving::Score* score) {
+        return selectMeasures(score, first, last, staff);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    //! ⚠️ `revision` is reported for the same reason every other tool reports it, and here it makes a point:
+    //! it does NOT move. A caller that assumes every tool advances it learns otherwise from the number.
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    meta.insert(QStringLiteral("firstMeasure"), first);
+    meta.insert(QStringLiteral("lastMeasure"), last);
+    return ToolResult::success(result.detail, meta);
+}
+
+ToolResult muse::agentharness::toolSelectNote(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    ScoreAddress address;
+    QString problem;
+    if (!readAddress(args, address, problem)) {
+        return ToolResult::failure(problem);
+    }
+
+    int voice = 0;
+    if (args.contains(QStringLiteral("voice")) && !readInt(args, QStringLiteral("voice"), voice)) {
+        return ToolResult::failure(QStringLiteral("`voice` must be an integer"));
+    }
+    if (voice < 0) {
+        return ToolResult::failure(QStringLiteral("`voice` is 1-based, so it starts at 1 (got %1)")
+                                   .arg(voice + 1));
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Select note"), [&](mu::engraving::Score* score) {
+        return selectElementAt(score, address, voice);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("revision"), ctx.field->scoreRevision());
+    return ToolResult::success(result.detail, meta);
+}
 ToolResult muse::agentharness::toolNoteMove(const QJsonObject& args, const ToolContext& ctx)
 {
     if (!ctx.field) {
@@ -1852,6 +1934,43 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             toolCommandList,
         },
         ToolSpec{
+            QStringLiteral("select_range"),
+            QStringLiteral("Select measures `firstMeasure`..`lastMeasure` so that the commands which act on "
+                           "a SELECTION act on exactly those bars - e.g. `command://notation/split-measure`, "
+                           "`join-measures`, `copy`, `delete`. Without this, such a command acts wherever the "
+                           "user's own cursor happens to be. ⚠️ It moves the user's selection (the score "
+                           "itself is untouched, so `revision` does not change), and the result says what "
+                           "got selected."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("firstMeasure"), intProperty(QStringLiteral(
+                                                                   "1-based first measure to select.")));
+                props.insert(QStringLiteral("lastMeasure"), intProperty(QStringLiteral(
+                                                                  "Optional. 1-based last measure. Defaults to `firstMeasure`, i.e. "
+                                                                  "select just that bar.")));
+                props.insert(QStringLiteral("staff"), intProperty(QStringLiteral(
+                                                          "Optional. 1-based staff; omit (or 0) to select on every staff.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("firstMeasure") }),
+            toolSelectRange,
+        },
+        ToolSpec{
+            QStringLiteral("select_note"),
+            QStringLiteral("Put the selection ON the note or rest at an address, so that commands acting on "
+                           "ONE selected element act on it - `command://notation/split-measure` is the one "
+                           "that needs this (it reads the selected note and does nothing without one). "
+                           "⚠️ It moves the user's selection; the score itself is untouched, so `revision` "
+                           "does not change. Use `select_range` instead when the command wants a measure "
+                           "range (`join-measures`, `copy`, `delete`)."),
+            schemaObject([&] {
+                QJsonObject props = addressProperties();
+                props.insert(QStringLiteral("voice"), intProperty(QStringLiteral(
+                                                          "Optional. 1-based voice (default 1).")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("measure") }),
+            toolSelectNote,
+        },
+        ToolSpec{
             QStringLiteral("command_dispatch"),
             QStringLiteral("Perform one notation action by dispatching its command URI, e.g. "
                            "`command://notation/append-measures`. This is how the user's own editing "
@@ -2458,7 +2577,10 @@ bool muse::agentharness::isBatchableTool(const QString& name)
     //!   - `command_dispatch` - it would run a command OUTSIDE the batch's merge window, so it would not
     //!     be part of the single undo step the caller asked for;
     //!   - `patch_apply` - nesting a batch inside a batch has no meaning for the undo stack;
-    //!   - `command_list` / `note_capabilities` / `score_revision` - reads.
+    //!   - `command_list` / `note_capabilities` / `score_revision` - reads;
+    //!   - `select_range` - it writes NOTHING (it moves the selection), so it would add no undo step to the
+    //!     batch it joined; it is a PRECONDITION for the command that follows it, and that command is where
+    //!     the fence and the undo step belong (第 138 条).
     static const QSet<QString> kBatchable = {
         //! note-level
         QStringLiteral("note_set_pitch"), QStringLiteral("note_transpose"),

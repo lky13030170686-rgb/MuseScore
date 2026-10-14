@@ -219,6 +219,16 @@ ToolResult toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx);
 ToolResult toolRepeatSet(const QJsonObject& args, const ToolContext& ctx);
 ToolResult toolVoltaAdd(const QJsonObject& args, const ToolContext& ctx);
 
+//! Editor state (not score data): select a measure range so that the commands which act on a SELECTION
+//! act there. ⛔ It changes no music (`revision` does not move) and it MOVES the user's selection - which
+//! is what makes a whole class of commands addressable, and is said out loud in the result (第 138 条).
+ToolResult toolSelectRange(const QJsonObject& args, const ToolContext& ctx);
+
+//! Editor state: put the selection ON the note or rest at an address (a SINGLE-element selection).
+//! ⛔ The two selection tools exist because the commands disagree about what they need: `join-measures`
+//! wants a RANGE, `split-measure` reads the selected ELEMENT and returns silently without one (第 138 条).
+ToolResult toolSelectNote(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: transpose every note in a measure range.
 ToolResult toolTransposeRange(const QJsonObject& args, const ToolContext& ctx);
 

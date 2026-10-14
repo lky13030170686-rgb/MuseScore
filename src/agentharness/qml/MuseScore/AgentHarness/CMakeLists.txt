@@ -83,6 +83,10 @@ qt_add_qml_module(agentharness_qml
         notelocator.h
         scorerecipes.cpp
         scorerecipes.h
+        # Editor state that is NOT score data: what is selected. Its own file because a caller has to be
+        # able to tell "did this change my music?" from the name of the thing it called (第 138 条).
+        editorstate.cpp
+        editorstate.h
     QML_FILES
         AgentPanel.qml
         AgentTranscriptRow.qml

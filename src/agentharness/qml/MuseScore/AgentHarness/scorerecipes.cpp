@@ -248,8 +248,27 @@ int spellingFor(mu::engraving::Note* note, int pitch)
     return mu::engraving::pitch2tpc(pitch, key, mu::engraving::Prefer::NEAREST);
 }
 namespace {
+int measureCount(mu::engraving::Score* score)
+{
+    int n = 0;
+    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure()) {
+        ++n;
+    }
+    return n;
+}
+} // namespace
+} // namespace
+
 //! The measure at a 1-based number, or null. Also reports how many there are, for the message.
-mu::engraving::Measure* measureAt(mu::engraving::Score* score, int number, int* total)
+//! ⛔ ONE DEFINITION, PUBLIC, because three layers need it (the recipes here, `editorstate.cpp`, and any
+//! future caller): 第 137 条 added a second private copy without noticing this one, and the compiler found
+//! the collision only when 第 138 条 tried to expose it. Looking for an existing helper before writing one
+//! is cheaper than a rename.
+//!
+//! ⚠️ Defined HERE, after the file-local namespace that used to hold it, because a member of
+//! `muse::agentharness` cannot be defined inside an anonymous namespace (C2888) - and the anonymous
+//! namespace above spans further than it looks.
+mu::engraving::Measure* muse::agentharness::measureAt(mu::engraving::Score* score, int number, int* total)
 {
     int index = 0;
     for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure(), ++index) {
@@ -265,17 +284,6 @@ mu::engraving::Measure* measureAt(mu::engraving::Score* score, int number, int* 
     }
     return nullptr;
 }
-
-int measureCount(mu::engraving::Score* score)
-{
-    int n = 0;
-    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure()) {
-        ++n;
-    }
-    return n;
-}
-} // namespace
-} // namespace
 
 RecipeResult muse::agentharness::setNotePitch(mu::engraving::Score* score, const ScoreAddress& address,
                                               int voice, int noteIndex, int midiPitch)
@@ -1854,20 +1862,6 @@ RecipeResult muse::agentharness::removeMeasures(mu::engraving::Score* score, int
 //! Pid::REPEAT_START/REPEAT_END)`). Creating a `BarLine` element by hand would produce a glyph that the
 //! repeat logic does not know about.
 namespace {
-//! The measure with 1-based position `number`, or null. Same walk as the other measure recipes: the digest
-//! and the addressing layer count by POSITION, not by `Measure::measureNumber()` (an anacrusis or a
-//! numbering offset makes those two disagree).
-mu::engraving::Measure* measureAt(mu::engraving::Score* score, int number)
-{
-    int index = 0;
-    for (mu::engraving::Measure* m = score->firstMeasure(); m; m = m->nextMeasure(), ++index) {
-        if (index + 1 == number) {
-            return m;
-        }
-    }
-    return nullptr;
-}
-
 //! How a measure's repeat marks read, for the "was"/"now" halves of the report.
 QString describeRepeat(const mu::engraving::Measure* measure)
 {
@@ -2069,14 +2063,16 @@ RecipeResult muse::agentharness::addVolta(mu::engraving::Score* score, int first
         .arg(firstMeasure).arg(lastMeasure));
 }
 
-namespace {
 //! The chord or rest at an address, as a `ChordRest*`, for elements that hang off a beat.
 //! ⚠️ Dynamics and hairpins attach to the SEGMENT, not to a note, so no note index is involved - which is
 //! why this returns the chord rest rather than going through `noteAt`.
-mu::engraving::ChordRest* chordRestAt(mu::engraving::Score* score, const ScoreAddress& address,
-                                      QString& problem)
+//! ⛔ PUBLIC since 第 138 条: `editorstate.cpp` needs the same lookup to put the SELECTION on an element,
+//! and a second copy of "what is at this address" is a second answer to a question that must have one.
+mu::engraving::ChordRest* muse::agentharness::chordRestAt(mu::engraving::Score* score,
+                                                          const ScoreAddress& address, int voice,
+                                                          QString& problem)
 {
-    const NoteLookup found = chordAt(score, address, 0);
+    const NoteLookup found = chordAt(score, address, voice);
     if (!found.found()) {
         problem = found.problem.isEmpty()
                   ? QStringLiteral("the lookup failed without saying why (internal) - nothing was changed")
@@ -2085,7 +2081,6 @@ mu::engraving::ChordRest* chordRestAt(mu::engraving::Score* score, const ScoreAd
     }
     return found.chordRest();
 }
-} // namespace
 
 RecipeResult muse::agentharness::addDynamic(mu::engraving::Score* score, const ScoreAddress& address,
                                            const QString& mark)
@@ -2099,7 +2094,7 @@ RecipeResult muse::agentharness::addDynamic(mu::engraving::Score* score, const S
     }
 
     QString problem;
-    mu::engraving::ChordRest* at = chordRestAt(score, address, problem);
+    mu::engraving::ChordRest* at = chordRestAt(score, address, 0, problem);
     if (!at) {
         return RecipeResult::failure(problem);
     }
@@ -2163,7 +2158,7 @@ RecipeResult muse::agentharness::addHairpin(mu::engraving::Score* score, const S
     }
 
     QString problem;
-    mu::engraving::ChordRest* start = chordRestAt(score, from, problem);
+    mu::engraving::ChordRest* start = chordRestAt(score, from, 0, problem);
     if (!start) {
         return RecipeResult::failure(problem);
     }
@@ -2176,7 +2171,7 @@ RecipeResult muse::agentharness::addHairpin(mu::engraving::Score* score, const S
     if (to.measure == from.measure && to.beat == from.beat && to.staff == from.staff) {
         end = nullptr;   //!< same beat -> let upstream run to the next chord rest
     } else {
-        end = chordRestAt(score, to, problem);
+        end = chordRestAt(score, to, 0, problem);
         if (!end) {
             return RecipeResult::failure(problem);
         }

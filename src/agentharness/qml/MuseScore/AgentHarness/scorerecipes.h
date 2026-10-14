@@ -26,6 +26,8 @@
 #include <QStringList>
 
 namespace mu::engraving {
+class ChordRest;
+class Measure;
 class Score;
 }
 
@@ -392,6 +394,27 @@ RecipeResult moveNote(mu::engraving::Score* score, const ScoreAddress& from, int
 //! ── Measures ──────────────────────────────────────────────────────────────────────────────────
 //! Adding and removing whole measures. These change the SHAPE of the score rather than its contents, and
 //! everything addressed by measure number after the edit moves - which is worth saying in the result.
+
+//! The measure at 1-based position `number`, or null when the score is shorter than that.
+//! ⛔ By POSITION, not by `Measure::measureNumber()`: an anacrusis or a numbering offset makes those two
+//! disagree, and every address in this subsystem (the digest, the tools, `addressing.h`) counts positions.
+//! ⚠️ A LOOKUP, not a cache: the pointer is valid until the next edit, and every caller here uses it
+//! immediately. (The "never hold an `EngravingObject*`" rule is about the FIELD, which outlives edits -
+//! not about a function's return value.)
+//!
+//! @param total when non-null, receives how many measures the score has - which is what a "there is no
+//!              measure 99" message needs, and walking twice for it would be silly.
+mu::engraving::Measure* measureAt(mu::engraving::Score* score, int number, int* total = nullptr);
+
+//! The chord or rest at an address, or null when there is nothing there (with the reason in `problem`).
+//!
+//! ⚠️ Dynamics and hairpins attach to the SEGMENT rather than to a note, so this returns the chord rest
+//! instead of going through `noteAt` - and it is the ONE answer to "what is at this address", shared by the
+//! recipes and by the selection layer (`editorstate.cpp`, 第 138 条). A second copy would be a second answer.
+//!
+//! @param voice 0-based, matching `ScoreAddress` and the note recipes.
+mu::engraving::ChordRest* chordRestAt(mu::engraving::Score* score, const ScoreAddress& address, int voice,
+                                      QString& problem);
 
 //! Insert `count` measures before measure `beforeMeasure` (1-based). `beforeMeasure` may be one past the
 //! last measure, which appends.

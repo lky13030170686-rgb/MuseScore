@@ -785,6 +785,16 @@ public:
     void cmdSelectAll();
     void cmdSelectSection();
 
+    //! Select `e`'s measure, creating a range selection or EXTENDING the existing one (the same call
+    //! `cmdSelectAll` makes twice: first measure, then last).
+    //!
+    //! ⚠️ Exposed for the agent harness (第 138 条), which needs to select a measure range BY ADDRESS so
+    //! that the commands acting on a selection act on the bars the caller named. It was private, and the
+    //! capability is not private in spirit: the public API layer already re-exports exactly this operation
+    //! (`apiv1::Selection::selectRange`, `selection.cpp:117`, "since MuseScore 3.5"). Nothing about the
+    //! implementation changed - only where the declaration sits.
+    void selectRange(EngravingItem* e, staff_idx_t staffIdx);
+
     struct InsertMeasureOptions {
         InsertMeasureOptions() {}
 
@@ -933,7 +943,8 @@ private:
     void doSelect(EngravingItem* e, SelectType type, staff_idx_t staffIdx);
     void selectSingle(EngravingItem* e, staff_idx_t staffIdx);
     void selectAdd(EngravingItem* e);
-    void selectRange(EngravingItem* e, staff_idx_t staffIdx);
+    //! NOTE `selectRange` is declared PUBLIC above (第 138 条): it is the address-based entry point the
+    //! agent harness needs, and the API layer already exposes the same operation.
 
     bool trySelectSimilarInRange(EngravingItem* e);
     bool tryExtendSingleSelectionToRange(EngravingItem* e, staff_idx_t staffIdx);

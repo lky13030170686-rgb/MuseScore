@@ -1152,8 +1152,12 @@ RecipeResult FieldController::runNoteRecipe(const QString& actionName,
     if (!joinedAnOpenTransaction) {
         //! `prepareChanges`/`commitChanges` rather than `transaction()`: the recipe is a plain function, and
         //! the pair is the shape that lets the outcome be read before deciding to commit. A recipe that
-        //! failed must ROLL BACK rather than commit an empty transaction - an empty commit still moves the
-        //! revision, which would make a no-op look like an edit to anything watching the fence.
+        //! failed must ROLL BACK - it may have pushed commands before failing, and those have to be unwound.
+        //! ⚠️ The wording here used to add "an empty commit still moves the revision"; measured 2026-10-13
+        //! (第 138 条), that is NOT what happens: `TransactionManager::endTransaction` computes
+        //! `activeTransaction()->empty()` and rolls an empty transaction back itself, so it appends no undo
+        //! step and sends no change event (see the channel note above, which has it right). The rollback on
+        //! failure is about what a FAILED recipe left behind, not about the empty case.
         undoStack->prepareChanges(muse::TranslatableString::untranslatable(muse::String(actionName)));
     }
 
