@@ -1274,6 +1274,15 @@ void FieldController::switchAgentSession(int index)
         return;
     }
 
+    //! ⛔ WHETHER THE CONVERSATION BEING LEFT SURVIVES IS PART OF THE LOG LINE, and that is not decoration.
+    //! The count below gets SMALLER when the outgoing session had nothing in it (its slot is reused rather
+    //! than parked - see `sessionstore.h`), so `of 1` after a switch is the CORRECT outcome for an empty
+    //! session and the symptom of data loss for one with content. Measured 2026-10-15: a smoke run that
+    //! switched away from a fresh session printed `of 1` and looked exactly like the reverse verification's
+    //! failure - the two were told apart only by looking at which conversation was left behind. A number
+    //! that means two opposite things depending on invisible state is a number that will be misread.
+    const bool outgoingKept = sessionHasContent(m_session);
+
     archiveLiveSessionIfWorthKeeping();
     if (!m_sessions.makeCurrent(index, nullptr)) {
         return;
@@ -1290,7 +1299,9 @@ void FieldController::switchAgentSession(int index)
     LOGW() << "[agent-session] switched to session" << m_sessions.currentIndex()
            << "id=" << m_sessions.current().id
            << "events=" << m_session.size()
-           << "of" << m_sessions.count();
+           << "of" << m_sessions.count()
+           << (outgoingKept ? "(the one left behind was kept)"
+                            : "(the one left behind was empty, so it left no row)");
 
     emit fieldChanged();
 }
