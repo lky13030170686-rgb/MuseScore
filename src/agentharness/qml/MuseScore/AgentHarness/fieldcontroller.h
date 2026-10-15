@@ -51,6 +51,8 @@
 #include "modelcatalog.h"
 #include "scorerecipes.h"
 #include "sessionlog.h"
+//! More than one conversation (第 141 条): the list, and the archives of everything that is not live.
+#include "sessionstore.h"
 //! `ToolResult` is a parameter type on the tool entry points below, so it must be a COMPLETE type here
 //! - a forward declaration would satisfy the compiler for a pointer but not for a by-value callback
 //! argument.
@@ -273,6 +275,18 @@ public:
     Q_INVOKABLE void seedSystemPrompt();
     //! Number of events in the session log.
     Q_INVOKABLE int sessionEventCount() const;
+
+    //! ── More than one conversation (第 141 条) ────────────────────────────────────────────────
+    //! Delegated to `SessionStore`, which holds every conversation that is NOT live and the rules about
+    //! which ones deserve a row. This class keeps exactly one thing: the live `SessionLog` member, because
+    //! `AgentLoop` holds a pointer to it.
+    Q_INVOKABLE void newAgentSession();
+    Q_INVOKABLE void switchAgentSession(int index);
+    //! Rows for the list, oldest first: `{ id, title, events, startedAt, current }`.
+    //! ⛔ A PROPERTY, not an invokable getter, for the reason spelled out below: a list that has to
+    //! re-render when a conversation grows has nothing to connect to otherwise.
+    Q_PROPERTY(QVariantList agentSessions READ agentSessions NOTIFY fieldChanged)
+    QVariantList agentSessions() const;
 
     //! ── The agent loop, as QML sees it ────────────────────────────────────────────────────────
     //! ⛔ These are Q_PROPERTIES, not Q_INVOKABLE getters, and that is load-bearing: a QML binding to
@@ -691,7 +705,22 @@ private:
     //! The conversation log. Owned here for now; the agent loop will drive it, but keeping it alive
     //! from the field means the transcript and the derived history are inspectable before the loop
     //! exists - which is how the projection gets verified against the running program.
+    //!
+    //! ⛔ THE ONE OBJECT, AND THE ONE THAT MUST NEVER BE REPLACED (第 141 条). `AgentLoop` takes its
+    //! address in its constructor, so switching conversations RESTORES INTO this object
+    //! (`SessionLog::fromJsonLines`) rather than pointing the loop at another one.
     SessionLog m_session;
+    //! Everything that is not live: the other conversations' JSONL and the rows the list renders. The
+    //! invariant is in `sessionstore.h` - exactly one entry has an empty payload, and it is this one.
+    SessionStore m_sessions;
+
+    //! Keep the live conversation before clearing or replacing it - and only when it has something in it
+    //! (the system prompt alone is not a conversation, see `sessionHasContent`).
+    void archiveLiveSessionIfWorthKeeping();
+    //! Tell the transport which conversation the next requests belong to. The id rides out as
+    //! `x-opencode-session`, so retries and resumed turns keep the same routing identity - and it is the
+    //! SAME id the list shows, rather than a second, invisible notion of "session" (第 119/125 条).
+    void applySessionRoutingId();
 
     //! The loop and its transport, created on first use. Lazily, so a session that never talks to a
     //! model never builds a network stack - and so the field keeps working with no key configured.

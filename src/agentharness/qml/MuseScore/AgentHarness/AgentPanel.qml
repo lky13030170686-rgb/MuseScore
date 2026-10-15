@@ -72,6 +72,11 @@ Item {
     //! score", which is the question a user opens this panel with, and a section that starts collapsed
     //! is one nobody finds.
     property bool timelineExpanded: true
+    //! Whether the session list is open. Starts CLOSED - see the note where it is drawn (第 141 条).
+    property bool sessionsExpanded: false
+    //! How many conversations this process has, for the toggle's label. Read from the field's own list
+    //! rather than counted here: the panel does not own sessions and must not look like it does.
+    readonly property int sessionCount: root.field ? root.field.agentSessions.length : 0
     //! How many operations the field has recorded, for the toggle's label. Read through the field rather
     //! than `recentOps.length`, because `recentOps` is capped for display while this is the real total.
     readonly property int opCount: root.field ? root.field.eventCount : 0
@@ -159,6 +164,34 @@ Item {
             //! you glance at, and letting it take the space would push the conversation - the thing you
             //! are actually working in - down to nothing. The page passes 0 and lets it fill.
             visibleRows: 6
+        }
+
+        //! ── Which conversation this is (第 141 条) ────────────────────────────────────────
+        //! ⛔ COLLAPSED by default, which is the opposite of the timeline's choice, and for the same kind of
+        //! reason: the timeline answers the question a user opens this panel with ("what just happened to my
+        //! score"), while switching conversations is something you reach for occasionally. Two expanded
+        //! sections would leave the conversation - the thing being worked in - with the leftover space.
+        FlatButton {
+            id: sessionsToggle
+
+            Layout.fillWidth: true
+            accessible.name: qsTrc("agentharness", "Show or hide the session list")
+            text: root.sessionsExpanded
+                  ? qsTrc("agentharness", "Hide sessions")
+                  : qsTrc("agentharness", "Sessions (%1)").arg(root.sessionCount)
+
+            onClicked: {
+                root.sessionsExpanded = !root.sessionsExpanded
+            }
+        }
+
+        AgentSessionList {
+            Layout.fillWidth: true
+            field: root.field
+            //! Three rows in a dock panel: the list is a switcher, not a library, and the panel's own
+            //! conversation area must stay the tallest thing in it.
+            visibleRows: 3
+            visible: root.sessionsExpanded
         }
 
         //! ── The conversation ──────────────────────────────────────────────────────────────

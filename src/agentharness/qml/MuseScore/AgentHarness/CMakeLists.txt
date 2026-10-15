@@ -91,6 +91,12 @@ qt_add_qml_module(agentharness_qml
         # transaction is part of it, not a separate event. Pure logic, so it is unit-tested without an app.
         eventattribution.cpp
         eventattribution.h
+        # More than one conversation (第 141 条): the rows the list shows and the archived conversations
+        # behind them. A plain container plus two free functions, so "which row says what" and "which
+        # conversation survives a click" are tests rather than opinions. ⛔ The live log itself stays in
+        # `fieldcontroller.cpp` - `AgentLoop` holds its address and it must never be replaced.
+        sessionstore.cpp
+        sessionstore.h
     QML_FILES
         AgentPanel.qml
         AgentTranscriptRow.qml
@@ -120,6 +126,10 @@ qt_add_qml_module(agentharness_qml
         # between them - which way is "wider" - belongs to the page, not to the handle.
         AgentColumnHandle.qml
         AgentFactsPanel.qml
+        # The conversations of this process (第 141 条). One component for two surfaces - the Agent page's
+        # sidebar and the dock panel - because a second hand-written list would be a second place to get
+        # "which conversation am I in" right, the same argument the composer and the timeline already made.
+        AgentSessionList.qml
         AgentToolInspector.qml
         AgentConnectionPanel.qml
         # The provider's key and its model catalog - DSH's "模型" section. Its own file because the

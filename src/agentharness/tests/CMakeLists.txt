@@ -42,6 +42,11 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/eventattribution_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/spill_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/sessionlog_tests.cpp
+    # More than one conversation (第 141 条): which rows the list has, what they are called, and which
+    # conversation survives a click. Pure container plus two free functions - no window, no score, no key.
+    # ⚠️ The FIELD's half of it (the live log is restored INTO, never replaced, because `AgentLoop` holds
+    # its address) is not reachable from here and is judged on the real program.
+    ${CMAKE_CURRENT_LIST_DIR}/sessionstore_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/llmclient_tests.cpp
     # The stored model catalog: the JSON shape of "which ids this gateway serves, and when we were
     # told" (第 131 条). Pure text in / text out, which is why it can be tested without a settings

@@ -44,12 +44,13 @@ import Muse.UiComponents
     REMEMBERS them (第 129 条), and so does this: the widths are stored through `FieldController`, the
     same place the gateway and the model live.
 
-    \b What is NOT copied, and why. The web client's sidebar lists sessions; this harness runs exactly
-    one session per process, so that list would be furniture with nothing behind it. Its right column's
-    tab strip WAS in the same category until now - "no second view to switch to" - and stopped being so
-    when the column gained one: the same conversation the centre shows, without the composer. The strip
-    is therefore built (第 135 条), and the reason is worth keeping: a tab bar is not chrome, it is a
-    claim that there are two things to look at.
+    \b What is NOT copied, and why. The web client's sidebar lists sessions; this harness ran exactly ONE
+    session per process until 第 141 条, so that list would have been furniture with nothing behind it.
+    ⛔ It is no longer one session per process: the round that made a second conversation possible built
+    the list too (`AgentSessionList.qml`, in the left column below the score facts). The right column's
+    tab strip went through the same arc one round earlier - "no second view to switch to" stopped being
+    true when the column gained one - and the lesson is worth keeping: a tab bar (or a list) is not
+    chrome, it is a claim that there are two things to look at.
 */
 Item {
     id: root

@@ -1174,6 +1174,127 @@ int FieldController::sessionEventCount() const
     return m_session.size();
 }
 
+QVariantList FieldController::agentSessions() const
+{
+    QVariantList rows;
+    for (int i = 0; i < m_sessions.count(); ++i) {
+        const bool live = (i == m_sessions.currentIndex());
+        const SessionEntry entry = m_sessions.at(i);
+
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), entry.id);
+        //! ⛔ THE LIVE ROW IS DERIVED, NEVER THE COPY TAKEN WHEN IT WAS ARCHIVED. It grows with every
+        //! event, so a stored row for it would be a second truth about a conversation that is still
+        //! happening - the thing `sessionlog.h` refuses one level down.
+        row.insert(QStringLiteral("title"), live ? sessionTitleFrom(m_session) : entry.title);
+        row.insert(QStringLiteral("events"), live ? m_session.size() : entry.events);
+        row.insert(QStringLiteral("startedAt"), entry.startedAt);
+        row.insert(QStringLiteral("current"), live);
+        rows.append(row);
+    }
+    return rows;
+}
+
+void FieldController::archiveLiveSessionIfWorthKeeping()
+{
+    //! ⚠️ NOT ARCHIVED WHEN IT ONLY HOLDS THE SYSTEM PROMPT: every session starts with one, so counting it
+    //! would put a row in the list for every click on "new session" - furniture, arrived at from the other
+    //! side (第 124 条's judgement, and `sessionHasContent` is where it lives so it can be unit-tested).
+    if (!sessionHasContent(m_session)) {
+        return;
+    }
+
+    m_sessions.archiveCurrent(m_session.toJsonLines(), m_session.size(), sessionTitleFrom(m_session));
+}
+
+void FieldController::applySessionRoutingId()
+{
+    if (!m_transport) {
+        //! No loop yet (nothing has been sent): `ensureAgentLoop` applies the id when it builds the
+        //! transport, so a conversation started before the first message still gets its own identity.
+        return;
+    }
+
+    m_transport->setSessionId(m_sessions.current().id);
+
+    //! Logged because the id is otherwise only visible ON THE WIRE (`x-opencode-session`), and "the
+    //! conversation's identity is what the gateway sees" is a claim worth being able to check:
+    //! `build/ah/mock-llm-server.ps1` prints the header it received, so the two lines can be compared
+    //! (第 141 条).
+    if (fieldTraceEnabled()) {
+        LOGW() << "[agent-session] requests carry session id=" << m_sessions.current().id;
+    }
+}
+
+void FieldController::newAgentSession()
+{
+    //! ⛔ REFUSED, NOT QUEUED. The loop holds the live log and is in the middle of a turn in it; swapping
+    //! the conversation now would append the model's answer - and its tool results - to a log that never
+    //! asked the question. The list's controls are disabled while a turn runs; this is the backstop.
+    if (agentRunning()) {
+        LOGW() << "[agent-session] a turn is running; refusing to start a new session";
+        return;
+    }
+
+    archiveLiveSessionIfWorthKeeping();
+
+    m_session.clear();
+    m_sessions.startNewLive();
+    applySessionRoutingId();
+
+    LOGW() << "[agent-session] new session id=" << m_sessions.current().id
+           << "index=" << m_sessions.currentIndex()
+           << "sessions=" << m_sessions.count();
+
+    //! Seed it exactly the way the first conversation is seeded: the system prompt is what tells the model
+    //! which score it is looking at, and a session without one would go out as a user message with no
+    //! instructions at all.
+    seedSystemPrompt();   //! emits fieldChanged
+}
+
+void FieldController::switchAgentSession(int index)
+{
+    if (agentRunning()) {
+        LOGW() << "[agent-session] a turn is running; refusing to switch sessions";
+        return;
+    }
+
+    if (index < 0 || index >= m_sessions.count() || index == m_sessions.currentIndex()) {
+        return;
+    }
+
+    //! ⛔ PARSE FIRST, MUTATE AFTER. A stored conversation that cannot be read must leave the live one
+    //! exactly where it is: refusing to switch is recoverable, while a half-switched state - the list
+    //! pointing at one conversation and the live log holding another - is the kind of thing only a restart
+    //! fixes.
+    SessionLog restored;
+    QString problem;
+    if (!SessionLog::fromJsonLines(m_sessions.at(index).payload, restored, &problem)) {
+        LOGW() << "[agent-session] cannot switch to session" << index << ":" << problem;
+        return;
+    }
+
+    archiveLiveSessionIfWorthKeeping();
+    if (!m_sessions.makeCurrent(index, nullptr)) {
+        return;
+    }
+
+    //! Assignment, not a new object: `AgentLoop` holds this one's address (see the note in the header).
+    m_session = restored;
+    applySessionRoutingId();
+
+    //! The error line belongs to the conversation that produced it - it is not in any log, so leaving it
+    //! would show a failure under a conversation that never failed.
+    m_agentLastError.clear();
+
+    LOGW() << "[agent-session] switched to session" << m_sessions.currentIndex()
+           << "id=" << m_sessions.current().id
+           << "events=" << m_session.size()
+           << "of" << m_sessions.count();
+
+    emit fieldChanged();
+}
+
 
 void FieldController::beginUndoTransaction(const QString& actionName)
 {
@@ -1496,6 +1617,13 @@ void FieldController::ensureAgentLoop()
     }
 
     m_transport = std::make_unique<LlmTransport>();
+
+    //! Which conversation the requests belong to (第 141 条). ⚠️ Before this, the transport generated a
+    //! FRESH uuid per request, so "the harness's own session id" - the comment on the header in
+    //! `llmtransport.cpp` - never existed and the gateway saw every request as an unrelated one. The id
+    //! is now the conversation's, so a retry inside one conversation keeps its routing identity, and
+    //! there is ONE notion of session rather than a visible one and an invisible one.
+    applySessionRoutingId();
 
     //! The base URL is overridable so the whole chain can be pointed at a local mock. That is what
     //! makes the transport verifiable without a real key - and it is the same switch a user behind a

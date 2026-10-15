@@ -28,11 +28,14 @@ import Muse.UiComponents
 /*!
     The left column of the Agent page: what the agent is looking at, and what it can do.
 
-    \b Why these three sections and not a session list. The DSH web client's sidebar lists sessions;
-    this harness has exactly ONE session per run (the information field is bound to the open score and
-    the session log is per process), so a list of sessions would be an invented feature. What is real,
-    and what a user opening a "detailed editing window" wants, is: the score facts the agent reads, the
-    size of the record it keeps, and the tool table it is allowed to call.
+    \b Why these sections and not a session list (and why that changed). Until 第 141 条 this comment read
+    "this harness has exactly ONE session per run, so a list of sessions would be an invented feature".
+    That was true, and it was checkable - which is why the round that made a second conversation possible
+    (`FieldController::newAgentSession()`) also built the list, from the DSH client's sidebar. The three
+    sections below are still what a user opening a "detailed editing window" wants: the score facts the
+    agent reads, the size of the record it keeps, and the tool table it is allowed to call. The SESSIONS
+    section is now the fourth, and it is first in the SESSION LOG block because it is the thing that
+    decides which conversation the other two describe.
 
     \b Why the tool list is here at all. "The agent can only do what the table exposes" is the
     subsystem's central structural claim (`tools.h`), and until now it was only visible in the source.
@@ -148,6 +151,26 @@ Item {
 
             SectionTitle {
                 text: qsTrc("agentharness", "SESSION LOG")
+            }
+
+            //! ── Which conversation the two rows below describe (第 141 条) ──────────────────────────
+            //! ⛔ A `Repeater`-free component wrapper on purpose: `AgentSessionList` is an `Item` whose own
+            //! `implicitHeight` tracks its content, so it behaves inside this `Flickable`'s column the way a
+            //! layout child should. (The `ListView` further down carries the opposite note: a `Repeater`
+            //! used as a layout child hands its delegates no layout geometry.)
+            AgentSessionList {
+                Layout.fillWidth: true
+                field: root.field
+            }
+
+            //! ⛔ THE LIMIT, WRITTEN DOWN WHERE IT IS ACTED ON (第 141 条). Sessions are process-local, and so
+            //! is the transcript: nothing here is written to disk. A list that quietly came back empty after a
+            //! restart would read as a bug in the list rather than as a lifetime this subsystem has never had.
+            StyledTextLabel {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: ui.theme.fontSecondaryColor
+                text: qsTrc("agentharness", "Sessions live for this run only - nothing is written to disk.")
             }
 
             FactRow {
