@@ -22,6 +22,7 @@
 #include "scorerecipes.h"
 
 #include <QHash>
+#include <QMimeData>
 #include <QSet>
 
 #include "engraving/dom/chord.h"
@@ -57,6 +58,12 @@
 #include "engraving/dom/segment.h"
 #include "engraving/dom/sig.h"
 #include "engraving/dom/score.h"
+//! `Selection::canCopy()` / `mimeType()` / `mimeData()`: the three calls that turn "these bars" into the
+//! editor's clipboard payload (第 143 条). ⚠️ The header is `dom/select.h`, NOT `dom/selection.h` - the
+//! latter does not exist, and the API-layer `api/v1/selection.h` is a different (QObject) class.
+#include "engraving/dom/select.h"
+//! `MScore::errorToString` - the paste sets an error code and this is the only diagnosis it leaves behind.
+#include "engraving/dom/mscore.h"
 #include "engraving/dom/textbase.h"
 #include "engraving/editing/navigation.h"
 #include "engraving/dom/slur.h"
@@ -79,6 +86,18 @@
 #include "addressing.h"
 #include "notelocator.h"
 #include "scoredigest.h"
+
+//! The measure-range selection, reused by `copyMeasures` (第 143 条): the clipboard is built FROM a
+//! selection, so "put the selection on the bars the caller named" is the same problem 第 138 条 solved -
+//! with the same checks, in the same order (all of them before anything moves).
+#include "editorstate.h"
+
+//! ⛔ THE EDITOR'S OWN COPY/PASTE (第 143 条), at the ENGRAVING layer: `Paste::paste` takes a transaction
+//! and an `IMimeData`, so it can run inside our transaction with a payload we built - no interaction, no
+//! system clipboard, no selection dance. `QMimeDataAdapter` is the thin bridge from Qt's mime object to
+//! `IMimeData` (and it does not own the QMimeData, so ours lives on the stack).
+#include "engraving/editing/paste.h"
+#include "engraving/internal/qmimedataadapter.h"
 
 //! Repeats and endings (第 137 条). The repeat marks are FLAGS on the measure (that is what the file
 //! format, `RepeatList` and the drawn barline all read), and an ending is a measure-anchored spanner whose
@@ -2690,4 +2709,201 @@ RecipeResult muse::agentharness::transposeNote(mu::engraving::Score* score, cons
                                  .arg(formatAddress(address), pitchName(oldPitch), pitchName(newPitch),
                                       semitones > 0 ? QStringLiteral("+") : QString())
                                  .arg(semitones));
+}
+
+namespace {
+//! What a measure range holds, as a compact string: the pitches of every chord, in tick/track order,
+//! `+`-joined inside a chord and space-separated between them.
+//!
+//! ⛔ ONE FUNCTION DESCRIBES THE SOURCE **AND** JUDGES THE DESTINATION (第 143 条). "The copy landed" has
+//! to be decided by the same rule that said what was there to copy - two functions would be two readings of
+//! one fact, and the one that disagreed would be believed only after the score was already wrong.
+QString pitchesInMeasures(mu::engraving::Score* score, int firstMeasure, int lastMeasure, int staff)
+{
+    QStringList chords;
+    for (int m = firstMeasure; m <= lastMeasure; ++m) {
+        const mu::engraving::Measure* measure = measureAt(score, m);
+        if (!measure) {
+            continue;
+        }
+
+        for (const mu::engraving::Segment* segment = measure->first(); segment; segment = segment->next()) {
+            for (mu::engraving::track_idx_t track = 0; track < score->ntracks(); ++track) {
+                mu::engraving::EngravingItem* item = segment->element(track);
+                if (!item || !item->isChord()) {
+                    continue;
+                }
+                if (staff > 0 && int(item->staffIdx()) != staff - 1) {
+                    continue;
+                }
+
+                QStringList notes;
+                for (const mu::engraving::Note* note : mu::engraving::toChord(item)->notes()) {
+                    notes.append(QString::number(note->pitch()));
+                }
+                chords.append(notes.join(QLatin1Char('+')));
+            }
+        }
+    }
+
+    return chords.join(QLatin1Char(' '));
+}
+
+//! The total written length of a measure range, as a fraction of a whole note (the unit 第 97 条 settled on
+//! for talking to a musician: "3/4 of a whole note" says something, "1440 ticks" does not).
+mu::engraving::Fraction totalLength(mu::engraving::Score* score, int firstMeasure, int lastMeasure)
+{
+    mu::engraving::Fraction total(0, 1);
+    for (int m = firstMeasure; m <= lastMeasure; ++m) {
+        const mu::engraving::Measure* measure = measureAt(score, m);
+        if (measure) {
+            total += measure->ticks();
+        }
+    }
+    return total;
+}
+
+//! A length as a musician reads it - and ⛔ NOT `Fraction::toString()`, which prints a whole note as `4/4`:
+//! measured 2026-10-16, the first version of this recipe told the caller "measures 1-1 hold **4/4** of a
+//! whole note", and `4/4` is a TIME SIGNATURE to anybody who reads music. The unit word was right and the
+//! number contradicted it, which is worse than either alone. Same lesson as 第 97 条's `1440 tick(s)`.
+QString lengthText(const mu::engraving::Fraction& length)
+{
+    const mu::engraving::Fraction reduced = length.reduced();
+    if (reduced.numerator() == 1 && reduced.denominator() == 1) {
+        return QStringLiteral("a whole note");
+    }
+    if (reduced.denominator() != 0 && reduced.numerator() % reduced.denominator() == 0) {
+        return QStringLiteral("%1 whole notes").arg(reduced.numerator() / reduced.denominator());
+    }
+
+    return QStringLiteral("%1/%2 of a whole note").arg(reduced.numerator()).arg(reduced.denominator());
+}
+} // namespace
+
+RecipeResult muse::agentharness::copyMeasures(mu::engraving::Score* score, int fromMeasure, int count,
+                                              int toMeasure, int staff)
+{
+    if (!score) {
+        return RecipeResult::failure(QStringLiteral("no score"));
+    }
+    if (count < 1) {
+        return RecipeResult::failure(QStringLiteral("`count` is how many measures to copy, so it must be at "
+                                                    "least 1 (got %1)").arg(count));
+    }
+    if (fromMeasure < 1 || toMeasure < 1) {
+        return RecipeResult::failure(QStringLiteral("measures are 1-based, so %1 -> %2 is not a range in this "
+                                                    "score").arg(fromMeasure).arg(toMeasure));
+    }
+
+    const int lastFrom = fromMeasure + count - 1;
+    const int lastTo = toMeasure + count - 1;
+    const int measures = score->nmeasures();
+
+    //! ⛔ EVERY CHECK BEFORE THE FIRST CHANGE, and the selection counts as a change: moving it and then
+    //! discovering that measure 99 does not exist would throw away what the user had selected and report a
+    //! failure. (第 138 条's rule, and the reason `selectMeasures` is written the same way.)
+    if (lastFrom > measures || lastTo > measures) {
+        return RecipeResult::failure(
+            QStringLiteral("this score has %1 measures, so copying %2 measure(s) from %3 to %4 would need up "
+                           "to measure %5; insert measures first (`measure_insert`)")
+            .arg(measures).arg(count).arg(fromMeasure).arg(toMeasure)
+            .arg(qMax(lastFrom, lastTo)));
+    }
+
+    //! ⛔ OVERLAP IS REFUSED, NOT CLAMPED. Copying a range onto itself (or onto part of itself) is either a
+    //! no-op or an edit whose result depends on which half was written first - and neither is what "copy
+    //! this bar there" means. Saying where the music already is beats doing something surprising with it.
+    const bool overlaps = !(lastFrom < toMeasure || lastTo < fromMeasure);
+    if (overlaps) {
+        return RecipeResult::failure(
+            QStringLiteral("measures %1-%2 and %3-%4 overlap, so this would copy the music onto itself")
+            .arg(fromMeasure).arg(lastFrom).arg(toMeasure).arg(lastTo));
+    }
+
+    //! ⛔ SAME TOTAL LENGTH, because this is a copy and not a re-fit. Pasting 4/4 of music into a 3/4 bar has
+    //! no single right answer (stretch it? clip it? write past the barline?), and the failure this project
+    //! keeps meeting is the silent one - so both lengths are reported and nothing is written.
+    const mu::engraving::Fraction sourceLength = totalLength(score, fromMeasure, lastFrom);
+    const mu::engraving::Fraction targetLength = totalLength(score, toMeasure, lastTo);
+    if (sourceLength != targetLength) {
+        return RecipeResult::failure(
+            QStringLiteral("measures %1-%2 hold %3 and measures %4-%5 hold %6, so this is not a copy but a "
+                           "re-fit - which this tool does not do. Copy into measures of the same total "
+                           "length.")
+            .arg(fromMeasure).arg(lastFrom).arg(lengthText(sourceLength))
+            .arg(toMeasure).arg(lastTo).arg(lengthText(targetLength)));
+    }
+
+    //! ── The source: the editor's own clipboard payload, built in memory ────────────────────────────
+    const RecipeResult sourceSelected = selectMeasures(score, fromMeasure, lastFrom, staff);
+    if (!sourceSelected.ok) {
+        return sourceSelected;
+    }
+
+    const mu::engraving::Selection& source = score->selection();
+    if (!source.canCopy()) {
+        return RecipeResult::failure(
+            QStringLiteral("the editor will not copy measures %1-%2 (nothing in them to carry)")
+            .arg(fromMeasure).arg(lastFrom));
+    }
+
+    const muse::String mimeType = source.mimeType();
+    if (mimeType.isEmpty()) {
+        return RecipeResult::failure(
+            QStringLiteral("the editor produced no clipboard format for measures %1-%2, so there is nothing "
+                           "to paste").arg(fromMeasure).arg(lastFrom));
+    }
+
+    //! ⛔ A `QMimeData` ON THE STACK, and `QMimeDataAdapter` does NOT own it (it holds a `const QMimeData*`).
+    //! ⛔ AND THIS NEVER TOUCHES `QGuiApplication::clipboard()` - that is the whole reason this recipe does
+    //! not simply dispatch `command://notation/copy`: the user's clipboard is theirs, and a tool that
+    //! overwrote it would be destroying something it cannot put back.
+    QMimeData payload;
+    payload.setData(mimeType.toQString(), source.mimeData().toQByteArray());
+
+    //! Read the source BEFORE the paste: it is both what the result reports and what the destination is
+    //! judged against.
+    const QString sourcePitches = pitchesInMeasures(score, fromMeasure, lastFrom, staff);
+
+    //! ── The destination: a range selection, which is the shape `Paste::pasteStaffList` reads ────────
+    const RecipeResult targetSelected = selectMeasures(score, toMeasure, lastTo, staff);
+    if (!targetSelected.ok) {
+        return targetSelected;
+    }
+
+    mu::engraving::QMimeDataAdapter adapter(&payload);
+    const bool pasted = mu::engraving::Paste::paste(
+        score->transactionManager()->currentOrDummyTransaction(), score, &adapter, nullptr,
+        mu::engraving::Fraction(1, 1));
+
+    if (!pasted) {
+        //! ⚠️ The editor sets an error for the caller to read; it is the only diagnosis available here, and
+        //! a bare "failed" would send the caller looking for a different tool instead of at the bar.
+        return RecipeResult::failure(
+            QStringLiteral("the editor's paste refused measures %1-%2: %3")
+            .arg(toMeasure).arg(lastTo)
+            .arg(QString::fromStdString(mu::engraving::MScore::errorToString(mu::engraving::MScore::_error))));
+    }
+
+    //! ── Read back (第 133 条's rule: report the RESULT, not the request) ────────────────────────────
+    const QString landed = pitchesInMeasures(score, toMeasure, lastTo, staff);
+    if (landed != sourcePitches) {
+        //! The edit happened and did not reproduce the range. Reported as a FAILURE with both readings: a
+        //! caller told "copied" here would believe a bar that is not the one it asked for.
+        return RecipeResult::failure(
+            QStringLiteral("the paste wrote something else: measures %1-%2 should now read [%3] but read [%4]")
+            .arg(toMeasure).arg(lastTo).arg(sourcePitches, landed));
+    }
+
+    const QString which = count == 1 ? QStringLiteral("measure %1").arg(fromMeasure)
+                                     : QStringLiteral("measures %1-%2").arg(fromMeasure).arg(lastFrom);
+    const QString where = count == 1 ? QStringLiteral("measure %1").arg(toMeasure)
+                                     : QStringLiteral("measures %1-%2").arg(toMeasure).arg(lastTo);
+    return RecipeResult::success(
+        QStringLiteral("copied %1 onto %2 (%3, %4 chord(s)). The user's selection has moved "
+                       "to the destination. ⚠️ Things anchored OUTSIDE the copied range - a tie or slur "
+                       "leaving it, a volta - are not carried: that is the editor's own clipboard rule.")
+        .arg(which, where, lengthText(sourceLength))
+        .arg(sourcePitches.isEmpty() ? 0 : sourcePitches.count(QLatin1Char(' ')) + 1));
 }

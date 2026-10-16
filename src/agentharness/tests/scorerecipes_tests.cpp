@@ -25,6 +25,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QRegularExpression>
 
 #include "engraving/dom/chord.h"
 #include "engraving/dom/masterscore.h"
@@ -2905,4 +2906,169 @@ TEST(AgentHarness_ScoreRecipes, RepeatsAndEndingsSurviveSaveAndReload)
         << window.toStdString();
 
     QFile::remove(path);
+}
+
+//! ── copyMeasures (第 143 条) ──────────────────────────────────────────────────────────────────────
+//!
+//! ⛔ THE PROBE AND THE GUARD IN ONE. The first thing this recipe had to answer was whether the editor's
+//! own clipboard can be driven from a recipe at all - `Selection::mimeData()` out, `Paste::paste` in, with
+//! no interaction and no system clipboard. That question is answered by the first test below: if the paste
+//! does not reproduce the bar, it fails there and the whole approach is wrong. Everything after it guards
+//! the rules the tool promises (same length, no overlap, nothing written on refusal, the marks travel).
+
+namespace {
+//! The pitches of every chord in a measure, in order - read through the SAME window the agent uses, so the
+//! assertion is about what a reader sees rather than about an internal structure.
+QString windowPitches(Score* score, int measure)
+{
+    const QString window = buildMeasureWindow(score, measure, measure);
+    QStringList found;
+    const QRegularExpression re(QStringLiteral("\\[([^\\]]+)\\]/"));
+    auto it = re.globalMatch(window);
+    while (it.hasNext()) {
+        found.append(it.next().captured(1));
+    }
+    return found.join(QLatin1Char(' '));
+}
+
+int noteCountInMeasure(Score* score, int measureNumber)
+{
+    Measure* measure = score->tick2measure(measureAt(score, measureNumber)->tick());
+    if (!measure) {
+        return 0;
+    }
+
+    int notes = 0;
+    for (Segment* segment = measure->first(); segment; segment = segment->next()) {
+        for (track_idx_t track = 0; track < score->ntracks(); ++track) {
+            EngravingItem* item = segment->element(track);
+            if (item && item->isChord()) {
+                notes += int(toChord(item)->notes().size());
+            }
+        }
+    }
+    return notes;
+}
+} // namespace
+
+TEST(AgentHarness_ScoreRecipes, CopyMeasuresReproducesTheBar)
+{
+    //! `test.mscx` is 4/4 with C4 D4 E4 F4 in bar 1 and a whole rest in bar 2.
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+    EXPECT_EQ(windowPitches(score.get(), 1), QStringLiteral("C4 D4 E4 F4"));
+    EXPECT_EQ(noteCountInMeasure(score.get(), 2), 0);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 1, 2, 0);
+    });
+
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+    //! ⛔ THE EFFECT, read back through the window: bar 2 must now hold bar 1's music.
+    EXPECT_EQ(windowPitches(score.get(), 2), QStringLiteral("C4 D4 E4 F4"));
+    //! And the source is untouched - a copy that damaged what it copied would still "pass" a check that
+    //! only looked at the destination.
+    EXPECT_EQ(windowPitches(score.get(), 1), QStringLiteral("C4 D4 E4 F4"));
+}
+
+TEST(AgentHarness_ScoreRecipes, CopyMeasuresCarriesTheMarksToo)
+{
+    //! ⛔ THE REASON THIS RECIPE EXISTS AT ALL. Re-entering the notes with `measure_input_notes` carries the
+    //! pitches and nothing else; a staccato is the cheapest way to pin the difference.
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return toggleArticulation(score.get(), address(1, 1), 0, -1, QStringLiteral("articStaccatoAbove"));
+    }).ok);
+    ASSERT_TRUE(buildMeasureWindow(score.get(), 1, 1).contains(QStringLiteral("art=articStaccato")));
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 1, 2, 0);
+    });
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+
+    const QString destination = buildMeasureWindow(score.get(), 2, 2);
+    EXPECT_TRUE(destination.contains(QStringLiteral("art=articStaccato")))
+        << "the articulation did not travel: " << destination.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, CopyMeasuresCopiesSeveralBarsAtOnce)
+{
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return inputNotesIntoMeasure(score.get(), 2, 0, 0, quarters({ 72, 74, 76, 77 }));   //!< C5 D5 E5 F5
+    }).ok);
+
+    //! Two bars onto two bars. `test.mscx` has exactly 2, so the destination is the score's own second bar
+    //! plus one that has to exist - which is the refusal the next test pins. Here: one bar onto one bar,
+    //! twice, to keep the fixture honest.
+    const RecipeResult first = runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 2, 1, 1, 0);
+    });
+    ASSERT_TRUE(first.ok) << first.problem.toStdString();
+    EXPECT_EQ(windowPitches(score.get(), 1), QStringLiteral("C5 D5 E5 F5"));
+}
+
+TEST(AgentHarness_ScoreRecipes, CopyMeasuresRefusesWhatItCannotDo)
+{
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    const QString before1 = windowPitches(score.get(), 1);
+    const QString before2 = windowPitches(score.get(), 2);
+
+    //! Beyond the end of the score: the caller has to make room first, and the message says how many bars
+    //! there are.
+    const RecipeResult tooFar = runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 1, 3, 0);
+    });
+    EXPECT_FALSE(tooFar.ok);
+    EXPECT_TRUE(tooFar.problem.contains(QStringLiteral("2 measures"))) << tooFar.problem.toStdString();
+
+    //! Onto itself, and onto a range that overlaps it.
+    EXPECT_FALSE(runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 1, 1, 0);
+    }).ok);
+    EXPECT_FALSE(runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 2, 2, 0);
+    }).ok);
+
+    //! A count of zero (or less) is a caller that has not decided what to copy.
+    EXPECT_FALSE(runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 0, 2, 0);
+    }).ok);
+
+    //! ⛔ AND NOTHING WAS WRITTEN by any of those: a refusal that had already moved the selection or the
+    //! music would be the failure this project keeps meeting (第 120 条的邻居小节、第 136 条的静默空操作).
+    EXPECT_EQ(windowPitches(score.get(), 1), before1);
+    EXPECT_EQ(windowPitches(score.get(), 2), before2);
+}
+
+TEST(AgentHarness_ScoreRecipes, CopyMeasuresRefusesARefit)
+{
+    //! ⛔ 4/4 of music into a 3/4 bar has no single right answer. Refusing with BOTH lengths is the honest
+    //! half of that, and it is checked here rather than discovered by a user whose bar came out short.
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setTimeSignature(score.get(), 2, 3, 4);
+    }).ok);
+
+    const QString before = windowPitches(score.get(), 2);
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 1, 2, 0);
+    });
+
+    EXPECT_FALSE(result.ok);
+    //! ⛔ THE WORDING IS PART OF THE CONTRACT, and this assertion is why: the first version said
+    //! "hold 4/4 of a whole note" (`Fraction::toString()` prints a whole note as `4/4`), which is a TIME
+    //! SIGNATURE to anybody who reads music - the unit word and the number contradicted each other.
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("a whole note"))) << result.problem.toStdString();
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("3/4 of a whole note"))) << result.problem.toStdString();
+    EXPECT_FALSE(result.problem.contains(QStringLiteral("4/4 of a whole note")))
+        << "`4/4` is a time signature, not a length: " << result.problem.toStdString();
+    EXPECT_EQ(windowPitches(score.get(), 2), before) << "a refusal must not have written anything";
 }

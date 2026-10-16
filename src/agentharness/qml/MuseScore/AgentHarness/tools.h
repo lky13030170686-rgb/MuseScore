@@ -153,6 +153,16 @@ ToolResult toolCommandList(const QJsonObject& args, const ToolContext& ctx);
 //! Read: the score's revision number, for use as the `expectRevision` fence.
 ToolResult toolScoreRevision(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write: copy a range of measures onto another range (第 143 条).
+//!
+//! ⛔ A REAL COPY, not "read the notes and write them again": it builds the payload the editor's own Ctrl+C
+//! builds (`Selection::mimeData()`) and hands it to `Paste::paste` inside our transaction, so
+//! articulations, dynamics, slurs, beams and lyrics travel with the notes. ⛔ AND IT NEVER TOUCHES THE
+//! SYSTEM CLIPBOARD: dispatching `command://notation/copy` would replace whatever the user had copied, and
+//! that is a thing a tool cannot put back. The only shared state it moves is the selection, like
+//! `select_range`.
+ToolResult toolMeasureCopy(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: perform several commands as ONE undo step, fenced by `expectRevision`.
 //!
 //! WHY BOTH IN ONE TOOL: the fence and the batch are the same idea seen twice. A batch says "these

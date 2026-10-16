@@ -310,6 +310,34 @@ RecipeResult setTimeSignature(mu::engraving::Score* score, int measureNumber, in
 RecipeResult transposeRange(mu::engraving::Score* score, int fromMeasure, int toMeasure, int partIndex,
                             int semitones, bool transposeKeySignature = false);
 
+//! ── measure_copy (第 143 条) ────────────────────────────────────────────────────────────────────
+//! Copy `count` measures starting at `fromMeasure` onto `count` measures starting at `toMeasure`.
+//!
+//! ⛔⛔ WHY THIS IS NOT "READ THE NOTES AND WRITE THEM AGAIN". The agent's own answer to "copy a measure"
+//! was, correctly, *"there is no copy command"* (第 137 条's probe), and the obvious workaround - read the
+//! window and re-enter the notes with `measure_input_notes` - carries the notes and NOTHING ELSE: no
+//! articulations, no dynamics, no slurs, no beams, no lyrics. This recipe therefore drives the EDITOR'S OWN
+//! clipboard: `Selection::mimeData()` produces exactly the payload the user's Ctrl+C produces, and
+//! `Paste::paste` consumes it inside our transaction. One implementation of "copy a passage", and it is
+//! upstream's.
+//!
+//! ⛔ IT IS ALSO NOT A COMMAND: `command://notation/copy` / `paste` exist, but they read and write the
+//! USER'S SELECTION and the SYSTEM CLIPBOARD (`NotationInteraction::copySelection` calls
+//! `QGuiApplication::clipboard()->setMimeData`). Driving them from a tool would clobber whatever the user
+//! had copied and move their selection twice. This builds the same payload in memory and never touches
+//! either - the only shared state it moves is the selection, exactly like `selectMeasures`.
+//!
+//! ⚠️ WHAT IT DOES NOT CARRY, and this is upstream's clipboard rule rather than ours: things anchored
+//! OUTSIDE the copied range do not travel - a tie or slur that leaves the range, and voltas
+//! (`t-write.cpp` skips them in clipboard mode). The result says so when it can tell.
+//!
+//! ⚠️ THE TWO RANGES MUST HAVE THE SAME TOTAL LENGTH. This is a copy, not a re-fit: pasting 4/4 of music
+//! into a 3/4 bar has no single right answer, and silently writing past the barline is the failure this
+//! project keeps meeting. Refusing with both lengths is the honest half.
+//!
+//! @param staff 1-based staff, or 0 for every staff (what a bare "copy these bars" means)
+RecipeResult copyMeasures(mu::engraving::Score* score, int fromMeasure, int count, int toMeasure, int staff);
+
 //! ── Tempo ─────────────────────────────────────────────────────────────────────────────────────
 //! ⛔ TEMPO IS NOT A NOTATION ELEMENT - it lives in `AutomationData` and changes through its OWN channel.
 //! That makes this the one recipe whose edit the information field would not see if only

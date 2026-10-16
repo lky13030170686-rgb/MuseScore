@@ -1089,6 +1089,56 @@ ToolResult muse::agentharness::toolMeasureInsert(const QJsonObject& args, const 
     return ToolResult::success(result.detail, meta);
 }
 
+ToolResult muse::agentharness::toolMeasureCopy(const QJsonObject& args, const ToolContext& ctx)
+{
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    int from = 0;
+    if (!readInt(args, QStringLiteral("from"), from)) {
+        return ToolResult::failure(QStringLiteral("`from` is required: the 1-based number of the first measure "
+                                                  "to copy"));
+    }
+
+    int to = 0;
+    if (!readInt(args, QStringLiteral("to"), to)) {
+        return ToolResult::failure(QStringLiteral("`to` is required: the 1-based number of the first measure to "
+                                                  "copy it onto"));
+    }
+
+    int count = 1;
+    if (args.contains(QStringLiteral("count")) && !readInt(args, QStringLiteral("count"), count)) {
+        return ToolResult::failure(QStringLiteral("`count` must be an integer"));
+    }
+
+    //! 0 means every staff, like `select_range`: a bare "copy this bar" in a piano score means both hands.
+    int staff = 0;
+    if (args.contains(QStringLiteral("staff")) && !readInt(args, QStringLiteral("staff"), staff)) {
+        return ToolResult::failure(QStringLiteral("`staff` must be an integer"));
+    }
+
+    const QString refused = revisionRefusal(args, ctx);
+    if (!refused.isEmpty()) {
+        return ToolResult::failure(refused);
+    }
+
+    const RecipeResult result = ctx.field->runNoteRecipe(
+        QStringLiteral("Copy measures"), [&](mu::engraving::Score* score) {
+        return copyMeasures(score, from, count, to, staff);
+    });
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    QJsonObject meta;
+    meta.insert(QStringLiteral("from"), from);
+    meta.insert(QStringLiteral("to"), to);
+    meta.insert(QStringLiteral("count"), count);
+    return ToolResult::success(result.detail, meta);
+}
+
 ToolResult muse::agentharness::toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx)
 {
     if (!ctx.field) {
@@ -2242,6 +2292,34 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             toolMeasureRemove,
         },
         ToolSpec{
+            QStringLiteral("measure_copy"),
+            QStringLiteral("Copy measures onto other measures. It carries what the editor's own clipboard "
+                           "carries - the notes and rests AND the marks inside them (articulations, "
+                           "dynamics, slurs, beams, lyrics) - which is why it is a real copy and not "
+                           "re-entering the notes. ⛔ It does NOT carry things anchored OUTSIDE the copied "
+                           "range (a tie or slur leaving it, a volta): that is the editor's clipboard rule. "
+                           "⚠️ The source and destination ranges must have the same total length - this is a "
+                           "copy, not a re-fit - and must not overlap. ⚠️ The destination's music is "
+                           "replaced and the user's selection moves to it. Undoable with Ctrl+Z."),
+            schemaObject([&] {
+                QJsonObject props;
+                props.insert(QStringLiteral("from"), intProperty(QStringLiteral(
+                                                        "1-based number of the first measure to copy.")));
+                props.insert(QStringLiteral("to"), intProperty(QStringLiteral(
+                                                      "1-based number of the first measure to copy it onto; its "
+                                                      "music is replaced.")));
+                props.insert(QStringLiteral("count"), intProperty(QStringLiteral(
+                                                         "Optional, default 1. How many measures to copy - the same "
+                                                         "number is overwritten starting at `to`.")));
+                props.insert(QStringLiteral("staff"), intProperty(QStringLiteral(
+                                                         "Optional, default 0 = every staff. 1 is the top staff.")));
+                props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
+                                                                       "Optional. The revision you last read; refused if the score changed since.")));
+                return props;
+            }(), QJsonArray{ QStringLiteral("from"), QStringLiteral("to") }),
+            toolMeasureCopy,
+        },
+        ToolSpec{
             QStringLiteral("repeat_set"),
             QStringLiteral("Set one measure's repeat marks: `mode` = `start` (a |: at this measure), `end` "
                            "(a :| here), `both`, or `none` to clear them. `playCount` is how many times the "
@@ -2566,6 +2644,7 @@ bool muse::agentharness::isBatchableTool(const QString& name)
         //! signatures and structure
         QStringLiteral("key_signature_set"), QStringLiteral("time_signature_set"),
         QStringLiteral("measure_insert"), QStringLiteral("measure_remove"),
+        QStringLiteral("measure_copy"),
         QStringLiteral("repeat_set"), QStringLiteral("volta_add"),
         QStringLiteral("measure_fill"),
         QStringLiteral("tempo_set"), QStringLiteral("transpose_range"),
