@@ -130,6 +130,14 @@ public:
     //! would leave a permanent row called "(new session)" with zero events.
     bool makeCurrent(int index, QByteArray* payload);
 
+    //! Fill the store from conversations that were on disk, and hand back the payload of the one that is to
+    //! become live (第 142 条). That entry's payload is emptied here - it is about to BE the live log - and
+    //! it is marked `archived`, because a conversation that was written to a file has content by
+    //! construction. Everything else keeps its payload and its row data.
+    //!
+    //! Returns an empty array when `entries` is empty, which is a first run and not an error.
+    QByteArray adoptStored(const QVector<SessionEntry>& entries, int liveIndex);
+
     //! Label and size of the live conversation are NOT stored here: the live row is read from the live
     //! log by the caller (`FieldController::agentSessions`), so it cannot describe a conversation that has
     //! since grown. ⚠️ The two setters that once stood here were written speculatively and removed the

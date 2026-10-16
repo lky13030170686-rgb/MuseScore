@@ -161,3 +161,28 @@ bool SessionStore::makeCurrent(int index, QByteArray* payload)
 
     return true;
 }
+
+QByteArray SessionStore::adoptStored(const QVector<SessionEntry>& entries, int liveIndex)
+{
+    if (entries.isEmpty()) {
+        return QByteArray();
+    }
+
+    //! ⛔ A BAD INDEX FALLS BACK TO THE LAST ENTRY, and the last entry is the NEWEST: `loadStoredSessions`
+    //! returns them oldest first. A caller that asked for a session which is no longer there (the user
+    //! deleted the file) gets the most recent conversation rather than an assertion.
+    const int clamped = (liveIndex < 0 || liveIndex >= entries.size()) ? entries.size() - 1 : liveIndex;
+
+    m_entries = entries;
+    m_current = clamped;
+
+    QByteArray payload = m_entries[m_current].payload;
+    m_entries[m_current].payload.clear();
+    //! ⛔ `archived` IS TRUE EVEN THOUGH THE PAYLOAD IS NOW EMPTY: this conversation has content (it was
+    //! written to a file), and the flag is exactly what keeps `makeCurrent` from dropping it as an unused
+    //! slot when the user switches away from it. Getting this wrong is the bug the store's own suite
+    //! caught once already - see the note on `SessionEntry::archived`.
+    m_entries[m_current].archived = true;
+
+    return payload;
+}

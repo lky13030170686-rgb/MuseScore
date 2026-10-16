@@ -722,6 +722,23 @@ private:
     //! SAME id the list shows, rather than a second, invisible notion of "session" (第 119/125 条).
     void applySessionRoutingId();
 
+    //! ── Conversations on disk (第 142 条) ─────────────────────────────────────────────────────────
+    //! Open what the last run left behind: load the directory, make one conversation live (restore it into
+    //! `m_session`), and remember which one is open. Called once, from `init()`.
+    void restoreStoredSessions();
+    //! Aim the live log's sink at the CURRENT conversation's file. ⛔ The sink resolves the session id at
+    //! write time - a captured id would append the new conversation's events to the old one's file.
+    void armSessionPersistence();
+    //! Where conversations live, or empty when the application data path is not knowable (in which case
+    //! nothing is written, and the log says so).
+    QString sessionsDataDir() const;
+    //! The one thing about a conversation that cannot be derived from its own file: which one is open.
+    void rememberCurrentSessionId();
+    QString storedCurrentSessionId() const;
+    //! Whether a failed write has already been reported, so a full disk does not produce one log line per
+    //! event (the trade is written down where it is made).
+    bool m_sessionWriteProblemLogged = false;
+
     //! The loop and its transport, created on first use. Lazily, so a session that never talks to a
     //! model never builds a network stack - and so the field keeps working with no key configured.
     std::unique_ptr<LlmTransport> m_transport;

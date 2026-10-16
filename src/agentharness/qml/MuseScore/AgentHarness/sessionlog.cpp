@@ -109,6 +109,15 @@ quint64 SessionLog::append(const QString& type, const QJsonObject& data)
     e.time = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
     e.data = data;
     m_events.append(e);
+
+    //! ⛔ THE SINK FIRES AFTER THE EVENT IS IN THE LOG, and it is the only notification this class makes.
+    //! The order matters to the writer: a sink that ran first could persist an event the log then refused
+    //! to keep (it cannot today - `append` has no failure path - but the ordering is what makes "the file
+    //! is a copy of the log" true rather than merely likely). 第 142 条.
+    if (m_sink) {
+        m_sink(e);
+    }
+
     return e.seq;
 }
 
@@ -247,6 +256,13 @@ QVector<WireMessage> SessionLog::deriveMessages(bool thinkingMode) const
     return messages;
 }
 
+QByteArray muse::agentharness::jsonLine(const SessionEvent& event)
+{
+    //! Compact, and NO newline: the caller decides where the line ends. `toJsonLines` appends one per
+    //! event; the live writer appends one per append.
+    return QJsonDocument(event.toJson()).toJson(QJsonDocument::Compact);
+}
+
 QByteArray SessionLog::toJsonLines() const
 {
     QByteArray out;
@@ -254,7 +270,7 @@ QByteArray SessionLog::toJsonLines() const
         //! Compact, one line each. The format is "JSONL": a newline inside an event would split it
         //! into two lines and destroy the log, so compact serialization is not a size optimisation
         //! here, it is correctness.
-        out.append(QJsonDocument(e.toJson()).toJson(QJsonDocument::Compact));
+        out.append(jsonLine(e));
         out.append('\n');
     }
     return out;

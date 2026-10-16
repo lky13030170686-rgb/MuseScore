@@ -97,6 +97,11 @@ qt_add_qml_module(agentharness_qml
         # `fieldcontroller.cpp` - `AgentLoop` holds its address and it must never be replaced.
         sessionstore.cpp
         sessionstore.h
+        # Conversations on disk (第 142 条): one `<id>.jsonl` per conversation, and everything the list
+        # shows derived from that file. ⛔ No manifest - a second record of the same conversations is a list
+        # that can disagree with what is in the files, and a crash while rewriting it costs all of them.
+        sessionpersist.cpp
+        sessionpersist.h
     QML_FILES
         AgentPanel.qml
         AgentTranscriptRow.qml

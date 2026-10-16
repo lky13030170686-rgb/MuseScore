@@ -26,6 +26,8 @@
 #include <QString>
 #include <QVector>
 
+#include <functional>
+
 namespace muse::agentharness {
 //! One durable fact about a conversation, as a flat record.
 //!
@@ -88,6 +90,14 @@ struct WireMessage
     QJsonObject toWire() const;
 };
 
+//! One event as the line JSONL stores it: compact, NO trailing newline.
+//!
+//! WHY IT IS A FREE FUNCTION (第 142 条): persistence appends events one at a time as they happen, while
+//! `toJsonLines()` writes the whole log. Both must produce the SAME bytes - a file that mixes two
+//! serializations of one record is a file that only partially round-trips - so the line format has exactly
+//! one definition and both callers use it.
+QByteArray jsonLine(const SessionEvent& event);
+
 //! The append-only log.
 //!
 //! It owns no persistence and no policy: it is a vector plus the projection rules, so the whole
@@ -96,6 +106,15 @@ struct WireMessage
 class SessionLog
 {
 public:
+    //! Called with every appended event, in order, once it has its `seq`.
+    //!
+    //! ⛔ A HOOK, NOT PERSISTENCE. This class still writes nothing: the sink is how the layer that DOES
+    //! write (`sessionpersist.h`) learns about an event without this class knowing that layer exists. The
+    //! alternative - having every appender remember to also write - is four call sites in three files, and
+    //! the one that forgot would look exactly like a crash that lost the last turn.
+    using Sink = std::function<void(const SessionEvent&)>;
+    void setSink(Sink sink) { m_sink = std::move(sink); }
+
     //! Append one event. `seq` is assigned here - callers never set it, because a caller-chosen
     //! sequence number is a caller-chosen ordering bug.
     quint64 append(const QString& type, const QJsonObject& data = QJsonObject());
@@ -137,6 +156,9 @@ public:
 
 private:
     QVector<SessionEvent> m_events;
+    //! Called after every append. Empty until somebody wants to observe - a log nobody persists costs
+    //! one `if` per event (第 142 条).
+    Sink m_sink;
 };
 
 } // namespace muse::agentharness

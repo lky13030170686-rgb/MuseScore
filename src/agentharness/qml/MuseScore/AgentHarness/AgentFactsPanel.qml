@@ -163,14 +163,15 @@ Item {
                 field: root.field
             }
 
-            //! ⛔ THE LIMIT, WRITTEN DOWN WHERE IT IS ACTED ON (第 141 条). Sessions are process-local, and so
-            //! is the transcript: nothing here is written to disk. A list that quietly came back empty after a
-            //! restart would read as a bug in the list rather than as a lifetime this subsystem has never had.
+            //! ⛔ WHAT IS TRUE ABOUT THEIR LIFETIME, said where the list is. 第 141 条 wrote "nothing is written
+            //! to disk" here; 第 142 条 made that false, and a sentence like that has to be corrected in the
+            //! place a user reads it - one file per conversation, and deleting the file is how a user deletes
+            //! the conversation (there is no manifest to disagree with that).
             StyledTextLabel {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 color: ui.theme.fontSecondaryColor
-                text: qsTrc("agentharness", "Sessions live for this run only - nothing is written to disk.")
+                text: qsTrc("agentharness", "Kept between runs - one file per session, in the application data folder.")
             }
 
             FactRow {

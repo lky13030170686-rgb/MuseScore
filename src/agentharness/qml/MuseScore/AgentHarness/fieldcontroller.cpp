@@ -22,9 +22,12 @@
 #include "fieldcontroller.h"
 
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QStandardPaths>
 //! The end-of-turn flush for held automation changes (第 139 条).
 #include <QTimer>
 
@@ -56,6 +59,9 @@
 #include "llmtransport.h"
 #include "semanticderive.h"
 #include "scoredigest.h"
+//! Conversations on disk (第 142 条): the live log's sink appends, `init()` loads. The log itself stays
+//! free of I/O - this file is where the two are wired together.
+#include "sessionpersist.h"
 #include "spill.h"
 #include "systemprompt.h"
 #include "tools.h"
@@ -102,6 +108,11 @@ static const Settings::Key AGENT_MODEL_CATALOGS_KEY("agentharness", "agent/model
 //! true. `agent/apiKey` being EMPTY is the normal state on a machine that never ticked the box.
 static const Settings::Key AGENT_REMEMBER_KEY_KEY("agentharness", "agent/rememberApiKey");
 static const Settings::Key AGENT_API_KEY_KEY("agentharness", "agent/apiKey");
+//! Which conversation the NEXT run should come back to (第 142 条). ⛔ The one thing about a session that
+//! cannot be derived from its file: every session says what it is, only this says which one was open.
+//! A stale id (the file is gone, the user deleted it) is not an error - the loader falls back to the newest
+//! conversation, which is what a user who deleted the current one would expect anyway.
+static const Settings::Key AGENT_CURRENT_SESSION_KEY("agentharness", "agent/currentSessionId");
 static const QString DEFAULT_BASE_URL = QStringLiteral("https://api.deepseek.com");
 
 //! Command types and element types share one histogram; this keeps them from colliding.
@@ -142,6 +153,12 @@ void FieldController::init()
         unbind();
         bindToCurrentNotation();
     });
+
+    //! ── The conversations the last run left behind (第 142 条) ─────────────────────────────────
+    //! Before binding, and before anything can append an event: the sink has to be aimed at the right
+    //! session's file before the first event of this run is written, or the first turn lands in a file
+    //! named after a conversation that no longer exists.
+    restoreStoredSessions();
 
     bindToCurrentNotation();
 }
@@ -309,10 +326,18 @@ void FieldController::applyDemoToolCallIfPending()
                << "base=" << qEnvironmentVariable("MUSE_AGENT_API_BASE")
                << "configured=" << agentConfigured();
         sendToAgent(message);
-    } else {
+    } else if (m_session.isEmpty()) {
+        //! ⛔ ONLY INTO AN EMPTY LOG (第 142 条). This hook exists so a scripted run has a transcript to look
+        //! at without a model. Now that conversations survive a restart, seeding unconditionally would append
+        //! "what is in this score?" to the conversation the user was in the middle of - once per launch, as a
+        //! fake user message the model would then answer. ⚠️ `reset-gui-state.ps1` clears the conversation
+        //! directory, so a scripted run still starts empty and still gets the seed.
         seedSystemPrompt();
         appendUserMessage(QStringLiteral("what is in this score?"));
         LOGW() << "[agent-session] projection:\n" << sessionPreview();
+    } else {
+        LOGW() << "[agent-session] a restored conversation is open (events=" << m_session.size()
+               << "); the demo seed is for an empty log and is skipped";
     }
 }
 
@@ -1226,6 +1251,139 @@ void FieldController::applySessionRoutingId()
     }
 }
 
+QString FieldController::sessionsDataDir() const
+{
+    //! ⚠️ `QStandardPaths::AppLocalDataLocation` and NOT `Settings::dataPath()`: the framework has that
+    //! helper, but it is PRIVATE (`settings.h`), and reaching into it is not worth a public-header change
+    //! (8-16 minute rebuild, 维护手册.md §9.3). This is the very location it wraps - the directory the
+    //! settings file and the logs already live in, i.e. one place a user can find and delete.
+    const QString dataPath = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (dataPath.isEmpty()) {
+        return QString();
+    }
+
+    return sessionsDirectory(dataPath);
+}
+
+QString FieldController::storedCurrentSessionId() const
+{
+    return QString::fromStdString(Settings::instance()->value(AGENT_CURRENT_SESSION_KEY).toString());
+}
+
+void FieldController::rememberCurrentSessionId()
+{
+    Settings::instance()->setSharedValue(AGENT_CURRENT_SESSION_KEY,
+                                         Val(m_sessions.current().id.toStdString()));
+}
+
+void FieldController::armSessionPersistence()
+{
+    const QString dir = sessionsDataDir();
+    if (dir.isEmpty()) {
+        //! No data path means somewhere to write is not knowable. Said out loud rather than writing into
+        //! the current directory: a conversation file that appears next to the executable is worse than a
+        //! conversation that is not saved.
+        LOGW() << "[agent-session] no application data path; conversations will not be written";
+        return;
+    }
+
+    //! ⛔ THE SINK READS THE CURRENT SESSION AT WRITE TIME, NOT AT ARM TIME. The live conversation changes
+    //! under it (new / switch), and a captured id would keep appending the new conversation's events to the
+    //! OLD conversation's file - silently merging two conversations into one file, which is the single
+    //! worst outcome this feature can produce.
+    m_session.setSink([this, dir](const SessionEvent& event) {
+        QString problem;
+        if (appendSessionLine(dir, m_sessions.current().id, jsonLine(event), &problem)) {
+            m_sessionWriteProblemLogged = false;
+            return;
+        }
+
+        //! ⚠️ Logged ONCE per run of failures: a full or read-only disk would otherwise emit one line per
+        //! event and bury everything else. The silence afterwards is a deliberate trade, and it is written
+        //! down here rather than being discovered later.
+        if (!m_sessionWriteProblemLogged) {
+            m_sessionWriteProblemLogged = true;
+            LOGW() << "[agent-session] cannot write the conversation:" << problem
+                   << "(further write failures in this run will not be logged)";
+        }
+    });
+}
+
+void FieldController::restoreStoredSessions()
+{
+    QVector<QString> problems;
+    const QVector<StoredSession> stored = loadStoredSessions(sessionsDataDir(), &problems);
+    for (const QString& problem : problems) {
+        LOGW() << "[agent-session] stored conversation problem:" << problem;
+    }
+
+    QVector<SessionEntry> entries;
+    entries.reserve(stored.size());
+    for (const StoredSession& session : stored) {
+        //! ⛔ A FILE WITH NOTHING SAID IN IT IS NOT A CONVERSATION, and it is deleted rather than listed.
+        //! Such a file exists because the demo seed writes the system prompt, so an app that is launched and
+        //! closed without anybody typing leaves one behind - exactly the "one row per click" furniture the
+        //! in-memory rule already refuses. ⚠️ Nothing the user wrote can be in here: content means a user,
+        //! assistant or tool event (`sessionHasContent`), and the system prompt is none of those.
+        if (!session.hasContent) {
+            const QString path = QDir(sessionsDataDir()).filePath(sessionFileName(session.id));
+            if (QFile::remove(path)) {
+                LOGW() << "[agent-session] discarded a conversation with nothing in it:" << path;
+            }
+            continue;
+        }
+
+        SessionEntry entry;
+        entry.id = session.id;
+        entry.title = session.title;
+        entry.events = session.events;
+        entry.startedAt = session.startedAt;
+        entry.payload = session.payload;
+        entry.archived = true;
+        entries.append(entry);
+    }
+
+    if (!entries.isEmpty()) {
+        //! Which one comes back: the one that was open, else the NEWEST (`loadStoredSessions` returns them
+        //! oldest first). A recorded id whose file is gone is not an error - it is the newest, which is what
+        //! a user who deleted the open conversation would expect.
+        const QString wanted = storedCurrentSessionId();
+        int liveIndex = entries.size() - 1;
+        for (int i = 0; i < entries.size(); ++i) {
+            if (entries[i].id == wanted) {
+                liveIndex = i;
+                break;
+            }
+        }
+
+        const QByteArray livePayload = m_sessions.adoptStored(entries, liveIndex);
+
+        //! ⛔ RESTORED INTO THE LIVE OBJECT, never a new one: `AgentLoop` holds `&m_session`.
+        SessionLog restored;
+        QString problem;
+        if (!SessionLog::fromJsonLines(livePayload, restored, &problem)) {
+            //! The loader parsed this a moment ago, so getting here means something changed under us. Keep
+            //! the fresh conversation rather than a live log nobody can read, and say so.
+            LOGW() << "[agent-session] the conversation to open cannot be read:" << problem;
+        } else {
+            m_session = restored;
+        }
+    }
+
+    //! Armed either way: a first run has no conversations and still has to write the first one.
+    armSessionPersistence();
+    //! ⛔ And the recorded id is rewritten to what is ACTUALLY open: a stale id (file deleted, or a session
+    //! that did not load) would otherwise be remembered for another run, pointing at nothing.
+    rememberCurrentSessionId();
+
+    LOGW() << "[agent-session] " << m_sessions.count() << "conversation(s) from" << sessionsDataDir()
+           << "| open:" << m_sessions.current().id
+           << "events=" << m_session.size()
+           << (m_session.isEmpty() ? "(a fresh one)" : "(restored)");
+
+    emit fieldChanged();
+}
+
 void FieldController::newAgentSession()
 {
     //! ⛔ REFUSED, NOT QUEUED. The loop holds the live log and is in the middle of a turn in it; swapping
@@ -1241,15 +1399,26 @@ void FieldController::newAgentSession()
     m_session.clear();
     m_sessions.startNewLive();
     applySessionRoutingId();
+    //! The new conversation is what the next run should open (第 142 条). ⚠️ No file is created here: an
+    //! empty conversation writes nothing, which is the same rule that keeps it out of the list.
+    rememberCurrentSessionId();
+
+    //! ⛔ NO SYSTEM PROMPT IS WRITTEN HERE (measured 2026-10-16, 第 142 条). The first version seeded it, on
+    //! the argument that a session without one would go out as a user message with no instructions - and
+    //! that argument is already answered by the loop: `AgentLoop::submitUserMessage` seeds the system
+    //! prompt if the log has none, exactly once, immediately before the user's message. Seeding here as
+    //! well meant that a click on "New session" wrote a one-line file for a conversation nobody had said
+    //! anything in - the "empty session leaves no row" rule kept the LIST clean while the DISK grew a file
+    //! per click. Measured: three files after two conversations and one unused new session.
 
     LOGW() << "[agent-session] new session id=" << m_sessions.current().id
            << "index=" << m_sessions.currentIndex()
            << "sessions=" << m_sessions.count();
 
-    //! Seed it exactly the way the first conversation is seeded: the system prompt is what tells the model
-    //! which score it is looking at, and a session without one would go out as a user message with no
-    //! instructions at all.
-    seedSystemPrompt();   //! emits fieldChanged
+    //! ⛔ `emit fieldChanged()` IS REQUIRED HERE, and it used to arrive as a side effect of the seed that no
+    //! longer happens. The list has a new current row, the transcript is empty, the event count is zero -
+    //! every one of those is a QML binding, and a state change nobody announces is 第 127 条's bug shape.
+    emit fieldChanged();
 }
 
 void FieldController::switchAgentSession(int index)
@@ -1287,6 +1456,9 @@ void FieldController::switchAgentSession(int index)
     if (!m_sessions.makeCurrent(index, nullptr)) {
         return;
     }
+
+    //! The conversation that is open is what the next run should come back to (第 142 条).
+    rememberCurrentSessionId();
 
     //! Assignment, not a new object: `AgentLoop` holds this one's address (see the note in the header).
     m_session = restored;
@@ -2093,6 +2265,11 @@ void FieldController::resetAgentPreferences()
     Settings::instance()->setSharedValue(AGENT_SIDEBAR_WIDTH_KEY, Val(0));
     Settings::instance()->setSharedValue(AGENT_RIGHTBAR_WIDTH_KEY, Val(0));
     Settings::instance()->setSharedValue(AGENT_MODEL_KEY, Val(std::string()));
+    //! ⛔ The remembered conversation goes too (第 142 条): it is a pointer at one of the files in the
+    //! sessions directory, and "reset every preference" that left it behind would keep opening a
+    //! conversation the user believes they have cleared. The files themselves are NOT deleted - they are
+    //! the user's words, and a preference reset is not a delete.
+    Settings::instance()->setSharedValue(AGENT_CURRENT_SESSION_KEY, Val(std::string()));
 
     m_transport->setBaseUrl(DEFAULT_BASE_URL);
     m_loop->setModel(AgentLoop::defaultModel());

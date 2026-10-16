@@ -47,6 +47,11 @@ set(MODULE_TEST_SRC
     # ⚠️ The FIELD's half of it (the live log is restored INTO, never replaced, because `AgentLoop` holds
     # its address) is not reachable from here and is judged on the real program.
     ${CMAKE_CURRENT_LIST_DIR}/sessionstore_tests.cpp
+    # Conversations on disk (第 142 条): the only code in the harness that writes the user's own words, and
+    # its failure modes are quiet (an id that escapes the directory, a conversation that vanishes because
+    # one line is unreadable, a torn tail that costs everything said in it). Real files in a temporary
+    # directory - no application, no settings, no score.
+    ${CMAKE_CURRENT_LIST_DIR}/sessionpersist_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/llmclient_tests.cpp
     # The stored model catalog: the JSON shape of "which ids this gateway serves, and when we were
     # told" (第 131 条). Pure text in / text out, which is why it can be tested without a settings
