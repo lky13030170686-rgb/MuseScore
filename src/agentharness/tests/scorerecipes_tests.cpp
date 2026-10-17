@@ -3070,5 +3070,143 @@ TEST(AgentHarness_ScoreRecipes, CopyMeasuresRefusesARefit)
     EXPECT_TRUE(result.problem.contains(QStringLiteral("3/4 of a whole note"))) << result.problem.toStdString();
     EXPECT_FALSE(result.problem.contains(QStringLiteral("4/4 of a whole note")))
         << "`4/4` is a time signature, not a length: " << result.problem.toStdString();
+    //! 第 145 条: the refusal now names the way out, so a caller is not left thinking it is impossible.
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("scaleToFit"))) << result.problem.toStdString();
     EXPECT_EQ(windowPitches(score.get(), 2), before) << "a refusal must not have written anything";
+}
+
+//! ── scaleToFit (第 145 条) ────────────────────────────────────────────────────────────────────────
+
+namespace {
+//! The durations of a measure as the agent's own window prints them: `[C4]/480` is a quarter note in 4/4.
+QString windowDurations(Score* score, int measure)
+{
+    const QString window = buildMeasureWindow(score, measure, measure);
+    QStringList found;
+    const QRegularExpression re(QStringLiteral("\\]/(\\d+)"));
+    auto it = re.globalMatch(window);
+    while (it.hasNext()) {
+        found.append(it.next().captured(1));
+    }
+    return found.join(QLatin1Char(' '));
+}
+} // namespace
+
+TEST(AgentHarness_ScoreRecipes, CopyMeasuresStretchesToFitWhenAsked)
+{
+    //! ⛔ THE PROBE AND THE FEATURE IN ONE. 4/4 of music (four quarters) into a 3/4 bar, stretched: every
+    //! quarter has to come out as a DOTTED EIGHTH (360 ticks in this score's division) and the four of them
+    //! have to fill the bar exactly. If the reader ignored the scale the durations would still read 480 and
+    //! the bar would be overfull - which is the failure this test exists to catch.
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+    ASSERT_EQ(windowDurations(score.get(), 1), QStringLiteral("480 480 480 480"));
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setTimeSignature(score.get(), 2, 3, 4);
+    }).ok);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 1, 2, 0, true);
+    });
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+
+    //! The pitches are the source's, and the LENGTHS are the source's times 3/4.
+    EXPECT_EQ(windowPitches(score.get(), 2), QStringLiteral("C4 D4 E4 F4"));
+    EXPECT_EQ(windowDurations(score.get(), 2), QStringLiteral("360 360 360 360"))
+        << "the stretch did not happen: " << buildMeasureWindow(score.get(), 2, 2).toStdString();
+    //! The source is untouched - a stretch that also stretched what it copied from would pass a check that
+    //! only looked at the destination.
+    EXPECT_EQ(windowDurations(score.get(), 1), QStringLiteral("480 480 480 480"));
+    //! And the result SAYS it stretched: a caller who gets music at a different tempo has to be told.
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("STRETCHED"))) << result.detail.toStdString();
+    //! ⛔ AND THE SENTENCE ITSELF IS ASSERTED (第 145 条). The first version of this message had six
+    //! placeholders and handed the arguments over in the wrong order, so the real exe printed
+    //! "(a whole note,  chord(s)).4 The user's selection…" - the chord count at the end of the sentence and
+    //! the stretch note where the count belongs. `contains()` could not see that; this can.
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("(a whole note, 4 chord(s)).")))
+        << result.detail.toStdString();
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("STRETCHED to fit"))) << result.detail.toStdString();
+    EXPECT_FALSE(result.detail.contains(QStringLiteral("chord(s)).4"))) << result.detail.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, CopyMeasuresSaysNothingAboutStretchingWhenItDidNot)
+{
+    //! The equal-length path keeps the message it always had: no STRETCHED clause, and the chord count still
+    //! in its own place. ⚠️ This is the shape the six-placeholder bug broke, checked on the path that runs
+    //! most often.
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 1, 2, 0);
+    });
+
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("(a whole note, 4 chord(s)). The user's selection")))
+        << result.detail.toStdString();
+    EXPECT_FALSE(result.detail.contains(QStringLiteral("STRETCHED"))) << result.detail.toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, CopyMeasuresWritesAnUnwritableStretchAsTiedNotes)
+{
+    //! ⛔⛔ THIS TEST WAS WRONG FIRST, AND THE WAY IT WAS WRONG IS THE POINT (第 145 条). It was written as
+    //! "the stretch must be refused when a note cannot be written", on the reasoning that a dotted eighth
+    //! scaled by 3/4 is 9/64 - not a note value. Measured 2026-10-17: `TDuration(9/64).isValid()` is TRUE,
+    //! and even where a single value cannot express a length the editor writes it as a TIED PAIR rather than
+    //! refusing (`[C4]/360` came out as `60@1/8 60@1/64`). So the pre-check that refused it was taking a
+    //! working operation away and explaining it with a claim that was not true - and the read-back that
+    //! expected one chord per chord was calling a correct edit a failure.
+    //!
+    //! What is true, and what this pins: the stretch SUCCEEDS, the music is the same pitches in the same
+    //! order, the total length is exactly the source's times 3/4, and the result SAYS that notes were
+    //! written as tied notes.
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setTimeSignature(score.get(), 2, 3, 4);
+    }).ok);
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        //! A dotted eighth: 3/16 of a whole note, so stretched by 3/4 it is 9/64.
+        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("dotted-eighth"));
+    }).ok);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 1, 2, 0, true);
+    });
+
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("STRETCHED"))) << result.detail.toStdString();
+    //! ⚠️ The split is reported, not hidden: "the notes are there" and "the notes are there as tied pairs"
+    //! are different news for somebody about to print the part.
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("tied notes"))) << result.detail.toStdString();
+
+    //! The same pitches in the same order, and the total written length is exactly the source's times 3/4 -
+    //! the judge that catches a stretch which silently did nothing.
+    EXPECT_EQ(windowPitches(score.get(), 2), QStringLiteral("C4 C4 D4 E4 F4"))
+        << buildMeasureWindow(score.get(), 2, 2).toStdString();
+    //! ⚠️ THE ARITHMETIC IS THE ASSERTION: the dotted eighth was 360 ticks in 4/4, so stretched it is 270 -
+    //! and 270 came out as 240 + 30, an eighth tied to a 64th. The three quarters are 360 each (480 × 3/4),
+    //! so the bar holds 240+30+3×360 = 1440 ticks = 3/4 of a whole note, exactly the destination.
+    EXPECT_EQ(windowDurations(score.get(), 2), QStringLiteral("240 30 360 360 360"))
+        << buildMeasureWindow(score.get(), 2, 2).toStdString();
+}
+
+TEST(AgentHarness_ScoreRecipes, CopyMeasuresIgnoresTheFlagWhenTheLengthsAlreadyMatch)
+{
+    //! `scaleToFit: true` on two bars of the same length must be exactly the old behaviour: a scale of 1/1,
+    //! no "STRETCHED" in the result, and nothing about the music changed. A flag that quietly did something
+    //! on the equal path would be a trap for a caller who set it defensively.
+    const std::shared_ptr<MasterScore> score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score != nullptr);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return copyMeasures(score.get(), 1, 1, 2, 0, true);
+    });
+
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_EQ(windowPitches(score.get(), 2), QStringLiteral("C4 D4 E4 F4"));
+    EXPECT_EQ(windowDurations(score.get(), 2), QStringLiteral("480 480 480 480"));
+    EXPECT_FALSE(result.detail.contains(QStringLiteral("STRETCHED"))) << result.detail.toStdString();
 }

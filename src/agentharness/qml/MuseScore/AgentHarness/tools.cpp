@@ -1118,6 +1118,11 @@ ToolResult muse::agentharness::toolMeasureCopy(const QJsonObject& args, const To
         return ToolResult::failure(QStringLiteral("`staff` must be an integer"));
     }
 
+    //! 第 145 条: the stretch is opt-in, so a caller who did not ask for one still gets the refusal with
+    //! both lengths rather than music that quietly changed tempo. ⚠️ Read like `transposeKeySignature`:
+    //! `toBool(false)`, so a missing or non-boolean argument means "no" - the safe direction.
+    const bool scaleToFit = args.value(QStringLiteral("scaleToFit")).toBool(false);
+
     const QString refused = revisionRefusal(args, ctx);
     if (!refused.isEmpty()) {
         return ToolResult::failure(refused);
@@ -1125,7 +1130,7 @@ ToolResult muse::agentharness::toolMeasureCopy(const QJsonObject& args, const To
 
     const RecipeResult result = ctx.field->runNoteRecipe(
         QStringLiteral("Copy measures"), [&](mu::engraving::Score* score) {
-        return copyMeasures(score, from, count, to, staff);
+        return copyMeasures(score, from, count, to, staff, scaleToFit);
     });
 
     if (!result.ok) {
@@ -1136,6 +1141,7 @@ ToolResult muse::agentharness::toolMeasureCopy(const QJsonObject& args, const To
     meta.insert(QStringLiteral("from"), from);
     meta.insert(QStringLiteral("to"), to);
     meta.insert(QStringLiteral("count"), count);
+    meta.insert(QStringLiteral("scaleToFit"), scaleToFit);
     return ToolResult::success(result.detail, meta);
 }
 
@@ -2298,9 +2304,10 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                            "dynamics, slurs, beams, lyrics) - which is why it is a real copy and not "
                            "re-entering the notes. ⛔ It does NOT carry things anchored OUTSIDE the copied "
                            "range (a tie or slur leaving it, a volta): that is the editor's clipboard rule. "
-                           "⚠️ The source and destination ranges must have the same total length - this is a "
-                           "copy, not a re-fit - and must not overlap. ⚠️ The destination's music is "
-                           "replaced and the user's selection moves to it. Undoable with Ctrl+Z."),
+                           "⚠️ The destination's music is replaced and the user's selection moves to it. "
+                           "⚠️ The two ranges must have the same total length unless `scaleToFit` is true - "
+                           "by default a re-fit is refused, with both lengths, because stretching music "
+                           "changes it. Undoable with Ctrl+Z."),
             schemaObject([&] {
                 QJsonObject props;
                 props.insert(QStringLiteral("from"), intProperty(QStringLiteral(
@@ -2313,6 +2320,12 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
                                                          "number is overwritten starting at `to`.")));
                 props.insert(QStringLiteral("staff"), intProperty(QStringLiteral(
                                                          "Optional, default 0 = every staff. 1 is the top staff.")));
+                props.insert(QStringLiteral("scaleToFit"), boolProperty(QStringLiteral(
+                                                             "Optional, default false. When the two ranges differ in length: true STRETCHES "
+                                                             "the music to fill the destination (every note keeps its pitch and its place, "
+                                                             "its length is multiplied - so the passage is no longer at the tempo it was "
+                                                             "written at), false refuses and reports both lengths. A stretch is refused when "
+                                                             "some note would not come out as a note value the editor can write.")));
                 props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
                                                                        "Optional. The revision you last read; refused if the score changed since.")));
                 return props;

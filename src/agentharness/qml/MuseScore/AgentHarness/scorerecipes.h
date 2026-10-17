@@ -331,12 +331,24 @@ RecipeResult transposeRange(mu::engraving::Score* score, int fromMeasure, int to
 //! OUTSIDE the copied range do not travel - a tie or slur that leaves the range, and voltas
 //! (`t-write.cpp` skips them in clipboard mode). The result says so when it can tell.
 //!
-//! ⚠️ THE TWO RANGES MUST HAVE THE SAME TOTAL LENGTH. This is a copy, not a re-fit: pasting 4/4 of music
-//! into a 3/4 bar has no single right answer, and silently writing past the barline is the failure this
-//! project keeps meeting. Refusing with both lengths is the honest half.
+//! ⚠️ THE TWO RANGES MUST HAVE THE SAME TOTAL LENGTH, unless `scaleToFit` says otherwise. This is a copy,
+//! not a re-fit: pasting 4/4 of music into a 3/4 bar has no single right answer, and silently writing past
+//! the barline is the failure this project keeps meeting. Refusing with both lengths is the honest half.
+//!
+//! ── `scaleToFit` (第 145 条): the stretch, as an explicit choice ─────────────────────────────────
+//! ⛔ THE ANSWER IS NOT CHOSEN FOR THE CALLER. When the lengths differ and `scaleToFit` is true the music is
+//! stretched by `targetLength / sourceLength`: every note keeps its pitch and its place in the bar and its
+//! LENGTH is multiplied, so the passage fills the destination exactly. ⚠️ That changes the music - it is no
+//! longer at the tempo it was written at - which is exactly why it has to be asked for.
+//!
+//! ⛔ AND IT IS REFUSED WHEN A NOTE CANNOT BE STRETCHED. A triplet quarter scaled by 3/4 is not a note value
+//! this editor can write, and the alternatives (drop it, round it) are both silent damage. The check runs
+//! BEFORE the destination selection moves, and the refusal names the measure and the beat it is about.
 //!
 //! @param staff 1-based staff, or 0 for every staff (what a bare "copy these bars" means)
-RecipeResult copyMeasures(mu::engraving::Score* score, int fromMeasure, int count, int toMeasure, int staff);
+//! @param scaleToFit stretch the music when the two ranges differ in length (default: refuse)
+RecipeResult copyMeasures(mu::engraving::Score* score, int fromMeasure, int count, int toMeasure, int staff,
+                          bool scaleToFit = false);
 
 //! ── Tempo ─────────────────────────────────────────────────────────────────────────────────────
 //! ⛔ TEMPO IS NOT A NOTATION ELEMENT - it lives in `AutomationData` and changes through its OWN channel.

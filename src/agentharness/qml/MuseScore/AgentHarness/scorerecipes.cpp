@@ -2712,15 +2712,27 @@ RecipeResult muse::agentharness::transposeNote(mu::engraving::Score* score, cons
 }
 
 namespace {
-//! What a measure range holds, as a compact string: the pitches of every chord, in tick/track order,
-//! `+`-joined inside a chord and space-separated between them.
+//! One chord of a measure range, as the read-back sees it: the pitches and how long it sounds.
+struct RangeChord
+{
+    QString pitches;                 //!< `60+64+67`, in the chord's own order
+    mu::engraving::Fraction ticks;   //!< its written length
+    int measure = 0;                 //!< which measure it is in, for messages that have to name one
+    int beat = 0;                    //!< 1-based beat within that measure, same reason
+};
+
+//! What a measure range holds, chord by chord, in tick/track order.
 //!
 //! ⛔ ONE FUNCTION DESCRIBES THE SOURCE **AND** JUDGES THE DESTINATION (第 143 条). "The copy landed" has
 //! to be decided by the same rule that said what was there to copy - two functions would be two readings of
 //! one fact, and the one that disagreed would be believed only after the score was already wrong.
-QString pitchesInMeasures(mu::engraving::Score* score, int firstMeasure, int lastMeasure, int staff)
+//!
+//! ⚠️ IT CARRIES THE LENGTH TOO (第 145 条), and that is what makes a STRETCH checkable: the destination
+//! must hold the same chords with every length multiplied by the same factor. Comparing pitches alone would
+//! call a stretch that silently did nothing a success.
+QVector<RangeChord> chordsInMeasures(mu::engraving::Score* score, int firstMeasure, int lastMeasure, int staff)
 {
-    QStringList chords;
+    QVector<RangeChord> chords;
     for (int m = firstMeasure; m <= lastMeasure; ++m) {
         const mu::engraving::Measure* measure = measureAt(score, m);
         if (!measure) {
@@ -2741,12 +2753,37 @@ QString pitchesInMeasures(mu::engraving::Score* score, int firstMeasure, int las
                 for (const mu::engraving::Note* note : mu::engraving::toChord(item)->notes()) {
                     notes.append(QString::number(note->pitch()));
                 }
-                chords.append(notes.join(QLatin1Char('+')));
+
+                RangeChord chord;
+                chord.pitches = notes.join(QLatin1Char('+'));
+                chord.ticks = mu::engraving::toChord(item)->ticks();
+                chord.measure = m;
+                //! ⚠️ The beat is computed from the SEGMENT's tick, not from the chord's, so a chord that
+                //! starts a measure reports beat 1 rather than the tick it inherited. ⚠️ `Fraction` has no
+                //! integer division, so the subtraction is done in ticks first.
+                const mu::engraving::Fraction offset = segment->tick() - measure->tick();
+                chord.beat = offset.ticks() / mu::engraving::Constants::DIVISION + 1;
+                chords.append(chord);
             }
         }
     }
 
-    return chords.join(QLatin1Char(' '));
+    return chords;
+}
+
+//! The same chords as one comparable string, with every length multiplied by `scale`.
+//!
+//! ⛔ THE EXPECTED READING IS BUILT BY SCALING THE SOURCE'S OWN READING, not by re-reading the destination:
+//! that is what makes "did the stretch happen?" a question with an answer rather than a hope.
+QString formatChords(const QVector<RangeChord>& chords, const mu::engraving::Fraction& scale)
+{
+    QStringList parts;
+    for (const RangeChord& chord : chords) {
+        const mu::engraving::Fraction scaled = chord.ticks * scale;
+        parts.append(QStringLiteral("%1@%2").arg(chord.pitches, scaled.toString()));
+    }
+
+    return parts.join(QLatin1Char(' '));
 }
 
 //! The total written length of a measure range, as a fraction of a whole note (the unit 第 97 条 settled on
@@ -2779,10 +2816,64 @@ QString lengthText(const mu::engraving::Fraction& length)
 
     return QStringLiteral("%1/%2 of a whole note").arg(reduced.numerator()).arg(reduced.denominator());
 }
+
+//! The total written length of the chords, in whole-note fractions - the same unit the measures are in.
+mu::engraving::Fraction chordsLength(const QVector<RangeChord>& chords)
+{
+    mu::engraving::Fraction total(0, 1);
+    for (const RangeChord& chord : chords) {
+        total += chord.ticks;
+    }
+    return total;
+}
+
+//! The pitches in order, with runs of the same pitch collapsed to one.
+//!
+//! ⛔ THIS EXISTS BECAUSE A STRETCH LEGITIMATELY SPLITS NOTES (measured 2026-10-17, 第 145 条). A dotted
+//! eighth scaled by 3/4 is 9/64 of a whole note, which is not one note value - and the editor writes it as a
+//! TIED PAIR (`[C4]/360` came out as `60@1/8 60@1/64`). Comparing chord-for-chord would call that correct
+//! edit a failure, so the stretch path compares the pitch SEQUENCE with runs collapsed, and separately
+//! requires the total length to be exactly the source's times the scale - which is the part that catches a
+//! stretch that silently did nothing.
+QString collapsedPitches(const QVector<RangeChord>& chords)
+{
+    QStringList parts;
+    QString previous;
+    for (const RangeChord& chord : chords) {
+        if (chord.pitches != previous) {
+            parts.append(chord.pitches);
+            previous = chord.pitches;
+        }
+    }
+
+    return parts.join(QLatin1Char(' '));
+}
+
+//! The first chord in the range whose length cannot be written after being scaled, or an empty string.
+//!
+//! ⛔ THIS IS A PRE-CHECK, BEFORE ANYTHING MOVES (第 138 条的纪律). The reader refuses such a paste itself
+//! (`Read500::pasteStaff`: `if (!TDuration(tickLenStretched).isValid()) return false;`), but by then it has
+//! already parsed part of the payload - and a refusal that says which LENGTH is the problem is worth more
+//! than one that says the paste failed.
+//!
+//! ⛔⛔ AND IT CHECKS THE PASSAGE, NOT EACH NOTE - the first version checked every chord, and it was WRONG:
+//! measured 2026-10-17, a dotted eighth stretched by 3/4 (9/64) passes `TDuration::isValid()`, and even when
+//! a single value cannot express a length the editor writes it as a TIED PAIR rather than refusing. A
+//! pre-check that refuses work the editor does correctly is worse than no pre-check: it takes a working
+//! operation away and explains it with a claim that is not true.
+QString unwritablePassage(const mu::engraving::Fraction& scaledLength)
+{
+    if (!mu::engraving::TDuration(scaledLength).isValid()) {
+        return QStringLiteral("the stretched passage would be %1 long, which is not a length this editor can "
+                              "write as a measure").arg(lengthText(scaledLength));
+    }
+
+    return QString();
+}
 } // namespace
 
 RecipeResult muse::agentharness::copyMeasures(mu::engraving::Score* score, int fromMeasure, int count,
-                                              int toMeasure, int staff)
+                                              int toMeasure, int staff, bool scaleToFit)
 {
     if (!score) {
         return RecipeResult::failure(QStringLiteral("no score"));
@@ -2821,19 +2912,31 @@ RecipeResult muse::agentharness::copyMeasures(mu::engraving::Score* score, int f
             .arg(fromMeasure).arg(lastFrom).arg(toMeasure).arg(lastTo));
     }
 
-    //! ⛔ SAME TOTAL LENGTH, because this is a copy and not a re-fit. Pasting 4/4 of music into a 3/4 bar has
-    //! no single right answer (stretch it? clip it? write past the barline?), and the failure this project
-    //! keeps meeting is the silent one - so both lengths are reported and nothing is written.
+    //! ── Same length, or an explicit stretch (第 143 / 145 条) ─────────────────────────────────────
+    //! ⛔ EQUAL LENGTHS IS THE DEFAULT AND THE STRETCH IS OPT-IN. Pasting 4/4 of music into a 3/4 bar has no
+    //! single right answer (stretch it? clip it? write past the barline?), so the answer is not chosen FOR
+    //! the caller - it is chosen BY them, and the failure this project keeps meeting is the silent one. A
+    //! caller who did not ask for a stretch still gets both lengths and nothing written (第 122 条的规则:
+    //! 没要的人不该得到).
     const mu::engraving::Fraction sourceLength = totalLength(score, fromMeasure, lastFrom);
     const mu::engraving::Fraction targetLength = totalLength(score, toMeasure, lastTo);
-    if (sourceLength != targetLength) {
+    const bool sameLength = (sourceLength == targetLength);
+
+    if (!sameLength && !scaleToFit) {
         return RecipeResult::failure(
             QStringLiteral("measures %1-%2 hold %3 and measures %4-%5 hold %6, so this is not a copy but a "
-                           "re-fit - which this tool does not do. Copy into measures of the same total "
-                           "length.")
+                           "re-fit. Pass `scaleToFit: true` to stretch the music to fit (every note keeps "
+                           "its pitch and its place, and its length is multiplied by %7), or copy into "
+                           "measures of the same total length.")
             .arg(fromMeasure).arg(lastFrom).arg(lengthText(sourceLength))
-            .arg(toMeasure).arg(lastTo).arg(lengthText(targetLength)));
+            .arg(toMeasure).arg(lastTo).arg(lengthText(targetLength))
+            .arg(lengthText(targetLength / sourceLength)));
     }
+
+    //! ⛔ THE SCALE IS THE RATIO OF THE TWO RANGES, and it is a `Fraction` all the way: 3/4 of a whole note
+    //! into a whole note is 4/3, and rounding that to a double would put the last note off the barline.
+    const mu::engraving::Fraction scale = sameLength ? mu::engraving::Fraction(1, 1)
+                                                     : (targetLength / sourceLength);
 
     //! ── The source: the editor's own clipboard payload, built in memory ────────────────────────────
     const RecipeResult sourceSelected = selectMeasures(score, fromMeasure, lastFrom, staff);
@@ -2863,8 +2966,19 @@ RecipeResult muse::agentharness::copyMeasures(mu::engraving::Score* score, int f
     payload.setData(mimeType.toQString(), source.mimeData().toQByteArray());
 
     //! Read the source BEFORE the paste: it is both what the result reports and what the destination is
-    //! judged against.
-    const QString sourcePitches = pitchesInMeasures(score, fromMeasure, lastFrom, staff);
+    //! judged against - and with a stretch it is also what the expected reading is computed FROM.
+    const QVector<RangeChord> sourceChords = chordsInMeasures(score, fromMeasure, lastFrom, staff);
+
+    if (!sameLength) {
+        //! ⛔ THE PRE-CHECK RUNS BEFORE THE DESTINATION SELECTION MOVES, let alone before the paste: the
+        //! reader refuses an unwritable passage itself, but only after it has parsed part of the payload.
+        const QString problem = unwritablePassage(sourceLength * scale);
+        if (!problem.isEmpty()) {
+            return RecipeResult::failure(QStringLiteral("cannot stretch measures %1-%2 to fit measures %3-%4: "
+                                                        "%5").arg(fromMeasure).arg(lastFrom)
+                                         .arg(toMeasure).arg(lastTo).arg(problem));
+        }
+    }
 
     //! ── The destination: a range selection, which is the shape `Paste::pasteStaffList` reads ────────
     const RecipeResult targetSelected = selectMeasures(score, toMeasure, lastTo, staff);
@@ -2874,8 +2988,7 @@ RecipeResult muse::agentharness::copyMeasures(mu::engraving::Score* score, int f
 
     mu::engraving::QMimeDataAdapter adapter(&payload);
     const bool pasted = mu::engraving::Paste::paste(
-        score->transactionManager()->currentOrDummyTransaction(), score, &adapter, nullptr,
-        mu::engraving::Fraction(1, 1));
+        score->transactionManager()->currentOrDummyTransaction(), score, &adapter, nullptr, scale);
 
     if (!pasted) {
         //! ⚠️ The editor sets an error for the caller to read; it is the only diagnosis available here, and
@@ -2887,23 +3000,69 @@ RecipeResult muse::agentharness::copyMeasures(mu::engraving::Score* score, int f
     }
 
     //! ── Read back (第 133 条's rule: report the RESULT, not the request) ────────────────────────────
-    const QString landed = pitchesInMeasures(score, toMeasure, lastTo, staff);
-    if (landed != sourcePitches) {
-        //! The edit happened and did not reproduce the range. Reported as a FAILURE with both readings: a
-        //! caller told "copied" here would believe a bar that is not the one it asked for.
-        return RecipeResult::failure(
-            QStringLiteral("the paste wrote something else: measures %1-%2 should now read [%3] but read [%4]")
-            .arg(toMeasure).arg(lastTo).arg(sourcePitches, landed));
+    //! ⚠️ WHAT IS COMPARED DEPENDS ON WHETHER ANYTHING WAS STRETCHED (第 145 条). Without a stretch the
+    //! reading must match chord for chord, lengths included - the strict judge 第 143 条 shipped. With one,
+    //! the editor may have written a stretched length as TIED NOTES (a 9/64 note is two chords, not one), so
+    //! the pitches are compared with runs collapsed and the total length must be exactly the source's times
+    //! the scale. ⛔ The total is what catches the failure that matters: a stretch that silently did nothing
+    //! would leave every pitch in place and the bar overfull.
+    const QVector<RangeChord> landedChords = chordsInMeasures(score, toMeasure, lastTo, staff);
+    const QString expected = formatChords(sourceChords, scale);
+    const QString landed = formatChords(landedChords, mu::engraving::Fraction(1, 1));
+
+    if (sameLength) {
+        if (landed != expected) {
+            return RecipeResult::failure(
+                QStringLiteral("the paste wrote something else: measures %1-%2 should now read [%3] but read "
+                               "[%4]").arg(toMeasure).arg(lastTo).arg(expected, landed));
+        }
+    } else {
+        const mu::engraving::Fraction landedLength = chordsLength(landedChords);
+        const mu::engraving::Fraction wantedLength = chordsLength(sourceChords) * scale;
+        if (collapsedPitches(landedChords) != collapsedPitches(sourceChords)) {
+            return RecipeResult::failure(
+                QStringLiteral("the paste wrote different music: measures %1-%2 should now hold [%3] but hold "
+                               "[%4]").arg(toMeasure).arg(lastTo)
+                .arg(collapsedPitches(sourceChords), collapsedPitches(landedChords)));
+        }
+        if (landedLength != wantedLength) {
+            return RecipeResult::failure(
+                QStringLiteral("the stretch did not land: measures %1-%2 hold %3 of music where the stretch "
+                               "should have written %4").arg(toMeasure).arg(lastTo)
+                .arg(lengthText(landedLength)).arg(lengthText(wantedLength)));
+        }
     }
+
+    //! ⚠️ A STRETCH CAN LEGITIMATELY PRODUCE MORE CHORDS THAN IT COPIED, and the caller is told: "the notes
+    //! are there" and "the notes are there as tied pairs" are different pieces of news for somebody about to
+    //! print the part.
+    const int extraChords = landedChords.size() - sourceChords.size();
+    const QString split = extraChords > 0
+                          ? QStringLiteral(" %1 note(s) had to be written as tied notes: the stretched length "
+                                           "is not a single note value.").arg(extraChords)
+                          : QString();
 
     const QString which = count == 1 ? QStringLiteral("measure %1").arg(fromMeasure)
                                      : QStringLiteral("measures %1-%2").arg(fromMeasure).arg(lastFrom);
     const QString where = count == 1 ? QStringLiteral("measure %1").arg(toMeasure)
                                      : QStringLiteral("measures %1-%2").arg(toMeasure).arg(lastTo);
+    //! ⛔ SIX PLACEHOLDERS, SO THE ARGUMENTS ARE GIVEN IN THREE CALLS THAT MATCH THEM ONE FOR ONE
+    //! (第 145 条). The first version passed `how` and `split` as the 4th and 5th arguments, which put the
+    //! STRETCH note where the chord count belongs and the chord count at the end of the sentence - measured
+    //! on the real exe: "copied measure 1 onto measure 2 (a whole note,  chord(s)).4 The user's selection…".
+    //! ⚠️ The unit tests did not catch it because they only asked whether the message CONTAINED certain
+    //! words; the shape of the sentence is part of what the caller reads, so it is asserted now too.
+    const QString how = sameLength
+                        ? QString()
+                        : QStringLiteral(" ⚠️ STRETCHED to fit: every note keeps its pitch and its place and "
+                                         "its length is multiplied by %1, so the music is no longer at the "
+                                         "tempo it was written at.")
+                          .arg(lengthText(scale));
     return RecipeResult::success(
-        QStringLiteral("copied %1 onto %2 (%3, %4 chord(s)). The user's selection has moved "
+        QStringLiteral("copied %1 onto %2 (%3, %4 chord(s)).%5%6 The user's selection has moved "
                        "to the destination. ⚠️ Things anchored OUTSIDE the copied range - a tie or slur "
                        "leaving it, a volta - are not carried: that is the editor's own clipboard rule.")
         .arg(which, where, lengthText(sourceLength))
-        .arg(sourcePitches.isEmpty() ? 0 : sourcePitches.count(QLatin1Char(' ')) + 1));
+        .arg(sourceChords.size())
+        .arg(how, split));
 }
