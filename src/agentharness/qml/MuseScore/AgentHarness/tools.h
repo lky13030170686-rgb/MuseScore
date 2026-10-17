@@ -163,6 +163,15 @@ ToolResult toolScoreRevision(const QJsonObject& args, const ToolContext& ctx);
 //! `select_range`.
 ToolResult toolMeasureCopy(const QJsonObject& args, const ToolContext& ctx);
 
+//! Write (to DISK): save the score to the file it came from (第 146 条).
+//!
+//! ⛔ THE ONE TOOL HERE WHOSE EFFECT Ctrl+Z DOES NOT COVER. Everything else in this table goes through the
+//! notation undo stack; this overwrites a file on the user's disk, and the app's save is the writer (format
+//! handling, the backup preference, the modified marker) - the tool adds only the rules: it never chooses a
+//! path, it refuses a score that has never been saved (that would open a dialog it cannot wait for), and it
+//! checks the FILE rather than the app's word before reporting success.
+ToolResult toolScoreSave(const QJsonObject& args, const ToolContext& ctx);
+
 //! Write: perform several commands as ONE undo step, fenced by `expectRevision`.
 //!
 //! WHY BOTH IN ONE TOOL: the fence and the batch are the same idea seen twice. A batch says "these

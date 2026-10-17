@@ -102,6 +102,12 @@ qt_add_qml_module(agentharness_qml
         # that can disagree with what is in the files, and a crash while rewriting it costs all of them.
         sessionpersist.cpp
         sessionpersist.h
+        # Saving the score to the file it came from (第 146 条). Its own file because it is NOT a score
+        # edit: `scorerecipes` is "edits, inside a transaction, undoable with Ctrl+Z", and this is a file
+        # write that nothing in the editor can take back. The refusal rule and the "did the file actually
+        # change?" judge are pure, so both are unit-tested without an application.
+        scoresave.cpp
+        scoresave.h
     QML_FILES
         AgentPanel.qml
         AgentTranscriptRow.qml

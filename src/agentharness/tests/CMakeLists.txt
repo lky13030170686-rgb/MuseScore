@@ -52,6 +52,10 @@ set(MODULE_TEST_SRC
     # one line is unreadable, a torn tail that costs everything said in it). Real files in a temporary
     # directory - no application, no settings, no score.
     ${CMAKE_CURRENT_LIST_DIR}/sessionpersist_tests.cpp
+    # Saving to the file the score came from (第 146 条): the refusal rule (a tool must not open a dialog it
+    # cannot wait for) and the judge that looks at the FILE rather than at the app's word. Both pure - the
+    # judge needs a real file, but no application, no project and no score.
+    ${CMAKE_CURRENT_LIST_DIR}/scoresave_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/llmclient_tests.cpp
     # The stored model catalog: the JSON shape of "which ids this gateway serves, and when we were
     # told" (第 131 条). Pure text in / text out, which is why it can be tested without a settings

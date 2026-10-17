@@ -296,6 +296,14 @@ public:
     Q_PROPERTY(QVariantList agentSessions READ agentSessions NOTIFY fieldChanged)
     QVariantList agentSessions() const;
 
+    //! Write the score to the file it came from (第 146 条) - the app's own save, on the app's own path.
+    //!
+    //! ⛔ THE ONE OPERATION IN THIS SUBSYSTEM THAT Ctrl+Z DOES NOT COVER. It is not a recipe (there is no
+    //! transaction around writing a file) and it is not undoable, so its result says so. ⛔ And it refuses a
+    //! score that has never been saved: choosing a filename means the app would open a dialog, and a tool
+    //! cannot wait for one (`saveRefusal` in `scoresave.h`).
+    RecipeResult saveScoreToItsFile();
+
     //! ── The agent loop, as QML sees it ────────────────────────────────────────────────────────
     //! ⛔ These are Q_PROPERTIES, not Q_INVOKABLE getters, and that is load-bearing: a QML binding to
     //! an invokable function is evaluated ONCE and never re-evaluated, because QML has nothing to

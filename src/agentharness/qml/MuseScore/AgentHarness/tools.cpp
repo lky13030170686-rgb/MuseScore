@@ -1145,6 +1145,28 @@ ToolResult muse::agentharness::toolMeasureCopy(const QJsonObject& args, const To
     return ToolResult::success(result.detail, meta);
 }
 
+ToolResult muse::agentharness::toolScoreSave(const QJsonObject& args, const ToolContext& ctx)
+{
+    Q_UNUSED(args);
+
+    if (!ctx.field) {
+        return ToolResult::failure(QStringLiteral("no information field available"));
+    }
+
+    //! ⛔ NO `expectRevision` HERE, AND THAT IS A DECISION RATHER THAN AN OMISSION. The fence exists to stop
+    //! a WRITE composed against a stale reading - an edit that would land on music that has moved since.
+    //! A save does not change the music: it writes what is there NOW, which is what the user asked to have
+    //! saved. Refusing it because the score changed since some earlier read would be the fence protecting
+    //! nothing (第 146 条).
+    const RecipeResult result = ctx.field->saveScoreToItsFile();
+
+    if (!result.ok) {
+        return ToolResult::failure(result.problem);
+    }
+
+    return ToolResult::success(result.detail);
+}
+
 ToolResult muse::agentharness::toolMeasureRemove(const QJsonObject& args, const ToolContext& ctx)
 {
     if (!ctx.field) {
@@ -2018,6 +2040,20 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             toolScoreRevision,
         },
         ToolSpec{
+            QStringLiteral("score_save"),
+            QStringLiteral("Save the score to the file it was opened from. ⛔ THIS IS THE ONE THING HERE "
+                           "THAT Ctrl+Z CANNOT TAKE BACK: the undo stack covers edits to the score, not the "
+                           "file on disk - after this the file holds what is on screen. Use it when the "
+                           "user asks for their work to be saved (or agrees to it); never on your own "
+                           "initiative, as a way to close out a turn the user has not seen yet. ⛔ It never "
+                           "chooses a filename: a score that has never been saved is refused, because "
+                           "saving it would ask the user for a name and a folder, and that decision is "
+                           "theirs (they can save once by hand and this tool will keep that file up to "
+                           "date)."),
+            schemaObject({}),
+            toolScoreSave,
+        },
+        ToolSpec{
             QStringLiteral("patch_apply"),
             QStringLiteral("Perform several notation actions as ONE undo step: one Ctrl+Z takes them all "
                            "back, and the timeline records them as a single action. Use this whenever a "
@@ -2641,6 +2677,11 @@ bool muse::agentharness::isBatchableTool(const QString& name)
     //!   - `select_range` - it writes NOTHING (it moves the selection), so it would add no undo step to the
     //!     batch it joined; it is a PRECONDITION for the command that follows it, and that command is where
     //!     the fence and the undo step belong (第 138 条).
+    //!   - `score_save` - ⛔ A NEW REASON, AND THE STRONGEST ONE (第 146 条): a batch is a set of SCORE EDITS
+    //!     merged into one undo step, and saving is not a score edit at all. Inside a batch it would mean
+    //!     "write the file part-way through the batch" - and the batch's rollback (undoing to the recorded
+    //!     revision) cannot un-write it. An operation the undo stack does not cover must not be folded into
+    //!     the thing whose promise is that the undo stack covers it.
     static const QSet<QString> kBatchable = {
         //! note-level
         QStringLiteral("note_set_pitch"), QStringLiteral("note_transpose"),

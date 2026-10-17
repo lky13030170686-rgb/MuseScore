@@ -24,6 +24,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -48,6 +49,10 @@
 #include "notation/inotationelements.h"
 #include "notation/inotationundostack.h"
 
+//! 第 146 条: saving is a PROJECT operation, not a notation edit - `INotationProject` is where the file
+//! this score came from lives, and `save()` with no path writes exactly that file.
+#include "project/inotationproject.h"
+
 //! The app's own settings store, so the gateway and the model survive a restart. This is the framework
 //! way (`Settings::Key(module, "path")` + `value()` / `setSharedValue()`), the same one
 //! `AppShellConfiguration` uses - NOT `QSettings` directly, which would write a second settings file
@@ -59,6 +64,9 @@
 #include "llmtransport.h"
 #include "semanticderive.h"
 #include "scoredigest.h"
+//! Saving to the file the score came from (第 146 条): the refusal rule and the file judge are pure, and
+//! they live next to the reason they exist rather than inside this file.
+#include "scoresave.h"
 //! Conversations on disk (第 142 条): the live log's sink appends, `init()` loads. The log itself stays
 //! free of I/O - this file is where the two are wired together.
 #include "sessionpersist.h"
@@ -1731,6 +1739,58 @@ RecipeResult FieldController::runNoteRecipe(const QString& actionName,
 
     return outcome;
 }
+RecipeResult FieldController::saveScoreToItsFile()
+{
+    //! ── 第 146 条: the one operation here that Ctrl+Z does not cover ─────────────────────────────────
+    //! ⛔ IT IS NOT A RECIPE, so it does not go through `runNoteRecipe`: that function's whole shape is a
+    //! transaction around a score edit, and there is no transaction to open around writing a file. What it
+    //! borrows from the recipes is the reporting contract: say what happened, not what was asked for.
+    //! ⚠️ `mu::project`, not `muse::project`: the project layer is the APPLICATION's (it owns the file, the
+    //! cloud and the autosave), while the notation layer under it is the framework's. The two namespaces
+    //! look alike and only one of them has this type.
+    const mu::project::INotationProjectPtr project = context()->currentProject();
+
+    const bool hasProject = bool(project);
+    const bool newlyCreated = hasProject && project->isNewlyCreated();
+    const QString path = hasProject ? project->path().toQString() : QString();
+
+    const QString refused = saveRefusal(hasProject, newlyCreated, path);
+    if (!refused.isEmpty()) {
+        return RecipeResult::failure(refused);
+    }
+
+    //! The file's state BEFORE the save, which is what the second judge compares against.
+    const QFileInfo before(path);
+    const QDateTime beforeTime = before.lastModified();
+    const qint64 beforeSize = before.size();
+
+    //! ⛔ NO PATH IS PASSED, ON PURPOSE: an empty path inside `NotationProject::save` means "the file this
+    //! score came from". Passing one would let this tool write the user's music somewhere they did not
+    //! choose - exactly the Save As decision `saveRefusal` just said belongs to the user.
+    const muse::Ret saved = project->save();
+
+    if (!saved) {
+        return RecipeResult::failure(QStringLiteral("the editor could not save %1: %2")
+                                     .arg(path, QString::fromStdString(saved.toString())));
+    }
+
+    //! ⛔ THE APP'S WORD IS NOT THE JUDGE (第 133 条's rule, and the reason `fileWasRewritten` exists): the
+    //! file on disk is. A save that reported success and wrote somewhere else would otherwise be reported
+    //! here as a successful save of the wrong file.
+    if (!fileWasRewritten(path, beforeTime, beforeSize)) {
+        return RecipeResult::failure(
+            QStringLiteral("the editor reported the save as done, but %1 did not change - so this tool will "
+                           "not claim the score was saved").arg(path));
+    }
+
+    LOGW() << "[agent-write] saved the score to" << path;
+
+    return RecipeResult::success(
+        QStringLiteral("saved to %1. ⚠️ SAVING IS NOT UNDOABLE: Ctrl+Z undoes edits to the score, not the "
+                       "file on disk - the file now holds what was on screen. ⚠️ If \"create a backup before "
+                       "saving\" is on in the preferences, the editor wrote one.").arg(path));
+}
+
 QString FieldController::sanityProblem() const
 {
     mu::engraving::Score* score = currentScore();
