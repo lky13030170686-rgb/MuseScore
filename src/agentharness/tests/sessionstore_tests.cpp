@@ -272,3 +272,104 @@ TEST(AgentHarness_SessionStore, ConversationsSurviveARoundTripThroughTheStore)
     EXPECT_EQ(restoredSecond.size(), second.size());
     EXPECT_EQ(sessionTitleFrom(restoredSecond), QStringLiteral("second question"));
 }
+
+//! ── Renaming and deleting (第 144 条) ─────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_SessionStore, ANameTheUserGaveBeatsTheFirstMessage)
+{
+    SessionLog log = logWithUserMessage(QStringLiteral("how many measures?"));
+    QJsonObject name;
+    name.insert(QStringLiteral("content"), QStringLiteral("Bar counting"));
+    log.append(SessionEvent::SESSION_TITLE, name);
+
+    EXPECT_EQ(sessionTitleFrom(log), QStringLiteral("Bar counting"));
+}
+
+TEST(AgentHarness_SessionStore, TheLastRenameWins)
+{
+    //! Renaming twice means the second name is the name - the alternative (the first rename sticking) would
+    //! make the second attempt look like it silently failed.
+    SessionLog log = logWithUserMessage(QStringLiteral("how many measures?"));
+    for (const QString& name : { QStringLiteral("First name"), QStringLiteral("Second name") }) {
+        QJsonObject data;
+        data.insert(QStringLiteral("content"), name);
+        log.append(SessionEvent::SESSION_TITLE, data);
+    }
+
+    EXPECT_EQ(sessionTitleFrom(log), QStringLiteral("Second name"));
+}
+
+TEST(AgentHarness_SessionStore, TheRenameBoxGetsTheUnelidedName)
+{
+    //! ⛔ `maxChars = 0` MEANS "DO NOT CUT IT", and that is what the rename box is prefilled with (第 144 条):
+    //! handing an edit box a name that was already elided would truncate the real name the moment somebody
+    //! pressed Save - and the user would have no way to tell that it had happened.
+    const QString long_(QStringLiteral("abcdefghij").repeated(10));
+    SessionLog log = logWithUserMessage(long_);
+    QJsonObject name;
+    name.insert(QStringLiteral("content"), long_);
+    log.append(SessionEvent::SESSION_TITLE, name);
+
+    EXPECT_EQ(sessionTitleFrom(log), elideTitle(long_));      //!< the row's label
+    EXPECT_EQ(sessionTitleFrom(log, 0), long_);               //!< what the edit box gets
+    EXPECT_GT(sessionTitleFrom(log, 0).size(), sessionTitleFrom(log).size());
+}
+
+TEST(AgentHarness_SessionStore, RemovingARowKeepsTheLiveEntryLive)
+{
+    SessionStore store;
+    store.archiveCurrent(QByteArray("A\n"), 1, QStringLiteral("first"));
+    store.startNewLive();
+    store.archiveCurrent(QByteArray("B\n"), 2, QStringLiteral("second"));
+    store.startNewLive();
+    const QString liveId = store.current().id;
+
+    //! Remove the OLDEST, which sits before the live entry: the live index has to move down with it.
+    ASSERT_TRUE(store.removeAt(0));
+
+    EXPECT_EQ(store.count(), 2);
+    EXPECT_EQ(store.current().id, liveId);
+    EXPECT_TRUE(store.currentIsEmpty());          //!< still the live one
+    EXPECT_EQ(store.at(0).title, QStringLiteral("second"));
+
+    //! ⛔ AND THE LIVE ENTRY ITSELF IS NOT REMOVABLE HERE: "delete the conversation I am in" is a decision
+    //! about the live log, which this class does not own (`dropCurrentLive` is the caller's tool for it).
+    EXPECT_FALSE(store.removeAt(store.currentIndex()));
+    EXPECT_FALSE(store.removeAt(99));
+    EXPECT_EQ(store.count(), 2);
+}
+
+TEST(AgentHarness_SessionStore, DroppingTheLiveConversationLeavesNoRowForIt)
+{
+    //! ⛔ THE DIFFERENCE FROM `startNewLive()` IS THE WHOLE POINT: that one keeps an archived entry as a row
+    //! (right for "start another conversation"), while a DELETE must leave nothing behind - otherwise the
+    //! conversation the user just deleted stays in the list for ever, and its file is gone.
+    SessionStore store;
+    store.archiveCurrent(QByteArray("A\n"), 1, QStringLiteral("first"));
+    const QString deletedId = store.current().id;
+
+    store.dropCurrentLive();
+
+    EXPECT_EQ(store.count(), 1);
+    EXPECT_EQ(store.currentIndex(), 0);
+    EXPECT_NE(store.current().id, deletedId);
+    EXPECT_TRUE(store.currentIsEmpty());
+}
+
+TEST(AgentHarness_SessionStore, AppendingToAStoredConversationCountsItAndKeepsTheBytesWhole)
+{
+    SessionStore store;
+    store.archiveCurrent(QByteArray("A\n"), 1, QStringLiteral("first"));
+    store.startNewLive();
+
+    store.appendStoredLine(0, QByteArray("B"));
+    store.setStoredTitle(0, QStringLiteral("Renamed"));
+
+    EXPECT_EQ(store.at(0).events, 2);
+    EXPECT_EQ(store.at(0).payload, QByteArray("A\nB\n"));
+    EXPECT_EQ(store.at(0).title, QStringLiteral("Renamed"));
+
+    //! ⛔ The newline is part of the append: a payload ending mid-line is the tear `parseStoredSession` has to
+    //! repair, and manufacturing one here would make the in-memory copy differ from the file it mirrors.
+    EXPECT_TRUE(store.at(0).payload.endsWith('\n'));
+}

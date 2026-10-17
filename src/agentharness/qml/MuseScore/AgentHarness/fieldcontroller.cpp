@@ -1211,7 +1211,12 @@ QVariantList FieldController::agentSessions() const
         //! ⛔ THE LIVE ROW IS DERIVED, NEVER THE COPY TAKEN WHEN IT WAS ARCHIVED. It grows with every
         //! event, so a stored row for it would be a second truth about a conversation that is still
         //! happening - the thing `sessionlog.h` refuses one level down.
-        row.insert(QStringLiteral("title"), live ? sessionTitleFrom(m_session) : entry.title);
+        //! ⚠️ TWO FIELDS, ONE NAME: `name` is what the conversation is called (unelided, what the rename box
+        //! is prefilled with - 第 144 条) and `title` is that name folded for the row. `SessionEntry::title`
+        //! holds the UNELIDED one for the same reason.
+        const QString name = live ? sessionTitleFrom(m_session, 0) : entry.title;
+        row.insert(QStringLiteral("name"), name);
+        row.insert(QStringLiteral("title"), elideTitle(name));
         row.insert(QStringLiteral("events"), live ? m_session.size() : entry.events);
         row.insert(QStringLiteral("startedAt"), entry.startedAt);
         row.insert(QStringLiteral("current"), live);
@@ -1229,7 +1234,10 @@ void FieldController::archiveLiveSessionIfWorthKeeping()
         return;
     }
 
-    m_sessions.archiveCurrent(m_session.toJsonLines(), m_session.size(), sessionTitleFrom(m_session));
+    //! ⛔ THE UNELIDED NAME IS WHAT GETS STORED (第 144 条): the row elides it for display, and the rename box
+    //! is prefilled from the stored one - a stored name that had already been cut would be truncated for good
+    //! the first time somebody pressed Save.
+    m_sessions.archiveCurrent(m_session.toJsonLines(), m_session.size(), sessionTitleFrom(m_session, 0));
 }
 
 void FieldController::applySessionRoutingId()
@@ -1421,9 +1429,109 @@ void FieldController::newAgentSession()
     emit fieldChanged();
 }
 
-void FieldController::switchAgentSession(int index)
+bool FieldController::renameAgentSession(int index, const QString& title)
 {
+    const QString name = title.simplified();
+    if (name.isEmpty()) {
+        //! A row with no name is a row nobody can find again. Refused rather than stored: the derived title
+        //! would fall back to the first message and the user would see their rename "not take".
+        LOGW() << "[agent-session] a session name cannot be empty; the conversation keeps its name";
+        return false;
+    }
+
+    if (index < 0 || index >= m_sessions.count()) {
+        return false;
+    }
+
+    QJsonObject data;
+    data.insert(QStringLiteral("content"), name);
+
+    if (index == m_sessions.currentIndex()) {
+        //! ⛔ THE LIVE LOG TAKES IT LIKE ANY OTHER EVENT, and the sink writes it to the file (第 142 条) - so
+        //! there is no separate "save the rename" step to forget.
+        m_session.append(SessionEvent::SESSION_TITLE, data);
+
+        LOGW() << "[agent-session] renamed the open conversation to" << name;
+        emit fieldChanged();
+        return true;
+    }
+
+    //! ── A stored conversation: the line goes into ITS bytes ─────────────────────────────────────────
+    //! ⛔ APPEND-ONLY, exactly like every other event: `SessionLog::append` would have to parse the whole
+    //! conversation to hand out a `seq`, and re-serializing it would rewrite the file - the manifest problem
+    //! one file down. The seq is the count of events already in it, which is what `append` would have said.
+    const SessionEntry entry = m_sessions.at(index);
+
+    SessionEvent event;
+    event.seq = quint64(entry.events);
+    event.type = SessionEvent::SESSION_TITLE;
+    event.time = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
+    event.data = data;
+    const QByteArray line = jsonLine(event);
+
+    QString problem;
+    if (!appendSessionLine(sessionsDataDir(), entry.id, line, &problem)) {
+        //! ⛔ THE FILE FIRST, AND NOTHING IN MEMORY IF IT FAILS: a row that says "renamed" while the file says
+        //! otherwise is a name that disappears at the next start, which reads as the rename being broken.
+        LOGW() << "[agent-session] cannot rename that conversation:" << problem;
+        return false;
+    }
+
+    m_sessions.appendStoredLine(index, line);
+    m_sessions.setStoredTitle(index, name);
+
+    LOGW() << "[agent-session] renamed a stored conversation" << entry.id << "to" << name;
+    emit fieldChanged();
+    return true;
+}
+
+bool FieldController::deleteAgentSession(int index)
+{
+    //! ⛔ REFUSED WHILE A TURN RUNS, like switching: the loop is appending to the live log, and deleting the
+    //! conversation under it would leave the answer being written into a log nobody has a file for.
     if (agentRunning()) {
+        LOGW() << "[agent-session] a turn is running; refusing to delete a conversation";
+        return false;
+    }
+
+    if (index < 0 || index >= m_sessions.count()) {
+        return false;
+    }
+
+    const SessionEntry entry = m_sessions.at(index);
+    const bool isLive = (index == m_sessions.currentIndex());
+
+    //! ⛔ THE FILE GOES FIRST, and nothing in memory changes until it is gone: a row that disappears while its
+    //! conversation is still on disk would come back at the next start - and "the delete did not work" would
+    //! be the correct reading of that.
+    QString problem;
+    if (!removeStoredSession(sessionsDataDir(), entry.id, &problem)) {
+        LOGW() << "[agent-session] cannot delete that conversation:" << problem;
+        return false;
+    }
+
+    if (isLive) {
+        //! Deleting the conversation you are in means the log goes, the slot goes, and a FRESH conversation
+        //! takes its place. ⚠️ Keeping the log but forgetting the file is the alternative, and it is worse:
+        //! the conversation would stay visible until the next switch and then be lost for good.
+        m_session.clear();
+        m_sessions.dropCurrentLive();
+        applySessionRoutingId();
+        rememberCurrentSessionId();
+    } else {
+        m_sessions.removeAt(index);
+    }
+
+    LOGW() << "[agent-session] deleted conversation" << entry.id
+           << (isLive ? "(it was the open one)" : "(it was not open)")
+           << "sessions=" << m_sessions.count();
+
+    emit fieldChanged();
+    return true;
+}
+
+void FieldController::switchAgentSession(int index)
+{    if (agentRunning()) {
         LOGW() << "[agent-session] a turn is running; refusing to switch sessions";
         return;
     }

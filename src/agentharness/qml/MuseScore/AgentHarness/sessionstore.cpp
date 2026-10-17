@@ -63,10 +63,22 @@ bool muse::agentharness::sessionHasContent(const SessionLog& log)
 QString muse::agentharness::sessionTitleFrom(const SessionLog& log, int maxChars)
 {
     QString text;
-    for (const SessionEvent& e : log.events()) {
-        if (e.type == SessionEvent::USER_MESSAGE) {
-            text = e.data.value(QStringLiteral("content")).toString();
+
+    //! ⛔ A NAME THE USER GAVE WINS (第 144 条), and the LAST one wins over earlier ones: renaming twice
+    //! means the second name is the name. Read backwards, because "the last one" is the one that counts.
+    for (auto it = log.events().crbegin(); it != log.events().crend(); ++it) {
+        if (it->type == SessionEvent::SESSION_TITLE) {
+            text = it->data.value(QStringLiteral("content")).toString();
             break;
+        }
+    }
+
+    if (text.isEmpty()) {
+        for (const SessionEvent& e : log.events()) {
+            if (e.type == SessionEvent::USER_MESSAGE) {
+                text = e.data.value(QStringLiteral("content")).toString();
+                break;
+            }
         }
     }
 
@@ -77,21 +89,26 @@ QString muse::agentharness::sessionTitleFrom(const SessionLog& log, int maxChars
                                       : QStringLiteral("(new session)");
     }
 
-    //! One line, whatever the user pasted: a title containing a newline would take two rows and break the
-    //! "one conversation, one row" reading the column is built on.
-    text = text.simplified();
+    return elideTitle(text, maxChars);
+}
 
-    if (maxChars > 0 && text.size() > maxChars) {
+QString muse::agentharness::elideTitle(const QString& text, int maxChars)
+{
+    //! One line, whatever the user pasted or typed: a name containing a newline would take two rows and break
+    //! the "one conversation, one row" reading the column is built on.
+    QString folded = text.simplified();
+
+    if (maxChars > 0 && folded.size() > maxChars) {
         int cut = maxChars;
-        //! Do not split a surrogate pair: half an emoji renders as a replacement glyph, and a title is the
-        //! one place the user sees their own words coming back.
-        if (text.at(cut - 1).isHighSurrogate()) {
+        //! Do not split a surrogate pair: half an emoji renders as a replacement glyph, and a name is the one
+        //! place the user sees their own words coming back.
+        if (folded.at(cut - 1).isHighSurrogate()) {
             --cut;
         }
-        text = text.left(cut) + QChar(0x2026);
+        folded = folded.left(cut) + QChar(0x2026);
     }
 
-    return text;
+    return folded;
 }
 
 SessionStore::SessionStore()
@@ -185,4 +202,53 @@ QByteArray SessionStore::adoptStored(const QVector<SessionEntry>& entries, int l
     m_entries[m_current].archived = true;
 
     return payload;
+}
+
+bool SessionStore::removeAt(int index)
+{
+    if (index < 0 || index >= m_entries.size() || index == m_current) {
+        return false;
+    }
+
+    m_entries.removeAt(index);
+    //! The live entry moved down by one when something before it was removed, and nothing else changes:
+    //! which entry is live is a fact about the log, not about the list's order.
+    if (index < m_current) {
+        --m_current;
+    }
+
+    return true;
+}
+
+void SessionStore::dropCurrentLive()
+{
+    //! ⛔ IN PLACE, and that is the whole method: the entry that stood for the deleted conversation is
+    //! replaced by a fresh live one, so the list cannot come back with a row for a conversation whose file
+    //! is gone. The id changes with it (`freshLiveEntry`), which is what makes it a NEW conversation rather
+    //! than a resurrected one.
+    m_entries[m_current] = freshLiveEntry();
+}
+
+void SessionStore::setStoredTitle(int index, const QString& title)
+{
+    if (index < 0 || index >= m_entries.size()) {
+        return;
+    }
+
+    m_entries[index].title = title;
+}
+
+void SessionStore::appendStoredLine(int index, const QByteArray& line)
+{
+    if (index < 0 || index >= m_entries.size() || line.isEmpty()) {
+        return;
+    }
+
+    SessionEntry& entry = m_entries[index];
+    entry.payload.append(line);
+    //! ⛔ THE NEWLINE IS PART OF THE SAME APPEND, exactly as in `sessionpersist.cpp`: a payload that ends
+    //! mid-line is the tear that `parseStoredSession` then has to repair, and manufacturing one here would
+    //! make the in-memory copy differ from the file it is supposed to be.
+    entry.payload.append('\n');
+    ++entry.events;
 }

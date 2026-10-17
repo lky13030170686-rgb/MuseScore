@@ -59,13 +59,23 @@ namespace muse::agentharness {
 //! the furniture 第 124 条 warned about, arrived at from the other side.
 bool sessionHasContent(const SessionLog& log);
 
-//! How much of a first message a list row shows. One constant, because the elision and the label it
-//! produces have to agree: two 44s in two files is the shape that drifts (第 92 条's lesson).
+//! How much of a name a list row shows. One constant, because the elision and the label it produces have to
+//! agree: two 44s in two files is the shape that drifts (第 92 条's lesson).
 constexpr int SESSION_TITLE_CHARS = 44;
 
-//! A one-line label for a conversation, derived from its log: the FIRST user message, whitespace
-//! collapsed and elided. PURE, and derived rather than stored for the usual reason - a title assigned
-//! once is a second truth about a log that keeps growing.
+//! Fold a name onto one line and shorten it for display. PURE, and the ONE place that rule lives: the row
+//! shows the elided form, and 第 144 条's rename box has to be handed the UNELIDED one - prefilling an edit
+//! box with a truncated name would silently truncate the name the moment somebody pressed Save.
+QString elideTitle(const QString& text, int maxChars = SESSION_TITLE_CHARS);
+
+//! A one-line label for a conversation, derived from its log: the name the user gave it if there is one
+//! (`session/title`, 第 144 条), otherwise the FIRST user message - whitespace collapsed and elided.
+//! PURE, and derived rather than stored for the usual reason: a title assigned once is a second truth
+//! about a log that keeps growing.
+//!
+//! ⛔ THE LAST NAME WINS, not the first: renaming twice means the second name is the name. And a name the
+//! user typed beats the first message forever - otherwise a rename would look like it worked and then
+//! quietly undo itself the next time the row was rebuilt.
 //!
 //! ⚠️ `maxChars` counts UTF-16 units, so the elision steps back one position when the cut would land
 //! between the halves of a surrogate pair (an emoji in a first message is not a hypothesis).
@@ -137,6 +147,27 @@ public:
     //!
     //! Returns an empty array when `entries` is empty, which is a first run and not an error.
     QByteArray adoptStored(const QVector<SessionEntry>& entries, int liveIndex);
+
+    //! Drop one conversation from the list (第 144 条). ⛔ THE LIVE ENTRY IS NOT REMOVABLE HERE: "delete the
+    //! conversation I am in" is a decision about the live log, which this class does not own - the caller
+    //! handles it with `dropCurrentLive()`. Returns false (changing nothing) for an out-of-range index or
+    //! for the live entry.
+    bool removeAt(int index);
+
+    //! The live conversation was DELETED: throw its entry away and put a fresh live one in its place.
+    //! ⛔ NOT `startNewLive()`, which keeps an archived entry as a row - right for "start another one",
+    //! wrong for "this one is gone" (it would leave the deleted conversation in the list for ever).
+    void dropCurrentLive();
+
+    //! Record a new name for a stored conversation's row. The caller has already written the `session/title`
+    //! event into that conversation's own bytes; this keeps the row data in step with them.
+    //! ⚠️ A cache, like `events`: the file stays the truth, and the row is refreshed from it on the next load.
+    void setStoredTitle(int index, const QString& title);
+
+    //! Append one already-serialized event to a stored conversation's payload and count it.
+    //! ⛔ APPEND, NOT REWRITE: the payload is the file's bytes, and rewriting them would mean parsing the
+    //! whole conversation to add one line - the manifest problem one file down.
+    void appendStoredLine(int index, const QByteArray& line);
 
     //! Label and size of the live conversation are NOT stored here: the live row is read from the live
     //! log by the caller (`FieldController::agentSessions`), so it cannot describe a conversation that has

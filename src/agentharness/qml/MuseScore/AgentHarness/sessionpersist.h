@@ -91,4 +91,12 @@ QVector<StoredSession> loadStoredSessions(const QString& dir, QVector<QString>* 
 
 //! Append one line (without its newline) to `<dir>/<id>.jsonl`, creating directory and file as needed.
 bool appendSessionLine(const QString& dir, const QString& id, const QByteArray& line, QString* problem = nullptr);
+
+//! Delete one stored conversation (第 144 条). ⛔ The id is validated BEFORE the filesystem is touched: it
+//! becomes a path, and `isSessionId` is what keeps a delete inside the directory.
+//!
+//! ⚠️ A file that is already gone counts as SUCCESS: the caller asked for a state ("this conversation does
+//! not exist"), and refusing because somebody got there first would leave a row in the list that can never
+//! be removed - which is exactly the case a user hits after deleting a file by hand while the app runs.
+bool removeStoredSession(const QString& dir, const QString& id, QString* problem = nullptr);
 } // namespace muse::agentharness

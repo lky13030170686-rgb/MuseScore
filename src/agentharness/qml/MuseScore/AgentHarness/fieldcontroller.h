@@ -282,6 +282,14 @@ public:
     //! `AgentLoop` holds a pointer to it.
     Q_INVOKABLE void newAgentSession();
     Q_INVOKABLE void switchAgentSession(int index);
+    //! Give a conversation a name (第 144 条). ⛔ THE NAME GOES INTO THAT CONVERSATION'S OWN LOG as a
+    //! `session/title` event: the list's title is derived from the log, so a name kept anywhere else would be
+    //! a second record of the same conversation. Returns false (changing nothing) for an out-of-range index
+    //! or an empty name.
+    Q_INVOKABLE bool renameAgentSession(int index, const QString& title);
+    //! Delete a conversation - its file AND its row (第 144 条). Deleting the one that is open discards the
+    //! live log and starts a fresh conversation in its place. Refused while a turn is running.
+    Q_INVOKABLE bool deleteAgentSession(int index);
     //! Rows for the list, oldest first: `{ id, title, events, startedAt, current }`.
     //! ⛔ A PROPERTY, not an invokable getter, for the reason spelled out below: a list that has to
     //! re-render when a conversation grows has nothing to connect to otherwise.

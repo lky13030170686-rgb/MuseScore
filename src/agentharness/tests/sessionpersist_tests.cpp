@@ -284,3 +284,63 @@ TEST(AgentHarness_SessionPersist, TheWriterCreatesTheDirectoryOnFirstUse)
     EXPECT_TRUE(QDir(temp.path()).exists());
     EXPECT_TRUE(QFile::exists(temp.path() + QStringLiteral("/") + UUID_A + QStringLiteral(".jsonl")));
 }
+
+//! ── Deleting (第 144 条) ──────────────────────────────────────────────────────────────────────────
+
+TEST(AgentHarness_SessionPersist, DeletingRemovesTheFileAndTheRow)
+{
+    TempSessions temp;
+    QString problem;
+
+    //! ⚠️ NAMED LOCALS, not `logWith(...).events()` inline: the log would be a TEMPORARY and `events()`
+    //! returns a reference into it, so the loop would iterate freed memory - measured 2026-10-16, that is a
+    //! crash with no assertion message at all.
+    const SessionLog first = logWith(QStringLiteral("first question"));
+    const SessionLog second = logWith(QStringLiteral("second question"));
+
+    for (const SessionEvent& e : first.events()) {
+        ASSERT_TRUE(appendSessionLine(temp.path(), UUID_A, jsonLine(e), &problem)) << problem.toStdString();
+    }
+    for (const SessionEvent& e : second.events()) {
+        ASSERT_TRUE(appendSessionLine(temp.path(), UUID_B, jsonLine(e), &problem)) << problem.toStdString();
+    }
+    ASSERT_EQ(loadStoredSessions(temp.path()).size(), 2);
+
+    ASSERT_TRUE(removeStoredSession(temp.path(), UUID_A, &problem)) << problem.toStdString();
+
+    EXPECT_FALSE(QFile::exists(temp.path() + QStringLiteral("/") + UUID_A + QStringLiteral(".jsonl")));
+    const QVector<StoredSession> left = loadStoredSessions(temp.path());
+    ASSERT_EQ(left.size(), 1);
+    EXPECT_EQ(left.first().id, UUID_B);
+}
+
+TEST(AgentHarness_SessionPersist, DeletingSomethingThatIsAlreadyGoneIsSuccess)
+{
+    //! ⚠️ The caller asked for a STATE ("this conversation does not exist"), and it holds. Refusing here would
+    //! leave a row in the list that can never be removed - which is what a user hits after deleting a file by
+    //! hand while the app is running.
+    TempSessions temp;
+    QString problem;
+    EXPECT_TRUE(removeStoredSession(temp.path(), UUID_A, &problem)) << problem.toStdString();
+    EXPECT_TRUE(problem.isEmpty());
+}
+
+TEST(AgentHarness_SessionPersist, DeletingRefusesAnIdThatWouldEscapeTheDirectory)
+{
+    //! ⛔ THE SAME PATH RULE AS WRITING, and here it is a DELETE: an id with a `/` or `..` in it would remove a
+    //! file outside the directory this code owns.
+    TempSessions temp;
+    ASSERT_TRUE(QDir().mkpath(temp.path()));
+    const QString bystander = temp.path() + QStringLiteral("/../agentharness-bystander.jsonl");
+    QFile file(bystander);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("do not delete me\n");
+    file.close();
+
+    QString problem;
+    EXPECT_FALSE(removeStoredSession(temp.path(), QStringLiteral("../agentharness-bystander"), &problem));
+    EXPECT_FALSE(problem.isEmpty());
+    EXPECT_TRUE(QFile::exists(bystander));
+
+    QFile::remove(bystander);
+}

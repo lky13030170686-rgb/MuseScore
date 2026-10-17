@@ -42,6 +42,12 @@ const QString SessionEvent::TOOL_CALL = QStringLiteral("tool/call");
 const QString SessionEvent::TOOL_RESULT = QStringLiteral("tool/result");
 const QString SessionEvent::REQUEST_HEADER = QStringLiteral("request/header");
 const QString SessionEvent::REQUEST_CONTEXT = QStringLiteral("request/context");
+//! What the user decided to CALL this conversation (第 144 条). ⛔ AN EVENT, NOT A FIELD ANYWHERE ELSE:
+//! the list's title is derived from the log (`sessionTitleFrom`), so a rename that lived in the settings -
+//! or in the store - would be a second record of the same conversation, and the first symptom would be a
+//! row whose name disagrees with the file it came from. Appending it also means a rename is a fact with a
+//! time, which is what the rest of this log is.
+const QString SessionEvent::SESSION_TITLE = QStringLiteral("session/title");
 
 QJsonObject SessionEvent::toJson() const
 {

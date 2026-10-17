@@ -117,7 +117,9 @@ bool muse::agentharness::parseStoredSession(const QString& id, const QByteArray&
     }
 
     out.id = id;
-    out.title = sessionTitleFrom(log);
+    //! ⛔ THE UNELIDED NAME (第 144 条): the row elides it for display, and the rename box is prefilled from
+    //! this - handing an edit box a name that was already cut would truncate it on Save.
+    out.title = sessionTitleFrom(log, 0);
     out.events = log.size();
     out.hasContent = sessionHasContent(log);
     out.payload = readable;
@@ -243,6 +245,36 @@ bool muse::agentharness::appendSessionLine(const QString& dir, const QString& id
     if (written != record.size()) {
         if (problem) {
             *problem = QStringLiteral("short write to %1").arg(file.fileName());
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool muse::agentharness::removeStoredSession(const QString& dir, const QString& id, QString* problem)
+{
+    const QString name = sessionFileName(id);
+    if (dir.isEmpty() || name.isEmpty()) {
+        //! ⛔ REFUSED BEFORE THE FILESYSTEM IS TOUCHED. This value becomes a path, and an id that is not a
+        //! session id is not something this code could have written - the same rule as `appendSessionLine`.
+        if (problem) {
+            *problem = QStringLiteral("not a session id: %1").arg(id);
+        }
+        return false;
+    }
+
+    const QString path = QDir(dir).filePath(name);
+    if (!QFile::exists(path)) {
+        //! ⚠️ SUCCESS, not "there was nothing to delete": the caller asked for a state, and it holds. The case
+        //! this serves is real - a user who deleted the file by hand while the app was running still has a row
+        //! for it, and refusing here would leave them with a row they cannot get rid of.
+        return true;
+    }
+
+    if (!QFile::remove(path)) {
+        if (problem) {
+            *problem = QStringLiteral("cannot delete %1").arg(path);
         }
         return false;
     }

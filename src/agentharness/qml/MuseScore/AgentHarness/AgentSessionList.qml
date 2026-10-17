@@ -20,6 +20,11 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 import QtQuick
+//! ⛔ FOR `Popup` (第 144 条). Forgetting it is not a small mistake: the error is
+//! `Popup is not a type`, and because this component is created inside the WINDOW's content, that one line
+//! takes the whole notation page down - measured 2026-10-17, the app came up on the home page with no score
+//! open, which reads as "the score won't open" rather than "one component failed to load".
+import QtQuick.Controls
 import QtQuick.Layouts
 
 import Muse.Ui
@@ -73,6 +78,42 @@ Item {
                                       ? Math.min(root.visibleRows, root.sessions.length)
                                       : root.sessions.length
 
+    //! ── Renaming and deleting (第 144 条) ─────────────────────────────────────────────────────────
+    //! Which row is being renamed / confirmed (-1 = neither), and what is in the rename box.
+    //!
+    //! ⛔ THE RENAME BOX IS A POPUP, AND THAT IS A MEASURED DECISION (2026-10-17). The first version put a
+    //! `TextInputField` inline in this column and focused it with `ensureActiveFocus()`. The focus arrived
+    //! and was gone 700 ms later - a probe (`console.warn` + `Window.activeFocusItem`) named the thief:
+    //! `QQuickLoader(…, "Agent_central_content")`, the page shell's central loader, which re-takes focus
+    //! after the click that opened the box. An inline field in a PAGE cannot hold focus against the page's
+    //! own navigation; a `Popup` owns its focus scope, which is exactly why the settings dialog's fields
+    //! work (第 130/131 条 verified typed input into them). So the box lives in a popup, and it is small
+    //! enough for the dock panel - the size constraint 第 130 条 measured.
+    function beginRename(index, name) {
+        root.renamingIndex = index
+        root.confirmingIndex = -1
+        root.renameText = name
+        renameDialog.open()
+    }
+
+    function commitRename() {
+        if (root.field && root.renamingIndex >= 0) {
+            root.field.renameAgentSession(root.renamingIndex, root.renameText)
+        }
+        root.renamingIndex = -1
+        renameDialog.close()
+    }
+
+    function cancelRowAction() {
+        root.renamingIndex = -1
+        root.confirmingIndex = -1
+        renameDialog.close()
+    }
+
+    property int renamingIndex: -1
+    property int confirmingIndex: -1
+    property string renameText: ""
+
     implicitHeight: layout.implicitHeight
 
     ColumnLayout {
@@ -123,6 +164,81 @@ Item {
                     color: ui.theme.fontSecondaryColor
                     text: String(modelData.events)
                 }
+
+                //! ── Rename (第 144 条) ────────────────────────────────────────────────────────────
+                //! Real `FlatButton`s with `accessible.name`, like every other control here: a hand-drawn
+                //! glyph cannot be reached by UI Automation, which is what makes this list scriptable.
+                FlatButton {
+                    Layout.preferredWidth: 24
+                    Layout.preferredHeight: 24
+                    backgroundRadius: 12
+                    transparent: true
+                    icon: IconCode.EDIT
+                    enabled: !root.busy
+                    accessible.name: qsTrc("agentharness", "Rename session: %1").arg(modelData.title)
+                    toolTipTitle: qsTrc("agentharness", "Rename this session")
+                    onClicked: {
+                        root.beginRename(index, modelData.name)
+                    }
+                }
+
+                //! ── Delete (第 144 条) ────────────────────────────────────────────────────────────
+                //! ⛔ IT ASKS FIRST, inline: the file is removed and a conversation is not recoverable, so a
+                //! single misclick must not be enough. Inline rather than a dialog because of the popup trap
+                //! above - and because "are you sure" does not need a window.
+                FlatButton {
+                    Layout.preferredWidth: 24
+                    Layout.preferredHeight: 24
+                    backgroundRadius: 12
+                    transparent: true
+                    icon: IconCode.DELETE_TANK
+                    enabled: !root.busy
+                    accessible.name: qsTrc("agentharness", "Delete session: %1").arg(modelData.title)
+                    toolTipTitle: qsTrc("agentharness", "Delete this session")
+                    onClicked: {
+                        root.confirmingIndex = index
+                        root.renamingIndex = -1
+                    }
+                }
+            }
+        }
+
+        //! ── "Are you sure" for a delete, in place (第 144 条) ──────────────────────────────────────
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 4
+            visible: root.confirmingIndex >= 0
+
+            StyledTextLabel {
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                color: ui.theme.fontSecondaryColor
+                text: qsTrc("agentharness", "Delete this session?")
+            }
+
+            FlatButton {
+                Layout.preferredWidth: 72
+                Layout.preferredHeight: 24
+                backgroundRadius: 12
+                text: qsTrc("agentharness", "Delete")
+                accessible.name: qsTrc("agentharness", "Confirm deleting this session")
+                onClicked: {
+                    const which = root.confirmingIndex
+                    root.cancelRowAction()
+                    root.field.deleteAgentSession(which)
+                }
+            }
+
+            FlatButton {
+                Layout.preferredWidth: 72
+                Layout.preferredHeight: 24
+                backgroundRadius: 12
+                transparent: true
+                text: qsTrc("agentharness", "Cancel")
+                accessible.name: qsTrc("agentharness", "Cancel deleting")
+                onClicked: {
+                    root.cancelRowAction()
+                }
             }
         }
 
@@ -146,6 +262,114 @@ Item {
             onClicked: {
                 root.field.newAgentSession()
             }
+        }
+    }
+
+    //! ── The rename box (第 144 条) ──────────────────────────────────────────────────────────────────
+    //! ⛔ A POPUP, and the comment on `beginRename` says why it is not an inline field: an inline field in a
+    //! page cannot hold focus against the page's own navigation (measured - the focus arrived and was gone
+    //! 700 ms later, taken by the shell's central loader). A popup owns its focus scope, which is exactly
+    //! why the settings dialog's text fields accept typing (第 130/131 条).
+    //!
+    //! ⚠️ SMALL ON PURPOSE (第 130 条's constraint): a window-sized popup does not survive a text field
+    //! taking focus, because `TextInputField` clears the window flag and the native window is rebuilt. This
+    //! one is 280x116, and `CloseOnPressOutside` gives it the same "click away to dismiss" gesture as the
+    //! settings dialog.
+    Popup {
+        id: renameDialog
+
+        parent: root
+        width: 280
+        height: 116
+        anchors.centerIn: parent
+        padding: 12
+        modal: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        background: Rectangle {
+            color: ui.theme.backgroundPrimaryColor
+            border.color: ui.theme.strokeColor
+            radius: 8
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 8
+
+            StyledTextLabel {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignLeft
+                font: ui.theme.bodyBoldFont
+                text: qsTrc("agentharness", "Rename session")
+            }
+
+            //! ⛔ A real `TextInputField` (a hand-drawn box never reaches the automation tree - 第 126/129 条),
+            //! and its write-back uses the SIGNAL'S ARGUMENT: the component does not put what you type into
+            //! `currentText`, so reading that property inside the handler gives the value from before the
+            //! keystroke (第 126 条 - measured again here, and the reason the first version saved an empty
+            //! name).
+            TextInputField {
+                id: renameField
+
+                Layout.fillWidth: true
+                accessible.name: qsTrc("agentharness", "New session name")
+                onTextChanged: function(newTextValue) {
+                    root.renameText = newTextValue
+                }
+                onAccepted: {
+                    root.commitRename()
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
+
+                FlatButton {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 24
+                    backgroundRadius: 12
+                    text: qsTrc("agentharness", "Save name")
+                    accessible.name: qsTrc("agentharness", "Save the new session name")
+                    onClicked: {
+                        root.commitRename()
+                    }
+                }
+
+                FlatButton {
+                    Layout.preferredWidth: 72
+                    Layout.preferredHeight: 24
+                    backgroundRadius: 12
+                    transparent: true
+                    text: qsTrc("agentharness", "Cancel")
+                    accessible.name: qsTrc("agentharness", "Cancel renaming")
+                    onClicked: {
+                        root.cancelRowAction()
+                    }
+                }
+            }
+        }
+
+        //! ⛔ BOTH PROPERTIES AND THE INNER FIELD, and this is 第 126 条 twice: once the user has typed in a
+        //! `TextInputField` its inner editor no longer follows `currentText`, so assigning only the property
+        //! would leave the PREVIOUS name on screen while the value behind it was the new one.
+        //! ⚠️ THE UNELIDED NAME (`modelData.name`, not `title`): prefilling with the row's shortened label
+        //! would truncate the real name the moment somebody pressed Save.
+        onOpened: {
+            renameField.currentText = root.renameText
+            renameField.inputField.text = root.renameText
+            renameField.ensureActiveFocus()
+            //! ⛔ SELECTED, so typing REPLACES the old name. Measured 2026-10-17: without this the caret sits
+            //! wherever the pointer happens to be, and typing inserts into the middle of the old name - the
+            //! first run produced "what is in this scoreRenamed by hand?", which is a rename nobody asked for.
+            //! (It is also what a rename box does everywhere else: open, type, done.)
+            renameField.selectAll()
+        }
+
+        //! Closing by Esc or by clicking away is a CANCEL: leaving `renamingIndex` set would make the next
+        //! pencil click edit a row that is no longer the one on screen.
+        onClosed: {
+            root.renamingIndex = -1
         }
     }
 }

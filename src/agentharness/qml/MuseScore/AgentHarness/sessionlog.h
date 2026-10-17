@@ -64,6 +64,9 @@ struct SessionEvent
     static const QString TOOL_RESULT;
     static const QString REQUEST_HEADER;
     static const QString REQUEST_CONTEXT;
+    //! The name the user gave this conversation (第 144 条). ⛔ LOG-ONLY: it never reaches the model (the
+    //! projection ignores it), and `sessionTitleFrom` prefers the LAST one over the first user message.
+    static const QString SESSION_TITLE;
 
     QJsonObject toJson() const;
     static SessionEvent fromJson(const QJsonObject& obj);
