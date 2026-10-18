@@ -296,13 +296,42 @@ Item {
         }
 
         //! ── Errors are shown, not swallowed ──────────────────────────────────────────────────
-        StyledTextLabel {
+        //! ⛔ THE SHAPE IS DSH'S ERROR ROW (第 152 条): a 10px dot, then the text - the dot is the
+        //! signal, the sentence is the detail. `ui-chat/src/client/chat/MessageItem.module.css:277-309`
+        //! draws it as `grid-template-columns: 10px minmax(0,1fr) auto` with `gap: 8px`, the dot nudged
+        //! down 5px so it sits on the first line's centre.
+        //! ⚠️ WHAT WE DO NOT HAVE, and therefore do not invent: DSH's row has a TITLE (its error class,
+        //! in the error colour, weight 600) and a separate message and code. Ours is one sentence from
+        //! the transport ("HTTP 401 ..."), with no class to name - so there is no bold lead-in here, and
+        //! the dot carries the "this is a failure" signal that the title carries there.
+        //! ⛔ The sentence is `fontSecondaryColor`, not the error colour: a red paragraph is unreadable
+        //! and the red is already spent on the dot. Before this, the whole line was red text with
+        //! nothing to catch the eye first.
+        RowLayout {
             Layout.fillWidth: true
-            horizontalAlignment: Text.AlignLeft
-            wrapMode: Text.WordWrap
+            spacing: 8
             visible: root.lastError.length > 0
-            color: ui.theme.buttonColor
-            text: root.lastError
+
+            Item {
+                Layout.preferredWidth: 10
+                Layout.preferredHeight: 10
+                Layout.alignment: Qt.AlignTop
+                Layout.topMargin: 5
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 5
+                    color: ui.theme.buttonColor
+                }
+            }
+
+            StyledTextLabel {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignLeft
+                wrapMode: Text.WordWrap
+                color: ui.theme.fontSecondaryColor
+                text: root.lastError
+            }
         }
     }
 }
