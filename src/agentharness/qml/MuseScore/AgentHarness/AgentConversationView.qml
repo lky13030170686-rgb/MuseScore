@@ -131,12 +131,23 @@ Item {
         anchors.fill: parent
         spacing: 6
 
-        StyledListView {
-            id: transcriptView
-
+        //! ⛔ THE LIST SITS IN AN `Item` SO THE "BACK TO THE BOTTOM" BUTTON CAN FLOAT OVER IT (第 153 条).
+        //! A sibling in this `ColumnLayout` cannot overlap the list, and overlapping is the whole point:
+        //! DSH's slot is a zero-height sticky row (`ChatView.module.css:171-195` - `height: 0` plus
+        //! `margin-top: -34px` on the button) so the control never adds to `scrollHeight`. In QML a list
+        //! does not grow from an overlay, so the slot itself is unnecessary - what has to be kept is what
+        //! it bought.
+        //! ⚠️ The list below is NOT re-indented for the extra level, on purpose: this change should contain
+        //! the lines it actually changes. QML does not read indentation.
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.minimumHeight: 60
+
+        StyledListView {
+            id: transcriptView
+
+            anchors.fill: parent
 
             spacing: 6
             clip: true
@@ -236,6 +247,36 @@ Item {
                     if (!root.running && !transcriptView.moving) {
                         root.requestTailFollow()
                     }
+                }
+            }
+        }
+
+            //! ── Back to the bottom (第 153 条) ─────────────────────────────────────────────────────
+            //! DSH renders it only when the reader is not at the bottom (`ChatView.tsx:826-841`), and the
+            //! condition here is the LIST'S OWN answer rather than a threshold we track ourselves:
+            //! `atYEnd` cannot disagree with what the user is looking at. `contentHeight > height` is what
+            //! keeps it off a conversation that already fits - a control that can do nothing must not be
+            //! on screen.
+            //! ⚠️ 34x34, a full-round corner and DSH's floating fill (`button-floating-fill`); the radius
+            //! is half the width so the shape stays a circle whatever the theme's metrics are.
+            //! ⚠️ It calls `requestTailFollow()` and not `positionViewAtEnd()`: the settling window is the
+            //! thing that makes the tail land correctly when rows are still growing (第 132 条).
+            FlatButton {
+                id: toBottomButton
+
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 12
+                width: 34
+                height: 34
+                backgroundRadius: 17
+                icon: IconCode.SMALL_ARROW_DOWN
+                visible: !transcriptView.atYEnd && transcriptView.contentHeight > transcriptView.height
+                accessible.name: qsTrc("agentharness", "Scroll to the newest message")
+                toolTipTitle: qsTrc("agentharness", "Back to the bottom")
+
+                onClicked: {
+                    root.requestTailFollow()
                 }
             }
         }
