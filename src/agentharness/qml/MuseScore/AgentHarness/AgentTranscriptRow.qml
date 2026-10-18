@@ -86,6 +86,11 @@ Item {
     //! Exactly the answer rows. `attempt` (a failed round's reason) is a message too, but it is not the
     //! model's prose and nobody writes lists in it, so it stays verbatim.
     readonly property bool isAssistant: root.kind === "assistant"
+    //! The model's reasoning, which gets its own row (第 157 条). ⛔ It has to be excluded from the
+    //! answer branch explicitly: that branch's condition is `!isUser && !isTool`, which a reasoning row
+    //! SATISFIES - measured: the reasoning was drawn twice, once as a full-width paragraph above the
+    //! `Think` line and once inside it.
+    readonly property bool isReasoning: root.kind === "reasoning"
 
     //! A tool row in web style is ONE line. The body of a tool result is a multi-line digest, and a
     //! `Text` honours `\n` no matter what `wrapMode` says - so the first version drew seven lines where
@@ -248,7 +253,7 @@ Item {
         //! An answer is plain text - no bubble, no border. Same as the web client: the agent's words
         //! are the page, not a card on it.
         StyledTextLabel {
-            visible: !root.isUser && !root.isTool
+            visible: !root.isUser && !root.isTool && !root.isReasoning
             width: parent.width
             horizontalAlignment: Text.AlignLeft
             wrapMode: Text.WordWrap
@@ -284,6 +289,67 @@ Item {
         //!      (`transcriptfold.h`) - and neither row carries the other's state. A dot that claimed to
         //!      know would be inventing it; the failure colour on the result line is what says "this one
         //!      did not work".
+        //! ── The model's reasoning, as a transcript row (第 157 条) ─────────────────────────────────
+        //! ⛔ WHY IT EXISTS: the reasoning was in the session log from the first day and **no reader used
+        //! it** - the only surface that ever showed it was `agentStreamingReasoning`, which `AgentLoop`
+        //! clears when the next response starts. So after a turn finished, what the model thought was
+        //! gone from the UI (第 156 条 measured that: the row was styled and not on screen).
+        //! ⚠️ Drawn OPEN rather than as DSH's disclosure: DSH's row is collapsible because a page full of
+        //! thinking is noise, but a HISTORICAL row is read on purpose - the user scrolled back to it - and
+        //! a second fold state to keep per row is the thing 第 132 条 warned about. The cap is what keeps
+        //! it from owning the screen, the same 160px the live row uses.
+        Column {
+            visible: root.kind === "reasoning"
+            width: parent.width
+            spacing: 2
+
+            RowLayout {
+                width: parent.width
+                spacing: 6
+
+                StyledIconLabel {
+                    Layout.alignment: Qt.AlignVCenter
+                    iconCode: IconCode.SMALL_ARROW_RIGHT
+                    color: ui.theme.fontSecondaryColor
+                }
+
+                StyledTextLabel {
+                    Layout.alignment: Qt.AlignVCenter
+                    horizontalAlignment: Text.AlignLeft
+                    color: ui.theme.fontSecondaryColor
+                    font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+                    text: qsTrc("agentharness", "Think")
+                }
+
+                //! ⛔ Pushes the pair to the row's start. Without it the layout spreads the spare width
+                //! between the two items and `Think` lands in the middle of the row while the chevron
+                //! stays at x=0 (measured) - which reads as two unrelated things on one line.
+                Item {
+                    Layout.fillWidth: true
+                }
+            }
+
+            StyledTextLabel {
+                width: parent.width
+                //! 13/20, indented under the `Think` line by 22px - DSH's reasoning body
+                //! (`ReasoningRow.module.css:107-115`), and the same numbers the live row uses (第 156 条).
+                //! ⚠️ `height`, not `Layout.preferredHeight`: this Column is not a Layout container, so a
+                //! `Layout.*` attachment here would bind nothing (and Qt would warn). The cap is the same
+                //! 160px the live row uses.
+                height: Math.min(160, implicitHeight)
+                leftPadding: 22
+                horizontalAlignment: Text.AlignLeft
+                verticalAlignment: Text.AlignTop
+                wrapMode: Text.WordWrap
+                clip: true
+                opacity: 0.75
+                font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+                lineHeight: 20
+                lineHeightMode: Text.FixedHeight
+                text: root.body
+            }
+        }
+
         //! ── A tool row, and the whole result on request (第 155 条) ───────────────────────────────
         //! The row itself is unchanged; what is new is that a RESULT can be opened to show its full
         //! text in the code font. ⛔ Why this is the answer to "the agent changed something and I cannot

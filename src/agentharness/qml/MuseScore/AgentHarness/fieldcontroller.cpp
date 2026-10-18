@@ -2610,6 +2610,29 @@ QVariantList FieldController::agentTranscript() const
         }
 
         if (e.type == SessionEvent::ASSISTANT_MESSAGE) {
+            //! ── The model's own reasoning, as its own row (第 157 条) ────────────────────────────────
+            //! ⛔ IT WAS ALREADY IN THE LOG AND NOTHING READ IT. `AgentLoop` stores the reasoning on the
+            //! message (`agentloop.cpp:262-263`) and clears the buffer when the next response starts
+            //! (`:173-174`) - so `agentStreamingReasoning`, the only thing that ever showed it, is empty
+            //! the moment a turn ends. 第 156 条 measured the consequence: the reasoning row was styled
+            //! correctly and **was not on screen at all**, because it had nothing to draw.
+            //! ⚠️ Its OWN row, not part of the answer's: the answer is what the model says to the user, the
+            //! reasoning is how it got there, and the surfaces draw them differently (the smaller,
+            //! tertiary, indented body under a `Think` line).
+            //! ⚠️ Emitted BEFORE the answer, which is the order it happens in.
+            //! ⚠️ One row per assistant message, so a turn that thought three times shows three of them -
+            //! that is the real shape of a multi-step turn, not a formatting accident.
+            const QString reasoning = e.data.value(QStringLiteral("reasoning")).toString();
+            if (!reasoning.isEmpty()) {
+                QVariantMap m;
+                m.insert(QStringLiteral("kind"), QStringLiteral("reasoning"));
+                m.insert(QStringLiteral("role"), QStringLiteral("think"));
+                m.insert(QStringLiteral("text"), reasoning);
+                m.insert(QStringLiteral("seq"), QVariant::fromValue(e.seq));
+                m.insert(QStringLiteral("turn"), e.data.value(QStringLiteral("turn")).toInt());
+                out.append(m);
+            }
+
             const QString text = e.data.value(QStringLiteral("content")).toString();
             if (!text.isEmpty()) {
                 QVariantMap m;
