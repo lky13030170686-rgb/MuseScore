@@ -72,6 +72,29 @@ Item {
     readonly property string reasoning: root.field ? root.field.agentStreamingReasoning : ""
     property bool reasoningExpanded: false
 
+    //! ── The reasoning row's one-line summary (第 156 条) ─────────────────────────────────────────
+    //! ⛔ DSH takes the LAST line while the model is still thinking and the FIRST line once it has
+    //! stopped (`ReasoningRow.tsx:8-17`), and that is not a detail: while streaming, the last line is
+    //! what is happening NOW, so the row doubles as the liveness signal the character count used to be;
+    //! afterwards the first line is the one that says what the thinking was about.
+    //! ⚠️ Empty lines are skipped - the stream arrives in deltas and a trailing newline would otherwise
+    //! make the summary blink to nothing.
+    readonly property string reasoningSummary: {
+        const text = String(root.reasoning)
+        if (text.length === 0) {
+            return ""
+        }
+
+        const lines = text.split("\n").filter(function(line) {
+            return line.trim().length > 0
+        })
+        if (lines.length === 0) {
+            return ""
+        }
+
+        return root.running ? lines[lines.length - 1].trim() : lines[0].trim()
+    }
+
     //! Which folded tool groups the user has opened, keyed by the group's `groupId`.
     //! ⛔ WHY THIS LIVES HERE AND NOT IN THE ROW. The transcript is a Q_PROPERTY that is re-evaluated on
     //! every `fieldChanged` - and that fires for every streamed token - so the list model is replaced
@@ -323,18 +346,76 @@ Item {
             id: reasoningToggle
 
             Layout.fillWidth: true
+            //! ⛔ 24px, DSH's disclosure row height (`ReasoningRow.module.css:6-9` locks the collapsed box
+            //! to `24px + delta` with `contain: size layout`). `FlatButton`'s own default is taller, and
+            //! a disclosure that is as tall as a paragraph stops reading as a disclosure.
+            Layout.preferredHeight: 24
+            //! 0 10px of chip padding, like the tool row's dot spacing (第 151 条's `margins: 6` was for a
+            //! section header; this one sits among rows).
+            margins: 6
+            backgroundRadius: 6
             visible: root.reasoning.length > 0
             accessible.name: qsTrc("agentharness", "Show or hide the model's reasoning")
             opacity: 0.9
-            //! The character count is the liveness signal while a turn runs: the reasoning grows first and
-            //! the answer comes after, so a counter that keeps moving is what tells the user "it is
-            //! working, not stuck".
+            //! ⚠️ The button's own `text` is kept because `FlatButton` derives `objectName` (and the
+            //! navigation name) from it; what is DRAWN comes from the content item below.
             text: root.reasoningExpanded
                   ? qsTrc("agentharness", "Hide thinking (%1)").arg(root.reasoning.length)
-                  : qsTrc("agentharness", "Thinking… (%1)").arg(root.reasoning.length)
+                  : qsTrc("agentharness", "Think")
 
             onClicked: {
                 root.reasoningExpanded = !root.reasoningExpanded
+            }
+
+            //! DSH's shape: `[chevron] Think  ·  <summary>` (`ReasoningRow.tsx:46` + `.module.css:53-91`).
+            //! ⛔ The summary is where the old character count went, and it is a BETTER liveness signal:
+            //! a number that climbs says "something is happening", a sentence that changes says WHAT.
+            //! ⚠️ The explicit width is the same fix 第 148/151 条 needed twice: `FlatButton` centres its
+            //! content, so without it the row is centred instead of reading from the left margin.
+            contentItem: Component {
+                RowLayout {
+                    width: reasoningToggle.width - 12
+                    spacing: 6
+
+                    StyledIconLabel {
+                        Layout.alignment: Qt.AlignVCenter
+                        iconCode: root.reasoningExpanded ? IconCode.SMALL_ARROW_DOWN
+                                                         : IconCode.SMALL_ARROW_RIGHT
+                        color: ui.theme.fontSecondaryColor
+                    }
+
+                    StyledTextLabel {
+                        Layout.alignment: Qt.AlignVCenter
+                        horizontalAlignment: Text.AlignLeft
+                        color: ui.theme.fontSecondaryColor
+                        font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+                        text: qsTrc("agentharness", "Think")
+                    }
+
+                    //! DSH's 2x2 separator dot, the same one the tool row uses.
+                    Rectangle {
+                        Layout.alignment: Qt.AlignVCenter
+                        Layout.leftMargin: 2
+                        Layout.rightMargin: 2
+                        visible: !root.reasoningExpanded && root.reasoningSummary.length > 0
+                        width: 2
+                        height: 2
+                        radius: 1
+                        color: ui.theme.fontSecondaryColor
+                        opacity: 0.6
+                    }
+
+                    StyledTextLabel {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        horizontalAlignment: Text.AlignLeft
+                        elide: Text.ElideRight
+                        color: ui.theme.fontSecondaryColor
+                        font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+                        opacity: 0.8
+                        text: root.reasoningExpanded ? "" : root.reasoningSummary
+                    }
+                }
             }
         }
 
@@ -344,6 +425,9 @@ Item {
             Layout.fillWidth: true
             //! Capped and clipped: reasoning is normally several times longer than the answer, and letting
             //! it take the height would push the conversation (and the input) out of the panel.
+            //! ⚠️ DSH does NOT cap it (`ReasoningRow.module.css:16-24` says the body flows with the page,
+            //! unlike the tool cards). That is right for a full-width page and wrong for a dock panel, and
+            //! this component draws both - so the cap stays, and it is the cap's NUMBER that is ours.
             Layout.preferredHeight: root.reasoningExpanded ? Math.min(160, reasoningLabel.implicitHeight) : 0
             visible: root.reasoningExpanded
             clip: true
@@ -351,6 +435,15 @@ Item {
             horizontalAlignment: Text.AlignLeft
             verticalAlignment: Text.AlignTop
             wrapMode: Text.WordWrap
+            //! ⛔ Indented under the title by 22px, one step under the body size, at DSH's 13/20
+            //! (`ReasoningRow.module.css:107-115`: `padding: 4px 0 4px calc(22px + delta)`). Without the
+            //! indent the body reads as a paragraph that happens to follow a row rather than as the thing
+            //! that row is about - and before this it was also at the FULL body size, so it competed with
+            //! the answer.
+            leftPadding: 22
+            font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+            lineHeight: 20
+            lineHeightMode: Text.FixedHeight
             text: root.reasoning
         }
 
