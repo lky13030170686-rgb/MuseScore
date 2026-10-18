@@ -64,6 +64,10 @@ Item {
     //! is rebuilt only when an event is logged, whereas this changes on every token. Mixing them would
     //! rebuild the whole list per token.
     readonly property string streaming: root.field ? root.field.agentStreamingText : ""
+    //! The same stream in its DRAWN form (第 158 条), rendered in C++ once - see the property's note in
+    //! `fieldcontroller.h`. The arriving answer goes through the same renderer as the finished one, so a
+    //! half-written `**bold**` does not show its markers for a few hundred milliseconds and then snap.
+    readonly property string streamingRich: root.field ? root.field.agentStreamingRich : ""
     readonly property string lastError: root.field ? root.field.agentLastError : ""
     //! The model's own reasoning stream. `FieldController` has collected it since the first day and
     //! NOTHING displayed it: a turn that spends ten seconds thinking looked like a hang while the
@@ -193,6 +197,33 @@ Item {
 
             spacing: 6
             clip: true
+
+            //! ── The live stream, IN PLACE (第 158 条) ────────────────────────────────────────────
+            //! ⛔ It used to be a label BELOW the list, truncated to its last 300 characters - which made
+            //! the arriving answer look like a second thing unrelated to the conversation: the transcript
+            //! scrolled up here, and a detached line of text sat under it.
+            //! It is the LIST'S FOOTER now: drawn after the last row, scrolling with them, reading as what
+            //! it is - the answer still being written.
+            //! ⚠️ Why the footer and not a row in the model: `agentTranscript` is a `Q_PROPERTY` rebuilt on
+            //! every token (第 132 条), so putting the stream INSIDE it would rebuild the whole list per
+            //! token. The footer is outside the model and gets the "in place" effect for free.
+            //! ⚠️ It reuses `AgentTranscriptRow`, so the arriving answer already has the shape the finished
+            //! one will have: same body, same 14/24, same markdown.
+            footer: Item {
+                width: transcriptView.width
+                height: streamingRow.implicitHeight
+
+                AgentTranscriptRow {
+                    id: streamingRow
+
+                    width: parent.width
+                    kind: "assistant"
+                    roleLabel: "agent"
+                    body: root.streaming
+                    richBody: root.streamingRich
+                    webStyle: root.webStyle
+                }
+            }
 
             model: root.field ? root.field.agentTranscript : []
 
@@ -447,20 +478,17 @@ Item {
             text: root.reasoning
         }
 
-        //! ── Live stream, so the surface is not silent while the model is thinking ─────────────
+        //! ── "It is working", when there is nothing to show yet ─────────────────────────────────────
+        //! ⛔ The stream itself moved INTO the list (第 158 条); what is left here is the gap before the
+        //! first delta arrives: a turn that spends ten seconds thinking looked like a hang (第 127 条).
+        //! ⚠️ Only while running AND still empty - once deltas arrive, the footer IS the liveness signal,
+        //! and two indicators for one state is one too many.
         StyledTextLabel {
-            id: streamingLabel
-
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignLeft
-            wrapMode: Text.WordWrap
-            visible: root.streaming.length > 0 || root.running
+            visible: root.streaming.length === 0 && root.running
             opacity: 0.8
-            //! Capped: this is a liveness indicator, and an unbounded label would grow the fixed
-            //! content until the transcript had nothing left.
-            text: root.streaming.length > 0
-                  ? (root.streaming.length > 300 ? "…" + root.streaming.slice(-300) : root.streaming)
-                  : qsTrc("agentharness", "thinking…")
+            text: qsTrc("agentharness", "thinking…")
         }
 
         //! ── Errors are shown, not swallowed ──────────────────────────────────────────────────

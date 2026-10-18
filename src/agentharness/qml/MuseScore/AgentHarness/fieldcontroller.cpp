@@ -2111,6 +2111,18 @@ QString FieldController::agentStreamingText() const
     return m_loop ? m_loop->streamingText() : QString();
 }
 
+QString FieldController::agentStreamingRich() const
+{
+    //! Rendered here rather than in the view (第 158 条): the answer that is arriving is the SAME prose as
+    //! the answer that has arrived, so it goes through the same renderer - otherwise a half-finished
+    //! sentence shows its `**` markers for a few hundred milliseconds and then snaps into bold, which reads
+    //! as the text changing its mind.
+    //! ⚠️ Empty in, empty out: `markdownToRichText("")` is already empty, but saying it here keeps the
+    //! "no stream, nothing drawn" contract visible at the property that decides it.
+    const QString text = agentStreamingText();
+    return text.isEmpty() ? QString() : markdownToRichText(text);
+}
+
 QString FieldController::agentStreamingReasoning() const
 {
     return m_loop ? m_loop->streamingReasoning() : QString();

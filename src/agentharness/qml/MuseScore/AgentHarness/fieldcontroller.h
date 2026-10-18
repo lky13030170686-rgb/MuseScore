@@ -312,6 +312,14 @@ public:
     //! events and the transcript showed none. A read-only view of changing state must be a property.
     Q_PROPERTY(QVariantList agentTranscript READ agentTranscript NOTIFY fieldChanged)
     Q_PROPERTY(QString agentStreamingText READ agentStreamingText NOTIFY fieldChanged)
+    //! The live stream in the form the transcript can DRAW (第 158 条). Rendered here, once, for the same
+    //! reason `agentTranscript()`'s `rich` field is: three surfaces show this conversation, and a renderer
+    //! per surface is how they start disagreeing about what the model is saying.
+    //! ⚠️ A PROPERTY, not an invokable a view calls: a `Q_INVOKABLE` in a binding is evaluated once and then
+    //! quietly goes stale (第 84/131 条), and this value changes on every token.
+    //! ⚠️ Cost: one markdown render per streamed token - the same cadence as the notification carrying it,
+    //! and rendering it in QML is not an option (the renderer is C++).
+    Q_PROPERTY(QString agentStreamingRich READ agentStreamingRich NOTIFY fieldChanged)
     Q_PROPERTY(QString agentStreamingReasoning READ agentStreamingReasoning NOTIFY fieldChanged)
     Q_PROPERTY(bool agentRunning READ agentRunning NOTIFY fieldChanged)
     Q_PROPERTY(bool agentConfigured READ agentConfigured NOTIFY fieldChanged)
@@ -435,6 +443,7 @@ public:
     bool agentConfigured() const;
     //! The assistant's text so far in the running turn - the panel renders this live.
     QString agentStreamingText() const;
+    QString agentStreamingRich() const;
     QString agentStreamingReasoning() const;
     QString agentLastError() const;
     //! Where the key came from, for the panel to display: "environment" / "set" / "none".
