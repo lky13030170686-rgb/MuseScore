@@ -2634,6 +2634,12 @@ QVariantList FieldController::agentTranscript() const
                 QVariantMap m;
                 m.insert(QStringLiteral("kind"), QStringLiteral("toolCall"));
                 m.insert(QStringLiteral("role"), QStringLiteral("tool"));
+                //! The name as its OWN FIELD (第 151 条). The row draws it as a separate segment with its
+                //! own ink and its own size (DSH's tool row is `[leading] name · summary`), and splitting
+                //! `"<name> <arguments>"` in QML would be a second implementation of a split that already
+                //! has one - right here. ⚠️ `text` still carries the combined form: the log, the tool
+                //! inspector and anything that wants the model's actual bytes keep reading that.
+                m.insert(QStringLiteral("name"), fn.value(QStringLiteral("name")).toString());
                 m.insert(QStringLiteral("text"), QStringLiteral("%1 %2")
                          .arg(fn.value(QStringLiteral("name")).toString(),
                               fn.value(QStringLiteral("arguments")).toString()));

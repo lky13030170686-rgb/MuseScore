@@ -119,6 +119,13 @@ Item {
             //! invisible furniture.
             contentItem: Component {
                 RowLayout {
+                    //! ⛔ WITHOUT THIS THE HEADER IS CENTRED (measured 2026-10-18: the group line read
+                    //! `1 tool call(s) · score_overview` in the middle of a full-width bar, while the rows
+                    //! it stands for are hard left). `FlatButton` positions its content with
+                    //! `anchors.horizontalCenter`, so the item is only as wide as its own content and the
+                    //! `Text.AlignLeft` inside it has nothing to align against - 第 148 条 hit exactly this
+                    //! in `AgentFactsPanel` and fixed it the same way.
+                    width: header.width - 12
                     spacing: 6
 
                     StyledIconLabel {
@@ -166,6 +173,9 @@ Item {
                     //! on, so an expanded group draws its rows exactly as the unfolded transcript would -
                     //! which is the whole claim the fold makes about itself.
                     richBody: modelData.rich || ""
+                    //! Carried through the fold like every other field (第 151 条): an expanded group's
+                    //! rows must draw exactly as the unfolded transcript would.
+                    toolNameField: modelData.name || ""
                     isError: modelData.isError === true
                     webStyle: root.webStyle
                 }

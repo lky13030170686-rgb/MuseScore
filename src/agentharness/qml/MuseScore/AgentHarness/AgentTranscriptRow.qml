@@ -20,6 +20,13 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 import QtQuick
+//! ⛔ FOR `RowLayout`, the tool row's four-part shape (第 151 条). Forgetting it is not a small mistake
+//! and it is not local: the error is `RowLayout is not a type`, and because these rows are created
+//! inside the WINDOW's content, that one line takes the whole notation page down - measured, the app
+//! came up on the home page with the window titled `MuseScoreStudio5Development` instead of the score,
+//! which reads as "the score won't open". 第 144 条 recorded exactly this with `Popup`; this is the
+//! second time, so the lesson is written where the next import will be added.
+import QtQuick.Layouts
 
 import Muse.Ui
 import Muse.UiComponents
@@ -57,6 +64,11 @@ Item {
     //! what the model said.
     property string richBody: ""
 
+    //! A tool CALL's name, as its own field (第 151 条) - the row draws it as a separate segment with its
+    //! own ink and size, so the split is done where it already exists (C++) instead of being re-derived
+    //! here from `"<name> <arguments>"`.
+    property string toolNameField: ""
+
     //! Panel style (labelled paragraphs, tool rows indented) vs web style (bubbles and one-liners).
     property bool webStyle: false
 
@@ -75,6 +87,34 @@ Item {
         const body = String(root.body)
         const firstBreak = body.indexOf("\n")
         return firstBreak >= 0 ? body.substring(0, firstBreak) + " …" : body
+    }
+
+    //! ── The tool row's two segments (第 151 条) ──────────────────────────────────────────────────
+    //! DSH's tool row is `[leading] gap6 [name 13/24] gap8 [2x2 dot] gap8 [summary 13/24 tertiary]`
+    //! (`ui-tool/src/client/tool/components/ToolRow.module.css:1-2` + `:68-90`), and the two texts are
+    //! at DIFFERENT tiers: the name is the row's subject, the arguments are what it did.
+    readonly property string toolName: {
+        if (root.toolNameField.length > 0) {
+            return root.toolNameField
+        }
+        //! The fallback exists for one caller only: a `toolGroup`'s inner rows are rebuilt from maps that
+        //! may predate the field. Splitting on the first space is what `agentTranscript()` does.
+        const s = String(root.body)
+        const cut = s.indexOf(" ")
+        return cut > 0 ? s.substring(0, cut) : s
+    }
+
+    //! What is left of the call after its name - the arguments, verbatim. ⛔ NOT pretty-printed: DSH runs
+    //! its arguments through `JSON.parse` + `JSON.stringify(…, 2)` before drawing them, and ours are
+    //! short enough to read as they arrive (`{"first":1,"last":2}`). Re-formatting here would be a
+    //! second opinion about what the model asked for, for no visible gain.
+    readonly property string toolSummary: {
+        if (root.isToolResult) {
+            return root.webToolLine
+        }
+        const s = String(root.body)
+        const cut = s.indexOf(" ")
+        return cut > 0 ? s.substring(cut + 1) : ""
     }
 
     implicitHeight: root.webStyle ? webColumn.implicitHeight + 10 : panelColumn.implicitHeight + 8
@@ -147,15 +187,23 @@ Item {
             //! rather than `implicitWidth`: for a wrapped `Text` the meaning of `implicitWidth` depends
             //! on whether a width was already set, and a bubble that has to be told its own content
             //! width is a circular binding waiting to happen.
-            readonly property real maxWidth: Math.max(120, webColumn.width * 0.72)
+            //! ⛔ DSH's cap is `min(contentWidth * 0.702, 82%)` (`MessageItem.module.css:11-22`): the
+            //! 0.702 is figma's 525px held as a SHARE of the axis, so it widens with the column instead
+            //! of being a magic number. Ours was `column * 0.72` against the wrong base - the whole
+            //! column rather than the content axis (第 151 条).
+            readonly property real maxWidth: Math.max(120, Math.min(webColumn.width * 0.702,
+                                                                     webColumn.width * 0.82))
 
-            width: Math.min(bubbleMetrics.width + 24, maxWidth)
+            //! ⛔ `22px` corner and `10px 16px` of padding (第 151 条). DSH's bubble is a 42px-tall single
+            //! line at the default size - 22 of line height plus 10 a side - and the 22px radius is what
+            //! makes it read as a chat bubble rather than as a card. We had 12px and 8px.
+            width: Math.min(bubbleMetrics.width + 32, maxWidth)
             //! Derived from the text's own (unconstrained) height rather than from a fill anchor:
             //! a child that is anchored to its parent's height while the parent's height is derived
             //! from the child is the classic two-way binding, and it shows up as a QML warning plus a
             //! bubble that keeps growing by a line every relayout.
-            height: bubbleText.height + 16
-            radius: 12
+            height: bubbleText.height + 20
+            radius: 22
             color: ui.theme.backgroundSecondaryColor
 
             TextMetrics {
@@ -171,7 +219,9 @@ Item {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.margins: 8
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                anchors.topMargin: 10
                 wrapMode: Text.WordWrap
                 font: ui.theme.bodyFont
                 color: ui.theme.fontPrimaryColor
@@ -195,15 +245,84 @@ Item {
             text: root.isAssistant ? root.richBody : root.body
         }
 
-        //! A tool call is ONE compact line: the call reads `name arguments`, its result is prefixed with
-        //! an arrow so a call and its answer are not confused for each other. Dimmed and elided, because
-        //! a row per tool call, expanded, would bury the conversation it belongs to.
-        StyledTextLabel {
+        //! ── A tool row, in DSH's four parts (第 151 条) ───────────────────────────────────────────
+        //! `[10px leading] gap6 [name 13/24] gap8 [2x2 dot] gap8 [summary 13/24 tertiary]`
+        //! (`ui-tool/src/client/tool/components/ToolRow.module.css:1-2`, `:68-90`). The two texts sit at
+        //! DIFFERENT tiers on purpose: the name is the row's subject, the arguments are what it did.
+        //! ⛔ TWO DELIBERATE DEPARTURES, both because our rows are not DSH's:
+        //!   ① DSH's leading slot is the TOOL'S ICON (search / read / bash / ...). Ours would have to be
+        //!      one of 38 glyphs picked by name - and "pick an icon by its name" is exactly the mistake
+        //!      维护手册.md §4.8 records (a glyph is not what its name says, and that costs a rendered
+        //!      sheet to find out). The slot carries the row's own state instead: a dot for a call,
+        //!      `↳` for its result.
+        //!   ② DSH draws a call and its result as ONE row, which is what lets its dot mean
+        //!      running/ok/failed. Ours are TWO rows - the fold GROUPS them, it does not merge them
+        //!      (`transcriptfold.h`) - and neither row carries the other's state. A dot that claimed to
+        //!      know would be inventing it; the failure colour on the result line is what says "this one
+        //!      did not work".
+        RowLayout {
             visible: root.isTool
             width: parent.width
-            horizontalAlignment: Text.AlignLeft
-            color: root.isError ? ui.theme.buttonColor : ui.theme.fontSecondaryColor
-            text: (root.isToolResult ? "↳ " : "") + root.webToolLine
+            spacing: 6
+
+            Item {
+                Layout.preferredWidth: 10
+                Layout.preferredHeight: 20
+                Layout.alignment: Qt.AlignVCenter
+
+                StyledTextLabel {
+                    anchors.centerIn: parent
+                    visible: root.isToolResult
+                    color: root.isError ? ui.theme.buttonColor : ui.theme.fontSecondaryColor
+                    text: "↳"
+                }
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    visible: !root.isToolResult
+                    width: 6
+                    height: 6
+                    radius: 3
+                    color: ui.theme.accentColor
+                    opacity: 0.7
+                }
+            }
+
+            StyledTextLabel {
+                Layout.alignment: Qt.AlignVCenter
+                visible: !root.isToolResult
+                color: ui.theme.fontSecondaryColor
+                font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+                text: root.toolName
+            }
+
+            //! DSH's separator: a 2x2 dot with 8px on each side (`ToolRow.module.css:72-79`).
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: 2
+                Layout.rightMargin: 2
+                visible: !root.isToolResult && root.toolSummary.length > 0
+                width: 2
+                height: 2
+                radius: 1
+                color: ui.theme.fontSecondaryColor
+                opacity: 0.6
+            }
+
+            StyledTextLabel {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+                //! ⛔ `StyledTextLabel`'s own default is `Text.AlignHCenter`, and a `fillWidth` label that
+                //! is centred puts the arguments in the MIDDLE of the row, detached from the name they
+                //! belong to (measured 2026-10-18: `score_overview ·` on the left, `{}` floating in the
+                //! centre). Every left-hand column here says AlignLeft explicitly for the same reason.
+                horizontalAlignment: Text.AlignLeft
+                color: root.isError ? ui.theme.buttonColor : ui.theme.fontSecondaryColor
+                font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+                elide: Text.ElideRight
+                opacity: root.isToolResult ? 1.0 : 0.8
+                text: root.toolSummary
+            }
         }
     }
 }

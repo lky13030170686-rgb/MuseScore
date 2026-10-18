@@ -175,6 +175,9 @@ Item {
                     //! and an `undefined` handed to a `string` property is exactly the sort of thing that
                     //! works until it does not.
                     richBody: rowItem.modelData.rich || ""
+                    //! A tool call's name, as its own field (第 151 条): the row draws it as a separate
+                    //! segment with its own ink, so the split is not re-derived here.
+                    toolNameField: rowItem.modelData.name || ""
                     isError: rowItem.modelData.isError === true
                     webStyle: root.webStyle
                 }
