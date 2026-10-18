@@ -161,6 +161,10 @@ Item {
                   : (root.kind === "toolResult" && root.body.length > 400
                      ? root.body.substring(0, 400) + " …"
                      : root.body)
+            //! Same 14/24 as the page's copy (第 154 条) - the panel is the same conversation in less
+            //! room, not a different rendering of it.
+            lineHeight: root.isAssistant ? 24 : 1.0
+            lineHeightMode: root.isAssistant ? Text.FixedHeight : Text.ProportionalHeight
         }
     }
 
@@ -243,6 +247,18 @@ Item {
             color: root.isError ? ui.theme.buttonColor : ui.theme.fontPrimaryColor
             textFormat: root.isAssistant ? Text.RichText : Text.PlainText
             text: root.isAssistant ? root.richBody : root.body
+            //! ⛔ THE ANSWER'S LINE HEIGHT IS 24px, NOT THE FONT'S OWN ~15px (第 154 条).
+            //! DSH's body is `14px / 24px` (`ui-chat/.../AssistantMarkdown.module.css:9-15`), and that
+            //! ratio is most of what makes a long answer readable - measured before this: a 40-line
+            //! answer fitted in a 675px transcript, i.e. ~15px a line, and it read as a wall.
+            //! ⚠️ `FixedHeight` and not `ProportionalHeight`: Qt's idea of "1.0" is the FONT's own
+            //! spacing (~16px here), so a multiplier would have to be guessed per font, while DSH's
+            //! ladder is stated in pixels. `lineHeight` reaches rich text through `QTextBlockFormat`,
+            //! which is why it works on `Text.RichText` at all.
+            //! ⚠️ Only the assistant's rows: a tool line and a user bubble have their own sizes, and a
+            //! fixed 24 on them would stretch the ones that are meant to be compact.
+            lineHeight: root.isAssistant ? 24 : 1.0
+            lineHeightMode: root.isAssistant ? Text.FixedHeight : Text.ProportionalHeight
         }
 
         //! ── A tool row, in DSH's four parts (第 151 条) ───────────────────────────────────────────
