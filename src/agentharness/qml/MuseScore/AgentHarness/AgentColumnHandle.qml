@@ -46,7 +46,12 @@ import Muse.Ui
 Item {
     id: root
 
-    implicitWidth: 7
+    //! ⛔ 8px, DSH's hit strip (`ui-layout/src/client/AppFrame.module.css:45-57`: `width: 8px` with
+    //! `margin-left: -4px`, i.e. centred on the boundary). ⚠️ It was 7px, and the difference is not
+    //! cosmetic: a synthetic click is placed by pixel, and 第 129 条 measured that an 8px coordinate
+    //! mistake was enough to miss a 7px strip entirely - "could not drag it" and "the handle is not
+    //! there" look the same from a script.
+    implicitWidth: 8
 
     //! Emitted while the pointer is down, with the distance moved since the press.
     signal moved(real delta)
@@ -54,14 +59,15 @@ Item {
     signal pressed()
     signal released()
 
-    Rectangle {
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-
-        width: 1
-        color: ui.theme.strokeColor
-    }
+    //! ⛔ THERE IS NO PAINTED LINE HERE ANY MORE (第 159 条). DSH draws no handle pill at all: its column
+    //! boundary IS the column's own edge (`AppFrame.module.css:29`, `border-right: 0.5px`), and the 8px
+    //! strip on top of it is invisible until you hover.
+    //! This file used to paint a 1px `strokeColor` of its own, which had two consequences that only show
+    //! up when you look at both: a resizable boundary read as a drawn divider (so the hover highlight
+    //! looked like it was highlighting something that was already there), and the columns had no edge of
+    //! their own - the divider moved WITH the handle during a drag.
+    //! ⇒ The columns carry their own edges now (`AgentWorkbench.qml`); what is left here is the hit area
+    //! and the affordance.
 
     //! The affordance: the boundary lights up when the pointer is on it, and stays lit while dragging.
     //! Without it a user has to discover by accident that the columns can be resized at all.

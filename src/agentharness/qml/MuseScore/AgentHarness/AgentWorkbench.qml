@@ -110,7 +110,13 @@ Item {
                                             ? root.field.agentRightbarWidth : root.rightbarDefaultWidth)
 
     //! The centred content axis: the transcript column and (slightly wider) the composer card.
-    readonly property real contentWidth: Math.max(520, Math.min(920, centerColumn.width * 0.72))
+    //! ⛔ DSH's own formula (`ui-conversation/src/client/skeleton/ConversationRoot.module.css:28-31`):
+    //! `clamp(680px, columnWidth * 0.64, 920px)`. Ours was `max(520, min(920, column * 0.72))` - a
+    //! different ratio AND a different floor, and the floor is the part that matters: DSH refuses to
+    //! squeeze the body below 680 even when the column is narrower (it would rather the reader scroll
+    //! than read a 40-character line). 第 124 条 copied "the proportions that look right"; this is the
+    //! rule those proportions came from (第 159 条).
+    readonly property real contentWidth: Math.max(680, Math.min(920, centerColumn.width * 0.64))
 
     readonly property bool running: root.field ? root.field.agentRunning : false
 
@@ -286,6 +292,20 @@ Item {
                         }
                     }
                 }
+            }
+
+            //! ── The column's own edge (第 159 条) ────────────────────────────────────────────────
+            //! DSH's sidebar draws `border-right: 0.5px solid border-l3` (`AppFrame.module.css:29`): the
+            //! boundary belongs to the COLUMN, not to the drag handle. ⚠️ A 1px child rather than
+            //! `border.width` - QML's border width is an int, so "0.5px" is not expressible, and on a 1x
+            //! display one pixel is exactly what the design's half pixel was for.
+            Rectangle {
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 1
+                color: ui.theme.strokeColor
+                opacity: 0.6
             }
         }
 
@@ -529,6 +549,20 @@ Item {
             Layout.fillHeight: true
 
             color: ui.theme.backgroundSecondaryColor
+
+            //! ── The column's own edge (第 159 条) ────────────────────────────────────────────────
+            //! `border-left: 0.5px solid border-l4` on DSH's right panel (`SidebarRight.module.css:35` -
+            //! and it is a DIFFERENT token from the sidebar's `l3`, which is why the two edges are not the
+            //! same rectangle copied twice). ⚠️ Placed before the layout and therefore under it: the
+            //! layout is transparent, so the edge shows through, and nothing has to be re-indented.
+            Rectangle {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 1
+                color: ui.theme.strokeColor
+                opacity: 0.6
+            }
 
             ColumnLayout {
                 anchors.fill: parent
