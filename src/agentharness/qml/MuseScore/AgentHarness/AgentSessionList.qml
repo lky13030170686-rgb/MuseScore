@@ -129,39 +129,89 @@ Item {
                 Layout.fillWidth: true
                 spacing: 6
 
-                FlatButton {
-                    id: sessionRow
-
+                //! ── One row: the fill, the title, and the button that makes it clickable ─────────────
+                //! ⛔ THE TITLE IS NOT `FlatButton.text`, and that is a measured decision (both halves
+                //! were seen on screen, 2026-10-18). `FlatButton` CENTRES whatever it is given
+                //! (`contentLoader.anchors.horizontalCenter`), so the title came out centred like a
+                //! button label; and the obvious fix - a custom `contentItem` - is the one shape 第 132 条
+                //! proved does NOT work inside a DELEGATE: an inline `Component` gets its own context and
+                //! the delegate's ids are invisible in it (every row logged a `ReferenceError` and came
+                //! out blank). So: title as a label in the row, and a transparent `FlatButton` on top as
+                //! the hit target. One control, still real, still named in the accessibility tree.
+                Item {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 26
-                    //! The tab strip's proportions (第 135 条), because this is the same kind of thing:
-                    //! a capsule whose fill says whether it is the one you are looking at.
-                    margins: 10
-                    backgroundRadius: 12
-                    transparent: !modelData.current
-                    //! ⛔ NOT `!modelData.current`: see the note at the top of this file - a disabled capsule
-                    //! reads as a broken one. The current row stays clickable and the controller treats
-                    //! "switch to the session I am in" as the no-op it is.
-                    enabled: !root.busy
+                    //! DSH's session row is 32px (`ui-workspace/src/client/rows/Rows.module.css:103-110`),
+                    //! not the 36px of its PANEL navigation rows: those are two different things and the
+                    //! first draft of 界面规格.md copied the wrong one. Both are in 界面规格.md §四.
+                    Layout.preferredHeight: 32
 
-                    //! ⚠️ `accessible.name` is not derived from `text` (第 129 条): it is what the
-                    //! automation tree reports, and it is the only way a script can tell two rows apart.
-                    accessible.name: qsTrc("agentharness", "Switch to session: %1").arg(modelData.title)
-                    toolTipTitle: modelData.current
-                                  ? qsTrc("agentharness", "You are in this session")
-                                  : qsTrc("agentharness", "Switch to this session")
-                    text: modelData.title
+                    //! The fill. ⛔ The first version used `ui.theme.backgroundTertiaryColor` because it
+                    //! sounded like "one step up from the background" - on screen it is BLACK, so the row
+                    //! read as a hole in the column (worse than what it replaced). The version before that
+                    //! used `FlatButton`'s default `buttonColor`: a solid grey capsule with a hairline
+                    //! border, i.e. what an input field looks like. DSH's row fill is `interactive-bg-hover`
+                    //! - 8% white in dark, 6% ink in light (`ui-theme/.../design-platform.css:295` / `:200`),
+                    //! which is the FOREGROUND at a very low alpha. Painting it that way is what makes it
+                    //! right in both themes instead of only in the one I happened to be looking at.
+                    //! Hover and selection being the SAME fill is DSH's own choice (Rows.module.css:13-20):
+                    //! the fill says "where you just clicked", it is not a highlight.
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 8
+                        color: ui.theme.fontPrimaryColor
+                        opacity: (modelData.current || sessionRowButton.mouseArea.containsMouse) ? 0.08 : 0
+                    }
 
-                    onClicked: {
-                        root.field.switchAgentSession(index)
+                    StyledTextLabel {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        horizontalAlignment: Text.AlignLeft
+                        elide: Text.ElideRight
+                        //! `label-primary` when it is the row you are in, `label-secondary` otherwise -
+                        //! DSH's row ink (Rows.module.css:1-11 puts `label-primary` on the shell; the
+                        //! inactive rows read as secondary next to it).
+                        color: modelData.current ? ui.theme.fontPrimaryColor : ui.theme.fontSecondaryColor
+                        text: modelData.title
+                    }
+
+                    FlatButton {
+                        id: sessionRowButton
+
+                        anchors.fill: parent
+                        //! No background at all - not even the hairline border the default one draws.
+                        //! (`backgroundItem` is a `Component`; `null` makes the Loader load nothing.)
+                        backgroundItem: null
+                        text: ""
+                        //! ⛔ NOT `!modelData.current`: see the note at the top of this file - a disabled
+                        //! capsule reads as a broken one. The current row stays clickable and the controller
+                        //! treats "switch to the session I am in" as the no-op it is.
+                        enabled: !root.busy
+                        //! ⚠️ `accessible.name` is not derived from `text` (第 129 条): it is what the
+                        //! automation tree reports, and it is the only way a script can tell two rows apart.
+                        accessible.name: qsTrc("agentharness", "Switch to session: %1").arg(modelData.title)
+                        toolTipTitle: modelData.current
+                                      ? qsTrc("agentharness", "You are in this session")
+                                      : qsTrc("agentharness", "Switch to this session")
+
+                        onClicked: {
+                            root.field.switchAgentSession(index)
+                        }
                     }
                 }
 
                 //! How much is in it. The one fact that separates two conversations whose first messages
                 //! look alike, and the reason the row is not just a title.
+                //! ⚠️ DSH puts a RELATIVE TIME here, at `12px` / `label-tertiary`
+                //! (`ui-workspace/src/client/rows/Rows.module.css:204-209`) - it is secondary
+                //! information, not a second title. We keep the event count (第 141 条's reason for
+                //! having it at all), but not its size: at the body size it competed with the title.
                 StyledTextLabel {
                     horizontalAlignment: Text.AlignRight
                     color: ui.theme.fontSecondaryColor
+                    font.pixelSize: ui.theme.bodyFont.pixelSize - 2
                     text: String(modelData.events)
                 }
 
@@ -246,10 +296,21 @@ Item {
             id: newSessionButton
 
             Layout.fillWidth: true
-            Layout.preferredHeight: 26
-            margins: 10
+            //! DSH: 38px tall, `padding: 8px 16px`, `border-radius: 12`, a hairline border, an
+            //! elevated fill, and a CENTRED label (`ui-sidebar/src/client/SidebarRoot.module.css:250-269`).
+            //! It is the sidebar's one prominent action, so it is deliberately the tallest thing in
+            //! this column - our 26px transparent capsule read as one more row in the list.
+            //! ⚠️ I wrote "left-aligned" in the first draft of 界面规格.md; the CSS says
+            //! `justify-content: center`, so `FlatButton`'s default content item is already right
+            //! and this needs no custom `contentItem` (which would have brought 第 132 条's
+            //! inline-`Component` context problem with it).
+            Layout.preferredHeight: 38
+            margins: 16
             backgroundRadius: 12
-            transparent: true
+            //! Not transparent any more: DSH fills it with `button-elevated-fill`, which is exactly
+            //! `FlatButton`'s default fill (`ui.theme.buttonColor`). The hairline border comes from
+            //! the default background item, which is why no border is set here.
+            transparent: false
             icon: IconCode.PLUS
             enabled: !root.busy
 

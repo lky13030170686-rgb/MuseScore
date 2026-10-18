@@ -79,9 +79,15 @@ Item {
     ]
 
     //! ── The web client's column constants ────────────────────────────────────────────────────────
+    //! ⛔ DSH's own literals (`packages/client/ui-layout/src/client/columns.ts:13-17`): 264-420,
+    //! default 280. The first version had a 240 lower bound, which was invented - and that matters
+    //! more than it looks, because DSH's sidebar NEVER concedes width when space runs out (its
+    //! comment says so in as many words); the collapsed rail at the 1024 breakpoint is its only
+    //! give. A narrower floor than DSH's means our session rows get squeezed below the width their
+    //! own spec assumes. The full table is in 界面规格.md §二.
     readonly property int sidebarDefaultWidth: 280
-    readonly property int sidebarMinWidth: 240
-    readonly property int sidebarMaxWidth: 380
+    readonly property int sidebarMinWidth: 264
+    readonly property int sidebarMaxWidth: 420
     readonly property int rightbarDefaultWidth: 320
     readonly property int rightbarMinWidth: 280
     readonly property int rightbarMaxWidth: 420
@@ -169,7 +175,13 @@ Item {
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 12
+                //! DSH's sidebar is `padding: 6px 12px` (`ui-sidebar/.../SidebarRoot.module.css:14`):
+                //! SIX at the top and bottom, not twelve. Twelve everywhere made the column read as a
+                //! card floating inside itself rather than as the column's own content.
+                anchors.topMargin: 6
+                anchors.bottomMargin: 6
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
                 spacing: 6
 
                 StyledTextLabel {
