@@ -77,6 +77,11 @@ Item {
     //! This result row was clicked - the view decides what that means.
     signal resultToggleRequested()
 
+    //! This answer should be copied (第 160 条). ⛔ The ROW cannot do it: it has no field, and it is
+    //! rebuilt on every streamed token (第 132 条) - so it asks, and the view (which owns the field and
+    //! therefore the clipboard entry point) does it. Same shape as `resultToggleRequested`.
+    signal copyRequested(string text)
+
     //! Panel style (labelled paragraphs, tool rows indented) vs web style (bubbles and one-liners).
     property bool webStyle: false
 
@@ -289,6 +294,60 @@ Item {
         //!      (`transcriptfold.h`) - and neither row carries the other's state. A dot that claimed to
         //!      know would be inventing it; the failure colour on the result line is what says "this one
         //!      did not work".
+        //! ── The answer's actions (第 160 条) ────────────────────────────────────────────────────────
+        //! DSH's message actions: a 28px square button with a full-round corner, the tertiary ink at rest
+        //! and the secondary ink on hover, in a row with an 8px gap that sits under the body
+        //! (`MessageIconActions.module.css:5-10`, `:57-81`; `AssistantMarkdown.module.css:66-70` sets the
+        //! gap above it). ⚠️ The answer only: a user's own message needs no copy button (they typed it),
+        //! and a tool result already has its own expansion (第 155 条).
+        RowLayout {
+            visible: root.isAssistant && root.body.length > 0
+            width: parent.width
+            spacing: 8
+
+            FlatButton {
+                id: copyButton
+
+                Layout.preferredWidth: 28
+                Layout.preferredHeight: 28
+                Layout.topMargin: 8
+                //! Half the width, so the shape is a circle whatever the theme's metrics are.
+                backgroundRadius: 14
+                transparent: true
+                icon: IconCode.COPY
+                accessible.name: qsTrc("agentharness", "Copy this answer")
+                toolTipTitle: qsTrc("agentharness", "Copy the answer as text")
+
+                onClicked: {
+                    root.copyRequested(root.body)
+                    copiedTimer.restart()
+                }
+            }
+
+            //! ⛔ A CLICK NEEDS AN ANSWER ON SCREEN. DSH swaps the icon for a check mark; we have no such
+            //! glyph in `IconCode`, and a button that does not change looks like a button that did
+            //! nothing - so the feedback is a word beside it, for a moment.
+            StyledTextLabel {
+                Layout.alignment: Qt.AlignVCenter
+                Layout.topMargin: 8
+                visible: copiedTimer.running
+                color: ui.theme.fontSecondaryColor
+                font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+                text: qsTrc("agentharness", "Copied")
+            }
+
+            //! Pushes the pair to the row's start - the same fix the `Think` line needed (第 157 条).
+            Item {
+                Layout.fillWidth: true
+            }
+        }
+
+        //! Not an `Item`, so it adds nothing to the column's height.
+        Timer {
+            id: copiedTimer
+            interval: 1600
+        }
+
         //! ── The model's reasoning, as a transcript row (第 157 条) ─────────────────────────────────
         //! ⛔ WHY IT EXISTS: the reasoning was in the session log from the first day and **no reader used
         //! it** - the only surface that ever showed it was `agentStreamingReasoning`, which `AgentLoop`

@@ -72,6 +72,9 @@ Item {
     //! One of those rows asked to open or close.
     signal resultToggleRequested(var seq)
 
+    //! One of those rows wants its answer copied (第 160 条) - relayed to whoever owns the field.
+    signal copyRequested(string text)
+
     readonly property int callCount: root.group ? Number(root.group.callCount) || 0 : 0
     readonly property int resultCount: root.group ? Number(root.group.resultCount) || 0 : 0
     readonly property bool hasError: root.group ? root.group.hasError === true : false
@@ -190,6 +193,10 @@ Item {
 
                     onResultToggleRequested: {
                         root.resultToggleRequested(modelData.seq)
+                    }
+
+                    onCopyRequested: function(text) {
+                        root.copyRequested(text)
                     }
                     isError: modelData.isError === true
                     webStyle: root.webStyle

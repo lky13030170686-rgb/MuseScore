@@ -320,8 +320,7 @@ public:
     //! ⚠️ Cost: one markdown render per streamed token - the same cadence as the notification carrying it,
     //! and rendering it in QML is not an option (the renderer is C++).
     Q_PROPERTY(QString agentStreamingRich READ agentStreamingRich NOTIFY fieldChanged)
-    Q_PROPERTY(QString agentStreamingReasoning READ agentStreamingReasoning NOTIFY fieldChanged)
-    Q_PROPERTY(bool agentRunning READ agentRunning NOTIFY fieldChanged)
+    Q_PROPERTY(QString agentStreamingReasoning READ agentStreamingReasoning NOTIFY fieldChanged)    Q_PROPERTY(bool agentRunning READ agentRunning NOTIFY fieldChanged)
     Q_PROPERTY(bool agentConfigured READ agentConfigured NOTIFY fieldChanged)
     Q_PROPERTY(QString agentLastError READ agentLastError NOTIFY fieldChanged)
     Q_PROPERTY(QString agentApiKeySource READ agentApiKeySource NOTIFY fieldChanged)
@@ -444,6 +443,12 @@ public:
     //! The assistant's text so far in the running turn - the panel renders this live.
     QString agentStreamingText() const;
     QString agentStreamingRich() const;
+    //! Put text on the system clipboard (第 160 条). ⛔ QML has no clipboard API of its own; the usual
+    //! trick is a hidden `TextEdit` + `copy()`, but that copies from a VIEW - the text has to be put
+    //! there first, and the two copies are then free to differ. This takes the string directly.
+    //! ⚠️ It belongs to the field rather than to a row: a row is a read-only projection that is rebuilt
+    //! per token (第 132 条) and has no business reaching outside itself.
+    Q_INVOKABLE void copyToClipboard(const QString& text);
     QString agentStreamingReasoning() const;
     QString agentLastError() const;
     //! Where the key came from, for the panel to display: "environment" / "set" / "none".

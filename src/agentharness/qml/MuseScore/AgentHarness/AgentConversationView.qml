@@ -269,6 +269,14 @@ Item {
                     onResultToggleRequested: {
                         root.toggleResult(rowItem.modelData.seq)
                     }
+
+                    //! The answer's copy action (第 160 条). The view owns the field, so it owns the
+                    //! clipboard entry point; the row only asked.
+                    onCopyRequested: function(text) {
+                        if (root.field) {
+                            root.field.copyToClipboard(text)
+                        }
+                    }
                     isError: rowItem.modelData.isError === true
                     webStyle: root.webStyle
                 }
@@ -295,6 +303,13 @@ Item {
 
                     onResultToggleRequested: function(seq) {
                         root.toggleResult(seq)
+                    }
+
+                    //! Same relay for the group's inner rows (第 160 条).
+                    onCopyRequested: function(text) {
+                        if (root.field) {
+                            root.field.copyToClipboard(text)
+                        }
                     }
                 }
             }

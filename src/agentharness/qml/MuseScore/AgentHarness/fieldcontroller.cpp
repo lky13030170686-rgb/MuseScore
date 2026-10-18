@@ -77,6 +77,9 @@
 //! page's centre and its Conversation column cannot disagree about what the model said - the same
 //! argument that put the transcript itself in one place.
 #include "markdowntext.h"
+//! The system clipboard, for the answer's copy action (第 160 条) - see `copyToClipboard`.
+#include <QGuiApplication>
+#include <QClipboard>
 //! Only the .cpp uses the fold: the header declares `agentTranscript()`, which returns the folded rows
 //! but does not need to know how they were folded.
 #include "transcriptfold.h"
@@ -2106,14 +2109,21 @@ bool FieldController::agentConfigured() const
     return m_transport && m_transport->isConfigured();
 }
 
+void FieldController::copyToClipboard(const QString& text)
+{
+    //! ⚠️ What is copied is the model's OWN text, not the rich form the surfaces draw. The drawn form is
+    //! HTML (`<p>`, `<b>`, `<pre>`) and pasting that into a document gives the user markup to clean up;
+    //! what they asked for is what the agent said (第 160 条).
+    QGuiApplication::clipboard()->setText(text);
+}
+
 QString FieldController::agentStreamingText() const
 {
     return m_loop ? m_loop->streamingText() : QString();
 }
 
 QString FieldController::agentStreamingRich() const
-{
-    //! Rendered here rather than in the view (第 158 条): the answer that is arriving is the SAME prose as
+{    //! Rendered here rather than in the view (第 158 条): the answer that is arriving is the SAME prose as
     //! the answer that has arrived, so it goes through the same renderer - otherwise a half-finished
     //! sentence shows its `**` markers for a few hundred milliseconds and then snaps into bold, which reads
     //! as the text changing its mind.
