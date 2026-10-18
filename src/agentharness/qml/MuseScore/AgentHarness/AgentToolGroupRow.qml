@@ -63,6 +63,15 @@ Item {
 
     signal toggleRequested()
 
+    //! Answers "is this result row shown in full?" for the rows INSIDE the group (第 155 条).
+    //! ⚠️ A function, not a list: the VIEW owns that state (the transcript model is rebuilt on every
+    //! streamed token, so a row cannot hold its own flag - 第 132 条), and the group only relays the
+    //! question to whoever does own it.
+    property var resultOpenChecker: function(seq) { return false }
+
+    //! One of those rows asked to open or close.
+    signal resultToggleRequested(var seq)
+
     readonly property int callCount: root.group ? Number(root.group.callCount) || 0 : 0
     readonly property int resultCount: root.group ? Number(root.group.resultCount) || 0 : 0
     readonly property bool hasError: root.group ? root.group.hasError === true : false
@@ -176,6 +185,12 @@ Item {
                     //! Carried through the fold like every other field (第 151 条): an expanded group's
                     //! rows must draw exactly as the unfolded transcript would.
                     toolNameField: modelData.name || ""
+                    //! The same "is this result open?" answer the top-level rows get (第 155 条).
+                    resultExpanded: root.resultOpenChecker(modelData.seq)
+
+                    onResultToggleRequested: {
+                        root.resultToggleRequested(modelData.seq)
+                    }
                     isError: modelData.isError === true
                     webStyle: root.webStyle
                 }

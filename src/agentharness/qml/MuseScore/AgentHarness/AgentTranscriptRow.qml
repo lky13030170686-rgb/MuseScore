@@ -69,6 +69,14 @@ Item {
     //! here from `"<name> <arguments>"`.
     property string toolNameField: ""
 
+    //! Whether this row's full text is on screen (tool results only - 第 155 条).
+    //! ⚠️ The VALUE comes from the view and the CHANGE is only asked for: the transcript model is rebuilt
+    //! on every streamed token, so a row owning this flag would snap shut while it is being read (第 132 条).
+    property bool resultExpanded: false
+
+    //! This result row was clicked - the view decides what that means.
+    signal resultToggleRequested()
+
     //! Panel style (labelled paragraphs, tool rows indented) vs web style (bubbles and one-liners).
     property bool webStyle: false
 
@@ -276,8 +284,25 @@ Item {
         //!      (`transcriptfold.h`) - and neither row carries the other's state. A dot that claimed to
         //!      know would be inventing it; the failure colour on the result line is what says "this one
         //!      did not work".
-        RowLayout {
+        //! ── A tool row, and the whole result on request (第 155 条) ───────────────────────────────
+        //! The row itself is unchanged; what is new is that a RESULT can be opened to show its full
+        //! text in the code font. ⛔ Why this is the answer to "the agent changed something and I cannot
+        //! see what it got back": the row is one line by design (a multi-line digest per tool call
+        //! buries the conversation), and the full text was only ever visible for the NEWEST call, in the
+        //! right column. Every older call's result was unreachable.
+        //! ⚠️ The block below is NOT re-indented for the extra levels, on purpose - this change should
+        //! contain the lines it actually changes (same note as AgentConversationView's list).
+        Column {
             visible: root.isTool
+            width: parent.width
+            spacing: 4
+
+            Item {
+                width: parent.width
+                height: toolRow.implicitHeight
+
+        RowLayout {
+            id: toolRow
             width: parent.width
             spacing: 6
 
@@ -338,6 +363,85 @@ Item {
                 elide: Text.ElideRight
                 opacity: root.isToolResult ? 1.0 : 0.8
                 text: root.toolSummary
+            }
+        }
+
+                //! The hit target. ⛔ A real `FlatButton` with `backgroundItem: null`, NOT a `MouseArea`
+                //! over the row: a hand-drawn control never reaches the accessibility tree, so the
+                //! transcript could not be driven or verified from a script (维护手册.md §7.6), and a
+                //! `MouseArea` would also swallow the drag that scrolls the list. DSH's tool row is a
+                //! `<button>` for the same reason.
+                //! ⚠️ Only a RESULT is expandable: a call's "full text" is its arguments, which the row
+                //! already shows in full, so opening it would do nothing.
+                FlatButton {
+                    anchors.fill: parent
+                    visible: root.isToolResult
+                    backgroundItem: null
+                    text: ""
+                    accessible.name: root.resultExpanded
+                                     ? qsTrc("agentharness", "Hide the full tool result")
+                                     : qsTrc("agentharness", "Show the full tool result")
+                    toolTipTitle: qsTrc("agentharness", "The whole result, not just its first line")
+                    onClicked: {
+                        root.resultToggleRequested()
+                    }
+                }
+            }
+
+            //! The whole result. DSH's expanded body is a card on the code-block surface with a 12px
+            //! corner, the code font and a cap of its own (`ToolRow.module.css:212-232`: the IN and OUT
+            //! sections scroll INDEPENDENTLY, `max-height: 150px`). We have one section - the result -
+            //! and it scrolls inside itself for the same reason: a 50-measure `score_window` must not
+            //! push the conversation off the screen.
+            //! ⚠️ DSH's code font stack, minus the bare `monospace` tail: on Windows that tail falls back
+            //! to SimSun for CJK, and a code block with Songti in it reads as a different document.
+            Rectangle {
+                id: resultCard
+
+                visible: root.isToolResult && root.resultExpanded
+                width: parent.width
+                //! 24 = 12 of padding a side (`ToolRow.module.css:224-232` uses `padding: 12px 16px`).
+                height: Math.min(150, resultText.implicitHeight + 24)
+                radius: 12
+                //! `backgroundSecondaryColor` and not `backgroundTertiaryColor`: in this theme the
+                //! tertiary is BLACK (第 148 条 measured it), so the card would read as a hole cut in
+                //! the transcript. DSH's code surface is one step ABOVE the page, not below it.
+                color: ui.theme.backgroundSecondaryColor
+                border.color: ui.theme.strokeColor
+                border.width: ui.theme.borderWidth
+
+                Flickable {
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    contentWidth: width
+                    contentHeight: resultText.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    Text {
+                        id: resultText
+
+                        width: parent.width
+                        wrapMode: Text.WrapAnywhere
+                        //! ⛔ `font.family`, NOT `font.families`. The QML `font` value type has no
+                        //! `families` - it exists on `QFont` in C++, which is where DSH's stack comes
+                        //! from - and assigning it fails at LOAD time with
+                        //! `Cannot assign to non-existent property "families"`. Because these rows are
+                        //! created inside the window's content, that one line takes the whole notation
+                        //! page down and the app comes up on the home page (第 144 / 151 条's shape, and
+                        //! this is the third time, so the note is at the line).
+                        //! ⚠️ Qt walks its own fallback chain for anything this family lacks, which is
+                        //! what covers the CJK case DSH's extra names were there for.
+                        font.family: "Consolas"
+                        font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+                        color: ui.theme.fontSecondaryColor
+                        textFormat: Text.PlainText
+                        //! ⛔ A tool result is a digest with meaningful line breaks; `wrapMode` alone does
+                        //! NOT preserve them (第 124 条 measured that a `Text` breaks on `\n` whatever the
+                        //! wrap mode says - which is exactly what a result wants).
+                        text: root.body
+                    }
+                }
             }
         }
     }

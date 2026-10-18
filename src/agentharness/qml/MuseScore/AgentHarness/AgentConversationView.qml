@@ -93,6 +93,25 @@ Item {
         root.openedGroups = next
     }
 
+    //! ── Which tool RESULTS are shown in full (第 155 条) ─────────────────────────────────────────
+    //! Keyed by the row's own `seq`, and held HERE for exactly the reason `openedGroups` is: the
+    //! transcript model is a `Q_PROPERTY` that is rebuilt on every streamed token, so a row that owned
+    //! its own flag would snap shut while the user is reading it (第 132 条).
+    //! ⚠️ Why a result is closed by default while a FAILED tool group is open: a group line is one row
+    //! standing for many, so opening it is the only way to see what happened; a result line is already
+    //! the answer, and its first line is what the row shows. Opening is for "I need the whole thing".
+    property var openedResults: ({})
+
+    function isResultOpen(seq) {
+        return root.openedResults[seq] === true
+    }
+
+    function toggleResult(seq) {
+        const next = Object.assign({}, root.openedResults)
+        next[seq] = !root.isResultOpen(seq)
+        root.openedResults = next
+    }
+
     //! Set while the view should stay at the tail; see `requestTailFollow()`.
     property bool tailFollowPending: false
 
@@ -189,6 +208,13 @@ Item {
                     //! A tool call's name, as its own field (第 151 条): the row draws it as a separate
                     //! segment with its own ink, so the split is not re-derived here.
                     toolNameField: rowItem.modelData.name || ""
+                    //! Whether THIS result is shown in full (第 155 条). The view owns the answer; the row
+                    //! only asks for a change.
+                    resultExpanded: root.isResultOpen(rowItem.modelData.seq)
+
+                    onResultToggleRequested: {
+                        root.toggleResult(rowItem.modelData.seq)
+                    }
                     isError: rowItem.modelData.isError === true
                     webStyle: root.webStyle
                 }
@@ -204,9 +230,17 @@ Item {
                     group: rowItem.modelData
                     webStyle: root.webStyle
                     expanded: root.isGroupOpen(rowItem.modelData.groupId, rowItem.modelData.hasError)
+                    //! The group's inner rows are the same rows, so the same "is this result open?"
+                    //! question has to reach them (第 155 条). Passed as a FUNCTION: the view owns the
+                    //! state, and the group does not need to know how it is stored.
+                    resultOpenChecker: root.isResultOpen
 
                     onToggleRequested: {
                         root.toggleGroup(rowItem.modelData.groupId, rowItem.modelData.hasError)
+                    }
+
+                    onResultToggleRequested: function(seq) {
+                        root.toggleResult(seq)
                     }
                 }
             }
