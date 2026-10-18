@@ -93,6 +93,24 @@ public:
     //! - so there is one default, not two.
     static constexpr int DEFAULT_STEPS_PER_TURN = 8;
 
+    //! ── Soft landing before the wall (第 147 条) ──────────────────────────────────────────────────
+    //! ⛔ MEASURED FIRST (2026-10-18, 197 log files, 139 turns): successful turns need 1-8 steps (94% of
+    //! them 1-3), and every turn that hit the limit needed 9-12 - so the cap cuts exactly the tail, and it
+    //! cut it EIGHT times, including four in a row for one user who kept retrying. The cap itself is right
+    //! (that is what it is for); what was wrong is that the model was never told it was about to run out.
+    //! It asked for another tool at the last step, the turn failed, and the user saw a bare "stopped after
+    //! 8 steps" - a dead end rather than a landing.
+    //!
+    //! What the MODEL is told, one step before the wall: how many steps are left. PURE, next to the bound it
+    //! is about, so the wording and the arithmetic are unit-tested without a loop, a field or a network.
+    //! ⚠️ Empty when there is room to keep working - a note on every step would be noise.
+    static QString stepBudgetNote(int step, int maxSteps);
+
+    //! What the turn ENDS with when the model used every step and still asked for more. It has to say three
+    //! things, and the first version said none of them: the limit, that the work so far is real (the tools
+    //! that ran wrote to the score, one undo step each) and that the way out is "continue" or the setting.
+    static QString stepLimitReason(int maxSteps);
+
     void setMaxStepsPerTurn(int steps);
     int maxStepsPerTurn() const { return m_maxStepsPerTurn; }
 
@@ -119,6 +137,14 @@ private:
     int m_turn = 0;
     int m_step = 0;
     int m_maxStepsPerTurn = DEFAULT_STEPS_PER_TURN;
+
+    //! The last step of a turn is an ANSWER-ONLY step: the request goes out with no tool schemas at all, so
+    //! the turn ends with words instead of a bare "it stopped" (第 147 条 - see the note in `runNextStep`
+    //! about why persuasion was not enough). ⚠️ Both are reset per turn; a stale flag would silently strip
+    //! the tools from a normal request and the model would answer "I cannot do that" for the rest of the
+    //! conversation.
+    bool m_finalAnswerStep = false;
+    QString m_finalAnswerReason;
 
     QString m_model = defaultModel();
     bool m_thinking = false;

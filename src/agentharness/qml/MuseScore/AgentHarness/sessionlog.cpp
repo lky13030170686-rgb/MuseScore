@@ -254,6 +254,19 @@ QVector<WireMessage> SessionLog::deriveMessages(bool thinkingMode) const
             m.role = QStringLiteral("tool");
             m.toolCallId = callId;
             m.content = e.data.value(QStringLiteral("content")).toString();
+
+            //! ⛔ THE HARNESS'S OWN WORDS RIDE WITH THE TOOL'S, AND THE LOG KEEPS THEM APART (第 147 条).
+            //! `budget` is what `AgentLoop` told the model about its remaining steps; it is appended HERE
+            //! rather than at the point of recording, so the log still says which words the tool produced.
+            //! ⚠️ The model reads it inside the tool result on purpose: that is where it is about to decide
+            //! its next move, and a note anywhere else (a second system message, a fake user turn) would
+            //! either replace the system prompt - only the LAST `system/message` is taken, see above - or
+            //! put words in the user's mouth.
+            const QString budget = e.data.value(QStringLiteral("budget")).toString();
+            if (!budget.isEmpty()) {
+                m.content += (m.content.isEmpty() ? QString() : QStringLiteral("\n\n")) + budget;
+            }
+
             messages.append(m);
             continue;
         }

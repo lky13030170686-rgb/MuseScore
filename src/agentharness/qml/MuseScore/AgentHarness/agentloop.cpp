@@ -56,6 +56,46 @@ AgentLoop::AgentLoop(SessionLog* session, LlmTransport* transport, FieldControll
 {
 }
 
+QString AgentLoop::stepBudgetNote(int step, int maxSteps)
+{
+    //! ⚠️ ONE NOTE, NOT ONE PER TOOL CALL: the caller attaches it to the LAST result of the step, so a step
+    //! that ran three tools does not say the same thing three times (the model would read it as three
+    //! warnings and could reasonably think it had three steps left).
+    const int remaining = maxSteps - step;
+    if (remaining > 1) {
+        //! Room to keep working. ⚠️ `> 1` rather than `> 0`: with one step left the model is about to make
+        //! the decision that ends the turn, and that is exactly the step worth telling.
+        return QString();
+    }
+
+    if (remaining == 1) {
+        return QStringLiteral("⏳ Harness note: this turn's step limit is %1 and ONE step remains after this "
+                              "one. Use it to FINISH: do the part that matters, then answer in words with "
+                              "what is done, what is left and what you would do next. Do not spend it on a "
+                              "check you can do without - the user can tell you to continue.")
+               .arg(maxSteps);
+    }
+
+    //! ⛔ THE LAST STEP GETS THE STRONGER TEXT, AND THE REASON IS MEASURED (2026-10-18): with the softer note
+    //! ("0 step(s) remain after this one") a real model did the work and then spent that last step asking for
+    //! one more tool - `score_window`, a check it did not need - so the turn ended without an answer even
+    //! though everything it was asked to do had been done. The wording now names the trap.
+    return QStringLiteral("⛔ Harness note: this is the LAST step of this turn (limit %1) - there is NO step "
+                          "after this one. Answer now, in words: what you did, what is left, and what you "
+                          "would do next. Do not start another tool call unless it is essential to leave the "
+                          "score consistent: a tool call here ends the turn with no answer at all. The user "
+                          "can tell you to continue.")
+           .arg(maxSteps);
+}
+
+QString AgentLoop::stepLimitReason(int maxSteps)
+{
+    return QStringLiteral("this turn used all %1 of its steps and the model was still asking for tools. "
+                          "Nothing is lost: the tools that ran are in the score (each step is one Ctrl+Z), "
+                          "and the whole conversation is on record. Say \"continue\" to carry on from here, "
+                          "or raise the step limit in the assistant settings.").arg(maxSteps);
+}
+
 void AgentLoop::setMaxStepsPerTurn(int steps)
 {
     //! Clamped, not rejected: a settings field or an environment variable that asks for 0 or for 100000
@@ -95,6 +135,11 @@ void AgentLoop::submitUserMessage(const QString& text)
 
     m_turn = m_session->currentTurn() + 1;
     m_step = 0;
+    //! ⛔ RESET PER TURN (第 147 条): the answer-only step belongs to the turn that ran out of steps. A flag
+    //! left set would strip the tool schemas from a normal request, and the model would spend the rest of the
+    //! conversation saying it has no tools.
+    m_finalAnswerStep = false;
+    m_finalAnswerReason.clear();
 
     m_session->append(SessionEvent::TURN_START, turnData(m_turn));
 
@@ -148,12 +193,20 @@ void AgentLoop::runNextStep()
 
     //! The tool schemas travel with every request. Order is stable (see systemprompt.h), so two
     //! requests with the same history are byte-identical as far as a prefix cache is concerned.
-    const QJsonObject body = buildChatRequest(m_model, wireMessages, toolSchemas(), m_thinking, m_effort);
+    //!
+    //! ⛔⛔ ON THE FINAL STEP THEY ARE NOT SENT AT ALL (第 147 条), and that is the fix that worked where
+    //! persuasion did not: measured twice on a real model (2026-10-18), a note saying "this is the LAST step,
+    //! do not start another tool call - a tool call here ends the turn with no answer at all" was delivered
+    //! (the log and the projection both prove it) and the model called another tool anyway, twice. With the
+    //! tool list EMPTY the question does not arise: the model has nothing to call, so the turn ends with
+    //! words - which is the whole point of a landing.
+    const QJsonArray schemas = m_finalAnswerStep ? QJsonArray() : toolSchemas();
+    const QJsonObject body = buildChatRequest(m_model, wireMessages, schemas, m_thinking, m_effort);
 
     QJsonObject header;
     header.insert(QStringLiteral("model"), m_model);
     header.insert(QStringLiteral("thinking"), m_thinking);
-    header.insert(QStringLiteral("tools"), int(toolTable().size()));
+    header.insert(QStringLiteral("tools"), int(schemas.size()));
     m_session->append(SessionEvent::REQUEST_HEADER, header);
 
     LOGW() << "[agent-loop] turn" << m_turn << "step" << m_step
@@ -233,6 +286,15 @@ void AgentLoop::onStreamFinished(bool ok, const QString& error)
 
     if (calls.isEmpty()) {
         //! No tool calls: the model answered. The turn is over.
+        //! ⛔ ON THE FINAL STEP THIS IS THE LANDING (第 147 条): no tools were offered, so what came back is
+        //! the answer we asked for - and the turn still ends as `false` with the limit as its reason, because
+        //! "the model said something" and "the request was completed" are different claims and the user is
+        //! owed both.
+        if (m_finalAnswerStep) {
+            closeTurn(false, m_finalAnswerReason);
+            return;
+        }
+
         closeTurn(true, QString());
         return;
     }
@@ -242,9 +304,36 @@ void AgentLoop::onStreamFinished(bool ok, const QString& error)
         //! run until someone notices. Ending with a stated reason is better than an unbounded loop.
         //! The calls still run - the model asked for them and refusing silently would be worse - but
         //! no further step follows.
+        //! ⚠️ `stepLimitReason` says what the old bare sentence did not (第 147 条): the limit, that the work
+        //! so far is real, and how to carry on. Measured 2026-10-18: eight turns ended here, four of them in a
+        //! row for one user who kept retrying - a dead end reads as "it broke", not as "it paused".
+        if (m_finalAnswerStep) {
+            //! ⛔ THE MODEL ASKED FOR A TOOL IT WAS NOT OFFERED: the last request carries NO tool schemas, so a
+            //! call here is one it invented. Running it would honour something that could not have been asked;
+            //! dropping it silently would leave a call with no result in the log. So each one is recorded as
+            //! refused - and the turn ends, which is what keeps this terminating.
+            for (const QJsonObject& call : calls) {
+                QJsonObject refusal = stepData(m_turn, m_step);
+                refusal.insert(QStringLiteral("callId"), call.value(QStringLiteral("id")).toString());
+                refusal.insert(QStringLiteral("content"),
+                               QStringLiteral("not run: this step was answer-only (the step limit was already "
+                                              "spent), so no tool was offered to the model"));
+                refusal.insert(QStringLiteral("isError"), true);
+                m_session->append(SessionEvent::TOOL_RESULT, refusal);
+            }
+
+            closeTurn(false, m_finalAnswerReason);
+            return;
+        }
+
+        //! ⛔ THE FLAGS GO UP BEFORE THE TOOLS RUN, because `executeToolCalls` continues the loop itself once
+        //! the last call has reported (`QMetaObject::invokeMethod(… runNextStep …)`) - and THAT continuation
+        //! is the request we want to be answer-only. ⚠️ Measured 2026-10-18: the first version of this fix
+        //! queued a continuation here as well, and the final step went out TWICE in the same millisecond
+        //! (two byte-identical 6206-byte requests in the log, one answer).
+        m_finalAnswerStep = true;
+        m_finalAnswerReason = stepLimitReason(m_maxStepsPerTurn);
         executeToolCalls(calls);
-        closeTurn(false, QStringLiteral("stopped after %1 steps without the model finishing")
-                  .arg(m_maxStepsPerTurn));
         return;
     }
 
@@ -292,11 +381,26 @@ void AgentLoop::executeToolCalls(const QVector<QJsonObject>& calls)
 
         emit toolStarted(name, args);
 
-        auto finish = [this, id, name, runNext](const ToolResult& result) {
+        auto finish = [this, id, name, runNext, index, calls](const ToolResult& result) {
             QJsonObject resultData = stepData(m_turn, m_step);
             resultData.insert(QStringLiteral("callId"), id);
             resultData.insert(QStringLiteral("content"), result.text);
             resultData.insert(QStringLiteral("isError"), !result.ok);
+
+            //! ⛔ THE SOFT LANDING (第 147 条): on the step before the wall, the model is TOLD how many steps
+            //! it has left. ⚠️ On the LAST result of the step only - a step that ran three tools would
+            //! otherwise repeat the same warning three times, and the model could read that as three steps
+            //! remaining.
+            //! ⚠️ It goes in its OWN field rather than being appended to `content`: the log then says which
+            //! words came from the tool and which came from the harness, and the two readers take what
+            //! belongs to them (the wire gets both, the transcript shows the tool's own text).
+            if (*index >= calls.size()) {
+                const QString note = stepBudgetNote(m_step, m_maxStepsPerTurn);
+                if (!note.isEmpty()) {
+                    resultData.insert(QStringLiteral("budget"), note);
+                }
+            }
+
             m_session->append(SessionEvent::TOOL_RESULT, resultData);
 
             emit toolFinished(name, result.ok, result.text);

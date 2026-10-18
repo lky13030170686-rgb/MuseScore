@@ -58,6 +58,65 @@ TEST(AgentHarness_AgentLoop, StepsPerTurnIsClampedNotRejected)
     EXPECT_LT(AgentLoop::DEFAULT_STEPS_PER_TURN, AgentLoop::MAX_STEPS_PER_TURN);
 }
 
+//! ── The soft landing (第 147 条) ──────────────────────────────────────────────────────────────────
+//!
+//! ⛔ THE MEASUREMENT BEHIND THESE TWO RULES (2026-10-18, 197 log files, 139 turns): successful turns need
+//! 1-8 steps, and EVERY turn that hit the limit needed 9-12. So the cap cuts the tail rather than the
+//! runaway, and the model was never told it was about to run out - it asked for one more tool, the turn
+//! failed, and the user saw a bare "stopped after 8 steps". What is pinned here is the wording that turns
+//! that dead end into a landing, and the arithmetic that decides WHEN it is said.
+
+TEST(AgentHarness_AgentLoop, TheBudgetNoteStaysQuietWhileThereIsRoom)
+{
+    //! ⚠️ A note on every step would be noise, and noise about a limit is worse than none: a model told
+    //! "you have 8 steps left" eight times learns to ignore the sentence.
+    EXPECT_TRUE(AgentLoop::stepBudgetNote(1, 8).isEmpty());
+    EXPECT_TRUE(AgentLoop::stepBudgetNote(5, 8).isEmpty());
+    EXPECT_TRUE(AgentLoop::stepBudgetNote(6, 8).isEmpty());
+
+    //! With ONE step left it speaks, and it says both numbers: the limit, and what remains.
+    //! ⚠️ "ONE", spelled out, is what the note says - the test asserts the sentence rather than the digit,
+    //! because the digit was never the point (and asserting it made a wording improvement look like a bug).
+    const QString note = AgentLoop::stepBudgetNote(7, 8);
+    EXPECT_FALSE(note.isEmpty());
+    EXPECT_TRUE(note.contains(QStringLiteral("step limit is 8"))) << note.toStdString();
+    EXPECT_TRUE(note.contains(QStringLiteral("ONE step remains"))) << note.toStdString();
+
+    //! At the last step it still speaks - that is the step whose decision ends the turn - and it says
+    //! something STRONGER, because that is where a real model got it wrong (2026-10-18): with the softer
+    //! wording it did the work and then spent its last step asking for one more tool (`score_window`, a
+    //! check it did not need), so the turn ended with no answer. The last-step text names the trap.
+    //! ⚠️ The assertion is about the number, not about the character `-`: the first version of this test
+    //! asserted "contains no hyphen", and the note legitimately has one in its prose ("… do next - the user
+    //! can tell you to continue …"). A proxy that the correct output fails is a wrong ruler, not a finding.
+    const QString last = AgentLoop::stepBudgetNote(8, 8);
+    EXPECT_FALSE(last.isEmpty());
+    EXPECT_FALSE(last.contains(QStringLiteral("-1"))) << last.toStdString();
+    EXPECT_TRUE(last.contains(QStringLiteral("LAST step"))) << last.toStdString();
+    EXPECT_TRUE(last.contains(QStringLiteral("NO step after this one"))) << last.toStdString();
+    EXPECT_NE(last, note) << "the last step must say something the one-before-last does not";
+}
+
+TEST(AgentHarness_AgentLoop, TheBudgetNoteSaysWhatToDoInsteadOfJustStopping)
+{
+    //! ⛔ THE THREE THINGS THAT MAKE IT A LANDING RATHER THAN A DEAD END: finish the part that matters, say
+    //! what is left, and know that the user can ask for more. The first version of this turn's ending said
+    //! none of them ("stopped after 8 steps without the model finishing"), and one user hit it four times
+    //! in a row - which is what a dead end looks like from the outside.
+    const QString note = AgentLoop::stepBudgetNote(7, 8);
+    EXPECT_TRUE(note.contains(QStringLiteral("what is done"), Qt::CaseInsensitive)) << note.toStdString();
+    EXPECT_TRUE(note.contains(QStringLiteral("what is left"), Qt::CaseInsensitive)) << note.toStdString();
+    EXPECT_TRUE(note.contains(QStringLiteral("continue"))) << note.toStdString();
+
+    //! And the reason the turn ends with says the same three things, because it is read by a USER, not by a
+    //! model: the limit, that the work so far is real, and both ways to carry on.
+    const QString reason = AgentLoop::stepLimitReason(8);
+    EXPECT_TRUE(reason.contains(QStringLiteral("8"))) << reason.toStdString();
+    EXPECT_TRUE(reason.contains(QStringLiteral("Ctrl+Z"))) << reason.toStdString();
+    EXPECT_TRUE(reason.contains(QStringLiteral("continue"))) << reason.toStdString();
+    EXPECT_TRUE(reason.contains(QStringLiteral("settings"))) << reason.toStdString();
+}
+
 TEST(AgentHarness_AgentLoop, TheDefaultIsWhatAResetRestores)
 {
     //! `FieldController::resetAgentPreferences()` writes `DEFAULT_STEPS_PER_TURN` back. This asserts that

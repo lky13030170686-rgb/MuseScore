@@ -161,9 +161,59 @@ TEST(AgentHarness_SessionLog, ToolResultsPairWithTheirCalls)
     EXPECT_EQ(msgs[2].content, QStringLiteral("2 measures"));
 }
 
-TEST(AgentHarness_SessionLog, OrphanToolResultsAreDropped)
+//! ── The harness's own note rides with the tool's (第 147 条) ──────────────────────────────────────
+//!
+//! ⛔ THIS IS THE LINK IN THE CHAIN THAT THE LOG CANNOT SHOW. `AgentLoop` records what it told the model in
+//! the tool result's `budget` field (the session file proves it is written); the projection is what turns
+//! that into words the MODEL actually reads. If this test did not exist, "the model was warned" would rest
+//! on the log alone - and the log is written whether or not anybody reads it.
+
+TEST(AgentHarness_SessionLog, TheBudgetNoteReachesTheModelInsideTheToolResult)
 {
-    //! ⛔ The wire format pairs a result to a call by id. A result whose call is not in the history
+    SessionLog log;
+    log.append(SessionEvent::USER_MESSAGE, data({ { QStringLiteral("content"), QStringLiteral("do it") } }));
+
+    QJsonArray calls;
+    calls.append(toolCall(QStringLiteral("call_1"), QStringLiteral("score_overview"), QStringLiteral("{}")));
+    log.append(SessionEvent::ASSISTANT_MESSAGE,
+               data({ { QStringLiteral("content"), QString() }, { QStringLiteral("toolCalls"), calls } }));
+    log.append(SessionEvent::TOOL_CALL,
+               data({ { QStringLiteral("callId"), QStringLiteral("call_1") },
+                      { QStringLiteral("name"), QStringLiteral("score_overview") } }));
+    log.append(SessionEvent::TOOL_RESULT,
+               data({ { QStringLiteral("callId"), QStringLiteral("call_1") },
+                      { QStringLiteral("content"), QStringLiteral("2 measures") },
+                      { QStringLiteral("budget"), QStringLiteral("⏳ Harness note: 1 step remains") } }));
+
+    const QVector<WireMessage> msgs = log.deriveMessages();
+    ASSERT_EQ(msgs.size(), 3);
+
+    //! ⚠️ BOTH, and in that order: the tool's answer first (it is the tool's), then the harness's note.
+    //! ⛔ A note that REPLACED the tool's text would be the log lying about who said what.
+    EXPECT_TRUE(msgs[2].content.startsWith(QStringLiteral("2 measures"))) << msgs[2].content.toStdString();
+    EXPECT_TRUE(msgs[2].content.contains(QStringLiteral("1 step remains"))) << msgs[2].content.toStdString();
+    EXPECT_NE(msgs[2].content, QStringLiteral("2 measures")) << "the note did not reach the model";
+
+    //! And a result WITHOUT a note is passed through untouched - the field is opt-in, so the overwhelming
+    //! majority of tool results must look exactly as they did before 第 147 条.
+    SessionLog plain;
+    plain.append(SessionEvent::USER_MESSAGE, data({ { QStringLiteral("content"), QStringLiteral("do it") } }));
+    plain.append(SessionEvent::ASSISTANT_MESSAGE,
+                 data({ { QStringLiteral("content"), QString() }, { QStringLiteral("toolCalls"), calls } }));
+    plain.append(SessionEvent::TOOL_CALL,
+                 data({ { QStringLiteral("callId"), QStringLiteral("call_1") },
+                        { QStringLiteral("name"), QStringLiteral("score_overview") } }));
+    plain.append(SessionEvent::TOOL_RESULT,
+                 data({ { QStringLiteral("callId"), QStringLiteral("call_1") },
+                        { QStringLiteral("content"), QStringLiteral("2 measures") } }));
+
+    const QVector<WireMessage> plainMsgs = plain.deriveMessages();
+    ASSERT_EQ(plainMsgs.size(), 3);
+    EXPECT_EQ(plainMsgs[2].content, QStringLiteral("2 measures"));
+}
+
+TEST(AgentHarness_SessionLog, OrphanToolResultsAreDropped)
+{    //! ⛔ The wire format pairs a result to a call by id. A result whose call is not in the history
     //! makes the WHOLE request invalid - so it must not be emitted, however it got into the log.
     //! This is the projection's job: refuse to produce a request that cannot be sent.
     SessionLog log;
