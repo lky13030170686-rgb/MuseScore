@@ -51,12 +51,21 @@ Item {
     required property string body
     required property bool isError
 
+    //! The answer's DRAWN form (第 150 条): what `markdownToRichText()` produced, computed in C++ where
+    //! the transcript itself is built. Empty for every other kind of row, and this file never parses
+    //! anything - one renderer, one place, so the panel and the two page surfaces cannot disagree about
+    //! what the model said.
+    property string richBody: ""
+
     //! Panel style (labelled paragraphs, tool rows indented) vs web style (bubbles and one-liners).
     property bool webStyle: false
 
     readonly property bool isUser: root.kind === "user"
     readonly property bool isTool: root.kind === "toolCall" || root.kind === "toolResult"
     readonly property bool isToolResult: root.kind === "toolResult"
+    //! Exactly the answer rows. `attempt` (a failed round's reason) is a message too, but it is not the
+    //! model's prose and nobody writes lists in it, so it stays verbatim.
+    readonly property bool isAssistant: root.kind === "assistant"
 
     //! A tool row in web style is ONE line. The body of a tool result is a multi-line digest, and a
     //! `Text` honours `\n` no matter what `wrapMode` says - so the first version drew seven lines where
@@ -100,11 +109,18 @@ Item {
             color: root.isError ? ui.theme.buttonColor
                    : root.isTool ? ui.theme.fontSecondaryColor
                    : ui.theme.fontPrimaryColor
+            //! ⛔ THE ANSWER GOES THROUGH THE RENDERER, everything else is verbatim (第 150 条).
+            //! The explicit `Text.PlainText` is not decoration: the default is `Text.AutoText`, which
+            //! SNIFFS for markup - so a user message containing `<b>` came back bolded, i.e. the
+            //! transcript showed something the user did not type.
+            textFormat: root.isAssistant ? Text.RichText : Text.PlainText
             //! Tool output is capped: a `score_window` over fifty measures would otherwise push the
             //! rest of the conversation out of the panel. The full text is in the session log.
-            text: root.kind === "toolResult" && root.body.length > 400
-                  ? root.body.substring(0, 400) + " …"
-                  : root.body
+            text: root.isAssistant
+                  ? root.richBody
+                  : (root.kind === "toolResult" && root.body.length > 400
+                     ? root.body.substring(0, 400) + " …"
+                     : root.body)
         }
     }
 
@@ -159,6 +175,10 @@ Item {
                 wrapMode: Text.WordWrap
                 font: ui.theme.bodyFont
                 color: ui.theme.fontPrimaryColor
+                //! ⛔ The user's own words are drawn EXACTLY as typed. `Text`'s default is `Text.AutoText`,
+                //! which sniffs for markup - so a question containing `<b>` rendered as a bold word and the
+                //! bubble showed something the user had not written. Only the agent's answers are markdown.
+                textFormat: Text.PlainText
                 text: root.body
             }
         }
@@ -171,7 +191,8 @@ Item {
             horizontalAlignment: Text.AlignLeft
             wrapMode: Text.WordWrap
             color: root.isError ? ui.theme.buttonColor : ui.theme.fontPrimaryColor
-            text: root.body
+            textFormat: root.isAssistant ? Text.RichText : Text.PlainText
+            text: root.isAssistant ? root.richBody : root.body
         }
 
         //! A tool call is ONE compact line: the call reads `name arguments`, its result is prefixed with

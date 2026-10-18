@@ -73,6 +73,10 @@
 #include "spill.h"
 #include "systemprompt.h"
 #include "tools.h"
+//! How the ANSWER is drawn (第 150 条). Rendered here rather than in the view so the panel, the Agent
+//! page's centre and its Conversation column cannot disagree about what the model said - the same
+//! argument that put the transcript itself in one place.
+#include "markdowntext.h"
 //! Only the .cpp uses the fold: the header declares `agentTranscript()`, which returns the folded rows
 //! but does not need to know how they were folded.
 #include "transcriptfold.h"
@@ -2612,6 +2616,13 @@ QVariantList FieldController::agentTranscript() const
                 m.insert(QStringLiteral("kind"), QStringLiteral("assistant"));
                 m.insert(QStringLiteral("role"), QStringLiteral("agent"));
                 m.insert(QStringLiteral("text"), text);
+                //! ⛔ THE ANSWER IS RENDERED HERE, ONCE (第 150 条). Three surfaces draw this transcript
+                //! (the dock panel, the page's centre column, its `Conversation` tab) and a renderer per
+                //! surface is how they would start disagreeing about what the model said - but the real
+                //! reason is narrower: `text` is what the model WROTE, and `rich` is what a `Text` can
+                //! DRAW. Keeping both means the raw words stay available (the tool inspector, the log,
+                //! anything that should show the model's actual bytes) while the view never has to parse.
+                m.insert(QStringLiteral("rich"), markdownToRichText(text));
                 m.insert(QStringLiteral("seq"), QVariant::fromValue(e.seq));
                 m.insert(QStringLiteral("turn"), e.data.value(QStringLiteral("turn")).toInt());
                 out.append(m);

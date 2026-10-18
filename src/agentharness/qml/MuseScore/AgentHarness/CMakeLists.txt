@@ -63,6 +63,12 @@ qt_add_qml_module(agentharness_qml
         # something somebody has to notice on a screenshot (第 132 条).
         transcriptfold.cpp
         transcriptfold.h
+        # How the ANSWER is drawn (第 150 条): the assistant's markdown, turned into the rich-text subset
+        # QML's `Text` can render. Pure for the same reason as the fold above - the two rules that matter
+        # (escape before you insert a tag; only openable URLs become links) are invisible on a screenshot,
+        # so they are tests instead.
+        markdowntext.cpp
+        markdowntext.h
         systemprompt.cpp
         systemprompt.h
         # The loop body and its socket. The transport uses QNetworkAccessManager directly rather than

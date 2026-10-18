@@ -162,6 +162,10 @@ Item {
                     kind: modelData.kind
                     roleLabel: modelData.role
                     body: modelData.text
+                    //! Carried through the fold untouched (第 150 条): `foldToolRows` passes unknown fields
+                    //! on, so an expanded group draws its rows exactly as the unfolded transcript would -
+                    //! which is the whole claim the fold makes about itself.
+                    richBody: modelData.rich || ""
                     isError: modelData.isError === true
                     webStyle: root.webStyle
                 }

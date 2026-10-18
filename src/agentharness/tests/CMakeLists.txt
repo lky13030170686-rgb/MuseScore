@@ -63,6 +63,10 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/modelcatalog_tests.cpp
     # What the conversation view shows: the tool-call fold (第 132 条). Also pure - no window, no score.
     ${CMAKE_CURRENT_LIST_DIR}/transcriptfold_tests.cpp
+    # How the ANSWER is drawn (第 150 条): markdown in, the rich-text subset QML can render out. Pure, and
+    # it has to be: two of its jobs cannot be judged from a screenshot at all - escaping before inserting a
+    # tag (or an answer restyles itself) and the link whitelist (a `file:` link looks identical on screen).
+    ${CMAKE_CURRENT_LIST_DIR}/markdown_tests.cpp
     # The per-turn step guard, now that its value arrives from a settings field (第 130 条).
     ${CMAKE_CURRENT_LIST_DIR}/agentloop_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/systemprompt_tests.cpp

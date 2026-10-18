@@ -170,6 +170,11 @@ Item {
                     kind: rowItem.modelData.kind
                     roleLabel: rowItem.modelData.role
                     body: rowItem.modelData.text
+                    //! The answer's drawn form, rendered in C++ where the transcript is built (第 150 条).
+                    //! `|| ""` and not a bare assignment: the field is absent on every other kind of row,
+                    //! and an `undefined` handed to a `string` property is exactly the sort of thing that
+                    //! works until it does not.
+                    richBody: rowItem.modelData.rich || ""
                     isError: rowItem.modelData.isError === true
                     webStyle: root.webStyle
                 }
