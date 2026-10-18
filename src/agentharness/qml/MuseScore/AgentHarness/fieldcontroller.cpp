@@ -334,15 +334,26 @@ void FieldController::applyDemoToolCallIfPending()
                << "base=" << qEnvironmentVariable("MUSE_AGENT_API_BASE")
                << "configured=" << agentConfigured();
         sendToAgent(message);
-    } else if (m_session.isEmpty()) {
-        //! ⛔ ONLY INTO AN EMPTY LOG (第 142 条). This hook exists so a scripted run has a transcript to look
-        //! at without a model. Now that conversations survive a restart, seeding unconditionally would append
-        //! "what is in this score?" to the conversation the user was in the middle of - once per launch, as a
-        //! fake user message the model would then answer. ⚠️ `reset-gui-state.ps1` clears the conversation
-        //! directory, so a scripted run still starts empty and still gets the seed.
+    } else if (m_session.isEmpty() && qEnvironmentVariableIsSet("MUSE_AGENT_DEMO_SEED")) {
+        //! ── The demo seed is OPT-IN now (第 149 条) ─────────────────────────────────────────────
+        //! It used to run whenever the log was empty. 第 142 条 had already narrowed it that far (so it
+        //! could not append a fake message to a conversation the user was in the middle of), and what
+        //! that left was the case that matters most: **a brand-new conversation showed
+        //! "what is in this score?" - a sentence the user never typed.**
+        //! Two things were wrong with that, and the first one is the reason this changed:
+        //!   ① a transcript that contains something the user did not say is the one lie this panel
+        //!      must not tell - the whole point of deriving it from the log is that it cannot;
+        //!   ② it made the empty state UNREACHABLE: the condition for showing one ("nothing has been
+        //!      said yet") could never be true, so the page had a 1300x900 hole where "what can this
+        //!      thing do" should be.
+        //! ⚠️ A scripted run that wants a transcript without a model sets this variable. `MUSE_AGENT_DEMO_TOOL`
+        //! also produces transcript content (it goes through `runTool`, the same path the panel uses).
         seedSystemPrompt();
         appendUserMessage(QStringLiteral("what is in this score?"));
         LOGW() << "[agent-session] projection:\n" << sessionPreview();
+    } else if (m_session.isEmpty()) {
+        LOGW() << "[agent-session] empty conversation - no demo seed (set MUSE_AGENT_DEMO_SEED=1 for one);"
+               << "the agent page shows its empty state";
     } else {
         LOGW() << "[agent-session] a restored conversation is open (events=" << m_session.size()
                << "); the demo seed is for an empty log and is skipped";

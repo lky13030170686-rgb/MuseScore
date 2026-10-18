@@ -91,6 +91,17 @@ FocusScope {
         input.text = ""
     }
 
+    //! The other direction, and `clear()`'s counterpart: fill the field from OUTSIDE, without sending.
+    //! The empty state's example questions use it (第 149 条) - a click puts a sentence in the box so
+    //! the user can edit it, rather than spending a turn on their behalf. ⚠️ It goes through the same
+    //! single copy of the text (`input.text`), so the "the box paints your typing while the property
+    //! stays empty" failure (第 126 条) still has nowhere to happen here.
+    function setText(value) {
+        input.text = value
+        input.cursorPosition = input.length
+        root.ensureActiveFocus()
+    }
+
     function selectAll() {
         input.selectAll()
     }

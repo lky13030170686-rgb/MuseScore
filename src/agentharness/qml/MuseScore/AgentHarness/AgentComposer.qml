@@ -206,6 +206,13 @@ Item {
         }
     }
 
+    //! Put a sentence in the box WITHOUT sending it. The empty state's example questions call this
+    //! (第 149 条): clicking one should hand the user something to edit, not spend a turn on their
+    //! behalf - the decision to send stays where it has always been, in `submit()`.
+    function prefill(text) {
+        promptField.setText(text)
+    }
+
     //! One place that decides "can this be sent", so the button's enabled state and the Enter key
     //! cannot disagree about it.
     function submit() {

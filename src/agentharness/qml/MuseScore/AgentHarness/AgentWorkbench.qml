@@ -114,6 +114,33 @@ Item {
 
     readonly property bool running: root.field ? root.field.agentRunning : false
 
+    //! ── The empty state (第 149 条) ──────────────────────────────────────────────────────────────
+    //! True until something has actually been said. ⚠️ `!running` is part of the condition on purpose:
+    //! while a turn is in flight the LIVE STREAM is the thing to look at, and it lives inside the
+    //! conversation view - an empty state drawn over it would hide the answer as it arrives.
+    //! ⛔ This condition could not be true before 第 149 条: the controller seeded a fake user message
+    //! into every empty conversation at startup, so "nothing has been said yet" never happened.
+    readonly property bool transcriptEmpty: root.field
+                                            ? (root.field.agentTranscript.length === 0 && !root.running)
+                                            : false
+
+    //! The example questions. ⛔ THEY ARE OUR ADDITION, not something copied from DSH: its hero is a
+    //! mark, a headline and a workspace chip with NO suggestions at all (界面规格.md §3.6 - measured,
+    //! after I had written the opposite into the first draft of that spec).
+    //! Why we have them anyway: DSH's user knows they are talking to a general assistant. Ours is
+    //! looking at a score and has no idea that this thing can read it, change it, or what "it" can
+    //! even reach. The tool table answers that question, and this is the only place a user meets the
+    //! answer without opening a folded section.
+    //! ⛔ ALL THREE MUST BE THINGS THE AGENT CAN ACTUALLY DO (that is 第 137 条's probe list): the three
+    //! sentences below land on `score_overview`, `measure_input_notes` and `field_timeline`, all of
+    //! which are verified paths. A suggestion the agent cannot follow is worse than no suggestion: it
+    //! teaches the user something false about the tool AND costs them a turn to find out.
+    readonly property var examplePrompts: [
+        qsTrc("agentharness", "What is in this score?"),
+        qsTrc("agentharness", "Write four quarter notes into measure 2"),
+        qsTrc("agentharness", "What has changed in this score so far?")
+    ]
+
     //! The width each boundary had when the drag started. The handle reports the distance from the press,
     //! so the new width is `start + delta` - never `current + delta`, which would re-apply the whole drag
     //! on every move event and run the column away from the pointer.
@@ -341,6 +368,82 @@ Item {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
 
+                            //! ── Nothing said yet (第 149 条) ──────────────────────────────────────────
+                            //! The SHAPE is DSH's hero (界面规格.md §3.6): a centred stack whose width is
+                            //! the COMPOSER CARD's width (`contentWidth + 32`), so the two read as one
+                            //! column - and the composer below stays exactly where it is, because the hero
+                            //! is what the blank space above it says, not a replacement for it.
+                            ColumnLayout {
+                                id: emptyState
+
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.min(root.contentWidth + 32, parent.width - 48)
+                                spacing: 12
+                                visible: root.transcriptEmpty
+
+                                //! DSH's headline metrics: 26px / 32px / weight 500, in the primary ink
+                                //! (`ui-conversation/.../HeroShell.module.css:29-45`). Ours says what this
+                                //! page is FOR - the blank column used to say "what is in this score?",
+                                //! which was a sentence nobody had typed.
+                                StyledTextLabel {
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    wrapMode: Text.WordWrap
+                                    color: ui.theme.fontPrimaryColor
+                                    font.pixelSize: 26
+                                    text: qsTrc("agentharness", "Talk to your score")
+                                }
+
+                                StyledTextLabel {
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    wrapMode: Text.WordWrap
+                                    color: ui.theme.fontSecondaryColor
+                                    text: qsTrc("agentharness", "It can read this score and change it. Every edit it makes is one undo step.")
+                                }
+
+                                //! ⛔ A `Column` + `Repeater`, NOT a `Repeater` directly inside this
+                                //! `ColumnLayout`: inside a Layout a `Repeater` IS itself the layout child,
+                                //! so its delegates get no layout-managed geometry and `Layout.fillWidth`
+                                //! silently does nothing (the same trap `AgentFactsPanel` records for its
+                                //! tool list - every row would land at x = 0 with its implicit width).
+                                Column {
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: 4
+                                    spacing: 4
+
+                                    Repeater {
+                                        model: root.examplePrompts
+
+                                        FlatButton {
+                                            required property var modelData
+
+                                            width: parent.width
+                                            height: 32
+                                            margins: 12
+                                            backgroundRadius: 16
+                                            transparent: true
+                                            //! `accessible.name` is NOT derived from `text` (第 129 条): with
+                                            //! three buttons whose labels are whole sentences, a screen
+                                            //! reader should be told these are EXAMPLES, and this is also
+                                            //! how a verification script clicks one.
+                                            //! ⚠️ NO COLON IN THE NAME: `gui-composer-check.ps1` parses its
+                                            //! `uia:<type>:<name>` steps by the FIRST colon, so a colon here
+                                            //! would split the control type off at the wrong place and the
+                                            //! step would fail with "not found" - which reads as a missing
+                                            //! control, not as a malformed step.
+                                            accessible.name: qsTrc("agentharness", "Example question - %1").arg(modelData)
+                                            text: modelData
+
+                                            onClicked: {
+                                                composer.prefill(modelData)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             AgentConversationView {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 width: Math.min(root.contentWidth, parent.width)
@@ -349,6 +452,10 @@ Item {
                                 //! The web client's shapes: a user message is a bubble on the right, an
                                 //! answer is plain text, a tool call is one compact dim line.
                                 webStyle: true
+                                //! Hidden while nothing has been said. ⛔ Safe because `transcriptEmpty`
+                                //! also checks `!running`: the stream and the error row live in here, so
+                                //! hiding this view can never hide a turn in flight.
+                                visible: !root.transcriptEmpty
                             }
                         }
 
@@ -380,6 +487,8 @@ Item {
                                     spacing: 4
 
                                     AgentComposer {
+                                        id: composer
+
                                         Layout.fillWidth: true
                                         field: root.field
                                         //! A page-wide card: actions on the right at their natural size.
