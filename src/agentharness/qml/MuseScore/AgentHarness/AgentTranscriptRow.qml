@@ -330,7 +330,14 @@ Item {
             StyledTextLabel {
                 Layout.alignment: Qt.AlignVCenter
                 Layout.topMargin: 8
-                visible: copiedTimer.running
+                //! ⛔ `opacity` AND NOT `visible` (第 161 条, measured). With `visible: copiedTimer.running`
+                //! the probe showed the label going `visible=true` for the full 2.3s window and **nothing
+                //! was drawn**: a `visible` flip makes the `RowLayout` re-distribute (the item is out of
+                //! the layout while hidden, so showing it moves everything beside it), and the frame the
+                //! screenshot caught had the label in the layout with no geometry. Fading keeps the row's
+                //! geometry still and is the smaller claim: the label is always there, only its ink changes.
+                //! ⚠️ Empty text while hidden would still occupy width, so the text stays.
+                opacity: copiedTimer.running ? 1 : 0
                 color: ui.theme.fontSecondaryColor
                 font.pixelSize: ui.theme.bodyFont.pixelSize - 1
                 text: qsTrc("agentharness", "Copied")

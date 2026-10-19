@@ -2114,6 +2114,11 @@ void FieldController::copyToClipboard(const QString& text)
     //! ⚠️ What is copied is the model's OWN text, not the rich form the surfaces draw. The drawn form is
     //! HTML (`<p>`, `<b>`, `<pre>`) and pasting that into a document gives the user markup to clean up;
     //! what they asked for is what the agent said (第 160 条).
+    //! ⛔ AND IT IS A WINDOWS CLIPBOARD FACT WORTH KNOWING (第 161 条): Qt's `setText` goes through OLE,
+    //! which hands the text over LAZILY - so while this process lives the clipboard has the text, and the
+    //! moment it is killed the text is gone (measured: `len=25` alive, `len=0` after `Stop-Process`).
+    //! ⚠️ That is a property of the platform, not a bug here - but it silently invalidated four
+    //! verification runs, because the check script kills the app before reading the clipboard.
     QGuiApplication::clipboard()->setText(text);
 }
 
