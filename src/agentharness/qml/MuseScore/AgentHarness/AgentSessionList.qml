@@ -187,15 +187,29 @@ Item {
                     root.searchOpen = true
                     searchField.ensureActiveFocus()
                 }
+
+                //! ⛔ A NOTE FOR WHOEVER VERIFIES THIS (第 164 条): the control that CLOSES the search sits
+                //! exactly where this button was, and appears in the same frame that this one hides. A
+                //! helper that clicks a control twice (`ui-probe` does - "clicked … 2 time(s)") therefore
+                //! opens the search and immediately closes it, and the reading is "clicking does nothing".
+                //! Use a single `click:x,y` step, not `uia:`.
             }
 
             //! ⛔ The field is wrapped in an `Item`, and that is the trap 第 130 条 measured: a
             //! `TextInputField`'s `implicitWidth` is `parent.width`, so putting one straight into a
             //! `RowLayout` makes the layout recurse ("Detected recursive rearrange") and give up.
             Item {
+                id: searchSlot
+
                 Layout.fillWidth: true
                 Layout.preferredHeight: 30
                 visible: root.searchOpen
+                //! ⛔ `visible` and not `opacity` HERE, unlike the "Copied" label (第 162 条): this item
+                //! must take NO room while the search is closed, and a faded item still claims its 30px.
+                //! ⚠️ Measured consequence (第 164 条): the frame it becomes visible it still has `w=0 h=0`
+                //! - the layout has not run yet - so it appears one frame late. Harmless, and it is why a
+                //! probe that prints geometry the instant `visible` flips will report a zero-size field
+                //! that is in fact about to be 110x30.
 
                 TextInputField {
                     id: searchField
