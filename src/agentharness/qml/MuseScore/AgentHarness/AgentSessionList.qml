@@ -74,9 +74,44 @@ Item {
     //! refuses too (`newAgentSession` / `switchAgentSession`), and that refusal is the backstop, not the
     //! plan - a control that is disabled says why before anything is clicked.
     readonly property bool busy: root.field ? root.field.agentRunning : false
+
+    //! ── The search box (第 163 条) ───────────────────────────────────────────────────────────────
+    //! DSH's sidebar search: a 28px round button at rest that expands into a 30px field with a 10px corner
+    //! (`ui-workspace/src/client/rows/WorkspaceBrowser.module.css:131-163`), the input at 13px over a
+    //! tertiary placeholder (`:195-218`).
+    property bool searchOpen: false
+    property string filter: ""
+
+    //! What the list draws: the filter applied first, then the row cap.
+    //! ⚠️ It matches the NAME (the un-elided one) and case-insensitively - the title is what a user types.
+    //! The event count is deliberately not searchable: "17" would match every conversation that happens to
+    //! hold 17 events, which is not something anyone searches for.
+    //! ⛔ Each row keeps a HANDLE to its own identity (`id`) and to its position in the unfiltered list
+    //! (`index`, added in `agentSessions()`), because a delegate's `index` is an index into what is SHOWN -
+    //! with a filter on, that number means a different conversation, and the failure is silent.
+    readonly property var filteredSessions: {
+        const q = root.filter.trim().toLowerCase()
+        if (q.length === 0) {
+            return root.sessions
+        }
+
+        const out = []
+        for (let i = 0; i < root.sessions.length; ++i) {
+            const s = root.sessions[i]
+            if (String(s.name).toLowerCase().indexOf(q) >= 0) {
+                out.push(s)
+            }
+        }
+        return out
+    }
+
+    //! Nothing matched, and the user is looking at a filter - a distinct state from "there are no
+    //! conversations", and the two must not say the same sentence.
+    readonly property bool filteredEmpty: root.filter.trim().length > 0 && root.filteredSessions.length === 0
+
     readonly property int shownCount: root.visibleRows > 0
-                                      ? Math.min(root.visibleRows, root.sessions.length)
-                                      : root.sessions.length
+                                      ? Math.min(root.visibleRows, root.filteredSessions.length)
+                                      : root.filteredSessions.length
 
     //! ── Renaming and deleting (第 144 条) ─────────────────────────────────────────────────────────
     //! Which row is being renamed / confirmed (-1 = neither), and what is in the rename box.
@@ -122,8 +157,91 @@ Item {
         anchors.fill: parent
         spacing: 2
 
+        //! ── The search control (第 163 条) ────────────────────────────────────────────────────────
+        //! DSH keeps it at the right end of the group header: a 28px round button while idle, a 30px field
+        //! once opened. ⚠️ The button only appears when there is more than one conversation to search -
+        //! a search box over a single row is furniture (第 135/141 条's test, applied again).
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 28
+            spacing: 4
+            visible: root.sessions.length > 1
+
+            Item {
+                Layout.fillWidth: true
+            }
+
+            FlatButton {
+                id: searchToggle
+
+                Layout.preferredWidth: 28
+                Layout.preferredHeight: 28
+                backgroundRadius: 14
+                transparent: true
+                icon: IconCode.SEARCH
+                visible: !root.searchOpen
+                accessible.name: qsTrc("agentharness", "Search the conversations")
+                toolTipTitle: qsTrc("agentharness", "Search the conversations")
+
+                onClicked: {
+                    root.searchOpen = true
+                    searchField.ensureActiveFocus()
+                }
+            }
+
+            //! ⛔ The field is wrapped in an `Item`, and that is the trap 第 130 条 measured: a
+            //! `TextInputField`'s `implicitWidth` is `parent.width`, so putting one straight into a
+            //! `RowLayout` makes the layout recurse ("Detected recursive rearrange") and give up.
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 30
+                visible: root.searchOpen
+
+                TextInputField {
+                    id: searchField
+
+                    anchors.fill: parent
+                    accessible.name: qsTrc("agentharness", "Filter the conversations")
+
+                    onTextChanged: function(text) {
+                        root.filter = text
+                    }
+                }
+            }
+
+            FlatButton {
+                Layout.preferredWidth: 28
+                Layout.preferredHeight: 28
+                backgroundRadius: 14
+                transparent: true
+                icon: IconCode.CLOSE_X_ROUNDED
+                visible: root.searchOpen
+                accessible.name: qsTrc("agentharness", "Close the search")
+                toolTipTitle: qsTrc("agentharness", "Close the search")
+
+                onClicked: {
+                    root.searchOpen = false
+                    root.filter = ""
+                    searchField.clear()
+                }
+            }
+        }
+
+        //! What the filter matched nothing on. ⛔ A DIFFERENT SENTENCE FROM "there are no conversations":
+        //! one is a state the user made, the other is a fact about the process, and saying the wrong one
+        //! sends them looking for the wrong fix.
+        StyledTextLabel {
+            Layout.fillWidth: true
+            visible: root.filteredEmpty
+            horizontalAlignment: Text.AlignLeft
+            wrapMode: Text.WordWrap
+            color: ui.theme.fontSecondaryColor
+            font.pixelSize: ui.theme.bodyFont.pixelSize - 1
+            text: qsTrc("agentharness", "No conversation matches “%1”.").arg(root.filter)
+        }
+
         Repeater {
-            model: root.sessions.slice(0, root.shownCount)
+            model: root.filteredSessions.slice(0, root.shownCount)
 
             RowLayout {
                 Layout.fillWidth: true
@@ -197,7 +315,11 @@ Item {
                                       : qsTrc("agentharness", "Switch to this session")
 
                         onClicked: {
-                            root.field.switchAgentSession(index)
+                            //! ⛔ `modelData.index`, NOT the delegate's `index` (第 163 条): with a filter on,
+                            //! the delegate's index counts what is SHOWN, so clicking the first match of a
+                            //! search would switch to the first conversation - silently, because the row
+                            //! does change to something.
+                            root.field.switchAgentSession(modelData.index)
                         }
                     }
                 }
@@ -228,7 +350,7 @@ Item {
                     accessible.name: qsTrc("agentharness", "Rename session: %1").arg(modelData.title)
                     toolTipTitle: qsTrc("agentharness", "Rename this session")
                     onClicked: {
-                        root.beginRename(index, modelData.name)
+                        root.beginRename(modelData.index, modelData.name)
                     }
                 }
 
@@ -246,7 +368,10 @@ Item {
                     accessible.name: qsTrc("agentharness", "Delete session: %1").arg(modelData.title)
                     toolTipTitle: qsTrc("agentharness", "Delete this session")
                     onClicked: {
-                        root.confirmingIndex = index
+                        //! Same reason as the row above (第 163 条): this index is handed to
+                        //! `deleteAgentSession()` later, and under a filter the delegate's index points at
+                        //! a different conversation - which would delete the wrong one.
+                        root.confirmingIndex = modelData.index
                         root.renamingIndex = -1
                     }
                 }

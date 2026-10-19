@@ -1234,6 +1234,12 @@ QVariantList FieldController::agentSessions() const
 
         QVariantMap row;
         row.insert(QStringLiteral("id"), entry.id);
+        //! The row's position in the UNFILTERED list (第 163 条). ⛔ The list can now be filtered, and a
+        //! delegate's own `index` is an index into what is SHOWN - one search keystroke would make it a
+        //! different number from the one `switchAgentSession()` expects, and the failure mode is silent:
+        //! clicking a row switches to some other conversation. The number that identifies the row travels
+        //! WITH the row.
+        row.insert(QStringLiteral("index"), i);
         //! ⛔ THE LIVE ROW IS DERIVED, NEVER THE COPY TAKEN WHEN IT WAS ARCHIVED. It grows with every
         //! event, so a stored row for it would be a second truth about a conversation that is still
         //! happening - the thing `sessionlog.h` refuses one level down.
