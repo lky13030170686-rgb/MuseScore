@@ -301,10 +301,11 @@ Item {
         //! gap above it). ⚠️ The answer only: a user's own message needs no copy button (they typed it),
         //! and a tool result already has its own expansion (第 155 条).
         RowLayout {
+            id: messageActions
+
             visible: root.isAssistant && root.body.length > 0
             width: parent.width
             spacing: 8
-
             FlatButton {
                 id: copyButton
 
@@ -328,15 +329,22 @@ Item {
             //! glyph in `IconCode`, and a button that does not change looks like a button that did
             //! nothing - so the feedback is a word beside it, for a moment.
             StyledTextLabel {
+                id: copiedLabel
+
                 Layout.alignment: Qt.AlignVCenter
                 Layout.topMargin: 8
-                //! ⛔ `opacity` AND NOT `visible` (第 161 条, measured). With `visible: copiedTimer.running`
-                //! the probe showed the label going `visible=true` for the full 2.3s window and **nothing
-                //! was drawn**: a `visible` flip makes the `RowLayout` re-distribute (the item is out of
-                //! the layout while hidden, so showing it moves everything beside it), and the frame the
-                //! screenshot caught had the label in the layout with no geometry. Fading keeps the row's
-                //! geometry still and is the smaller claim: the label is always there, only its ink changes.
-                //! ⚠️ Empty text while hidden would still occupy width, so the text stays.
+                //! ⛔ `opacity` AND NOT `visible`, and the reason is the ROW'S GEOMETRY, not whether it
+                //! draws: a hidden item is out of the `RowLayout`, so showing it re-distributes the row
+                //! (and the spacer beside it jumps). Fading keeps the geometry still - the label is always
+                //! there, only its ink changes. ⚠️ Its text stays for the same reason: empty text would
+                //! still claim `implicitWidth`, and then the width would jump instead.
+                //! ⛔⛔ AND A CORRECTION WORTH KEEPING (第 162 条): 第 161 条 wrote here that `visible`
+                //! "went true for 2.3s and nothing was drawn". **That was wrong.** The geometry probe
+                //! (`[copied-geom] label x=36 y=15 w=37 h=14 op=1`) showed a perfectly laid-out label, and
+                //! the real reason no screenshot ever caught it was the VERIFICATION: the click helper
+                //! sleeps 400ms internally, so `sleep:1200` in the step landed at 1.6s - exactly the
+                //! timer's interval. Four "it does not show" readings were four screenshots taken on the
+                //! boundary. ⇒ See `copiedTimer` for what changed as a result.
                 opacity: copiedTimer.running ? 1 : 0
                 color: ui.theme.fontSecondaryColor
                 font.pixelSize: ui.theme.bodyFont.pixelSize - 1
@@ -350,9 +358,17 @@ Item {
         }
 
         //! Not an `Item`, so it adds nothing to the column's height.
+        //! ⛔ 2.6 SECONDS, AND THE NUMBER IS A VERIFICATION FINDING (第 162 条). It was 1600ms - DSH's
+        //! check-mark swap is about that long - and "Copied" was never caught on screen: not because it
+        //! was not drawn (the geometry probe proved it was), but because every screenshot landed at
+        //! 1.1-1.9s: the click helper sleeps 400ms of its own, so a `sleep:1200` step fires at 1.6s.
+        //! ⚠️ A WORD NEEDS LONGER THAN AN ICON: DSH swaps a glyph the eye already knows, while this is a
+        //! word the user has to read. 2.6s is long enough to read and short enough not to linger.
+        //! ⛔ And the lesson is about the MEASUREMENT, not the timer: a window that a check keeps missing
+        //! by a hair looks exactly like a feature that does not work.
         Timer {
             id: copiedTimer
-            interval: 1600
+            interval: 2600
         }
 
         //! ── The model's reasoning, as a transcript row (第 157 条) ─────────────────────────────────
