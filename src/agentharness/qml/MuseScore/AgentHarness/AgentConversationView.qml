@@ -374,7 +374,16 @@ Item {
                 height: 34
                 backgroundRadius: 17
                 icon: IconCode.SMALL_ARROW_DOWN
+                //! ⛔ THREE CONDITIONS, AND THE THIRD IS 第 165 条's FINDING. `!atYEnd` says it is useful
+                //! and `contentHeight > height` says it can do something - but this component draws BOTH
+                //! the page (835px of transcript) and the dock PANEL (~280px), and in the panel the button
+                //! is 34px of opaque fill sitting on the middle of the answer: measured on a real panel
+                //! screenshot, it landed across the words "The score has two measures".
+                //! ⇒ Below a width where a 34px circle can sit over the text without covering it, the
+                //! control is not shown at all. ⚠️ A percentage would not do: the thing that matters is
+                //! whether there is room BESIDE the line, which is a width, not a ratio.
                 visible: !transcriptView.atYEnd && transcriptView.contentHeight > transcriptView.height
+                         && transcriptView.width > 360
                 accessible.name: qsTrc("agentharness", "Scroll to the newest message")
                 toolTipTitle: qsTrc("agentharness", "Back to the bottom")
 
