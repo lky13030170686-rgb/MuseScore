@@ -24,6 +24,7 @@ import QtQuick.Layouts
 
 import Muse.Ui
 import Muse.UiComponents
+import MuseScore.AgentHarness
 
 /*!
     The Agent page's workspace: three columns, laid out like the DSH web client.
@@ -270,7 +271,7 @@ Item {
                         visible: root.running || connectionIndicator.hasProblem
                         Layout.preferredWidth: 28
                         Layout.preferredHeight: 28
-                        backgroundRadius: 28
+                        backgroundRadius: AgentMetrics.radiusPanel
                         transparent: true
                         icon: connectionIndicator.hasProblem ? IconCode.INFO : IconCode.CLOCK
                         //! ⚠️ `ui.theme` has no error colour (themeapi.h)，so a problem is shown with
@@ -442,7 +443,7 @@ Item {
                                             width: parent.width
                                             height: 32
                                             margins: 12
-                                            backgroundRadius: 16
+                                            backgroundRadius: AgentMetrics.radiusLg
                                             transparent: true
                                             //! `accessible.name` is NOT derived from `text` (第 129 条): with
                                             //! three buttons whose labels are whole sentences, a screen
@@ -494,7 +495,7 @@ Item {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 width: Math.min(root.contentWidth + 32, parent.width)
                                 height: composerColumn.implicitHeight + 20
-                                radius: 12
+                                radius: AgentMetrics.radiusMd
                                 color: ui.theme.backgroundSecondaryColor
                                 border.color: ui.theme.strokeColor
                                 border.width: ui.theme.borderWidth

@@ -30,6 +30,7 @@ import QtQuick.Layouts
 
 import Muse.Ui
 import Muse.UiComponents
+import MuseScore.AgentHarness
 
 /*!
     One row of the agent conversation.
@@ -313,7 +314,7 @@ Item {
                 Layout.preferredHeight: 28
                 Layout.topMargin: 8
                 //! Half the width, so the shape is a circle whatever the theme's metrics are.
-                backgroundRadius: 14
+                backgroundRadius: AgentMetrics.pill(28)
                 transparent: true
                 icon: IconCode.COPY
                 accessible.name: qsTrc("agentharness", "Copy this answer")
@@ -550,7 +551,7 @@ Item {
                 width: parent.width
                 //! 24 = 12 of padding a side (`ToolRow.module.css:224-232` uses `padding: 12px 16px`).
                 height: Math.min(150, resultText.implicitHeight + 24)
-                radius: 12
+                radius: AgentMetrics.radiusMd
                 //! `backgroundSecondaryColor` and not `backgroundTertiaryColor`: in this theme the
                 //! tertiary is BLACK (第 148 条 measured it), so the card would read as a hole cut in
                 //! the transcript. DSH's code surface is one step ABOVE the page, not below it.

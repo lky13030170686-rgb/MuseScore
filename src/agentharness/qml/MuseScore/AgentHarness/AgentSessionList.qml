@@ -29,6 +29,7 @@ import QtQuick.Layouts
 
 import Muse.Ui
 import Muse.UiComponents
+import MuseScore.AgentHarness
 
 /*!
     The conversations of this process: one row each, and the button that starts another.
@@ -176,7 +177,7 @@ Item {
 
                 Layout.preferredWidth: 28
                 Layout.preferredHeight: 28
-                backgroundRadius: 14
+                backgroundRadius: AgentMetrics.pill(28)
                 transparent: true
                 icon: IconCode.SEARCH
                 visible: !root.searchOpen
@@ -226,7 +227,7 @@ Item {
             FlatButton {
                 Layout.preferredWidth: 28
                 Layout.preferredHeight: 28
-                backgroundRadius: 14
+                backgroundRadius: AgentMetrics.pill(28)
                 transparent: true
                 icon: IconCode.CLOSE_X_ROUNDED
                 visible: root.searchOpen
@@ -289,7 +290,7 @@ Item {
                     //! the fill says "where you just clicked", it is not a highlight.
                     Rectangle {
                         anchors.fill: parent
-                        radius: 8
+                        radius: AgentMetrics.radiusSm
                         color: ui.theme.fontPrimaryColor
                         opacity: (modelData.current || sessionRowButton.mouseArea.containsMouse) ? 0.08 : 0
                     }
@@ -357,7 +358,7 @@ Item {
                 FlatButton {
                     Layout.preferredWidth: 24
                     Layout.preferredHeight: 24
-                    backgroundRadius: 12
+                    backgroundRadius: AgentMetrics.radiusMd
                     transparent: true
                     icon: IconCode.EDIT
                     enabled: !root.busy
@@ -375,7 +376,7 @@ Item {
                 FlatButton {
                     Layout.preferredWidth: 24
                     Layout.preferredHeight: 24
-                    backgroundRadius: 12
+                    backgroundRadius: AgentMetrics.radiusMd
                     transparent: true
                     icon: IconCode.DELETE_TANK
                     enabled: !root.busy
@@ -408,7 +409,7 @@ Item {
             FlatButton {
                 Layout.preferredWidth: 72
                 Layout.preferredHeight: 24
-                backgroundRadius: 12
+                backgroundRadius: AgentMetrics.radiusMd
                 text: qsTrc("agentharness", "Delete")
                 accessible.name: qsTrc("agentharness", "Confirm deleting this session")
                 onClicked: {
@@ -421,7 +422,7 @@ Item {
             FlatButton {
                 Layout.preferredWidth: 72
                 Layout.preferredHeight: 24
-                backgroundRadius: 12
+                backgroundRadius: AgentMetrics.radiusMd
                 transparent: true
                 text: qsTrc("agentharness", "Cancel")
                 accessible.name: qsTrc("agentharness", "Cancel deleting")
@@ -445,7 +446,7 @@ Item {
             //! inline-`Component` context problem with it).
             Layout.preferredHeight: 38
             margins: 16
-            backgroundRadius: 12
+            backgroundRadius: AgentMetrics.radiusMd
             //! Not transparent any more: DSH fills it with `button-elevated-fill`, which is exactly
             //! `FlatButton`'s default fill (`ui.theme.buttonColor`). The hairline border comes from
             //! the default background item, which is why no border is set here.
@@ -490,7 +491,7 @@ Item {
         background: Rectangle {
             color: ui.theme.backgroundPrimaryColor
             border.color: ui.theme.strokeColor
-            radius: 8
+            radius: AgentMetrics.radiusSm
         }
 
         contentItem: ColumnLayout {
@@ -528,7 +529,7 @@ Item {
                 FlatButton {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 24
-                    backgroundRadius: 12
+                    backgroundRadius: AgentMetrics.radiusMd
                     text: qsTrc("agentharness", "Save name")
                     accessible.name: qsTrc("agentharness", "Save the new session name")
                     onClicked: {
@@ -539,7 +540,7 @@ Item {
                 FlatButton {
                     Layout.preferredWidth: 72
                     Layout.preferredHeight: 24
-                    backgroundRadius: 12
+                    backgroundRadius: AgentMetrics.radiusMd
                     transparent: true
                     text: qsTrc("agentharness", "Cancel")
                     accessible.name: qsTrc("agentharness", "Cancel renaming")

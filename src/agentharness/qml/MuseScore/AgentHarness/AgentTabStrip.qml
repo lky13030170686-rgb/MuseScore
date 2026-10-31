@@ -24,13 +24,14 @@ import QtQuick.Layouts
 
 import Muse.Ui
 import Muse.UiComponents
+import MuseScore.AgentHarness
 
 /*!
     A column's tab strip: which of that column's views is on screen.
 
     \b Where the shape comes from. The DSH web client's right column is a dock surface whose top edge is
     a tab strip (`packages/client/ui-dockkit/src/components/dockkit.module.css`): a 28px row with 4px
-    between chips, 10px of inset at the start, and each chip a 28px capsule (`border-radius: 12`) whose
+    between chips, 10px of inset at the start, and each chip a 28px capsule (`border-radius: AgentMetrics.radiusMd`) whose
     label is 13px in the secondary ink - bare when idle, filled when active, hover filled in between.
     Those numbers are copied rather than invented, because "looks like the web client" is mostly a
     statement about proportions (第 124 条).
@@ -90,7 +91,7 @@ Item {
 
                 //! DSH fills the active chip and leaves the rest bare; hover is `FlatButton`'s own state,
                 //! so it works on both without this file painting anything.
-                backgroundRadius: 12
+                backgroundRadius: AgentMetrics.radiusMd
                 transparent: root.activeId !== modelData.id
                 //! ⚠️ The label is the ONLY name this control has, so it is set explicitly: `accessible`
                 //! is what the automation tree reports, and it is not derived from `text` (第 129 条).

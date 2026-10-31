@@ -144,7 +144,7 @@ Item {
                 Layout.preferredWidth: 28
                 Layout.preferredHeight: 28
                 Layout.alignment: Qt.AlignVCenter
-                backgroundRadius: 28
+                backgroundRadius: AgentMetrics.radiusPanel
                 transparent: true
                 icon: IconCode.SETTINGS_COG
                 accessible.name: qsTrc("agentharness", "Agent settings")

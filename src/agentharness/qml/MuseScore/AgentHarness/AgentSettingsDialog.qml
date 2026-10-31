@@ -25,6 +25,7 @@ import QtQuick.Layouts
 
 import Muse.Ui
 import Muse.UiComponents
+import MuseScore.AgentHarness
 
 /*!
     The agent's settings surface, shaped like the DSH web client's.
@@ -213,7 +214,7 @@ Popup {
             //! takes what is left after the margin - and cannot exceed it by construction.
             width: Math.max(0, overlay.width - 2 * root.panelMargin)
             height: Math.max(0, overlay.height - 2 * root.panelMargin)
-            radius: 16
+            radius: AgentMetrics.radiusLg
             color: ui.theme.backgroundSecondaryColor
             border.color: ui.theme.strokeColor
             border.width: Math.max(ui.theme.borderWidth, 1)
@@ -270,7 +271,7 @@ Popup {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: root.navCellHeight
 
-                                backgroundRadius: 12
+                                backgroundRadius: AgentMetrics.radiusMd
                                 //! DSH fills the active cell and leaves the rest transparent; hover is
                                 //! `FlatButton`'s own state, so it works on both.
                                 transparent: root.activeSection !== modelData.id
@@ -364,7 +365,7 @@ Popup {
                                 Layout.preferredWidth: 28
                                 Layout.preferredHeight: 28
 
-                                backgroundRadius: 28
+                                backgroundRadius: AgentMetrics.radiusPanel
                                 transparent: true
                                 icon: IconCode.CLOSE_X_ROUNDED
                                 accessible.name: qsTrc("agentharness", "Close settings")

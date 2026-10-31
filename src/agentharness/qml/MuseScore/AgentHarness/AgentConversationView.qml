@@ -24,6 +24,7 @@ import QtQuick.Layouts
 
 import Muse.Ui
 import Muse.UiComponents
+import MuseScore.AgentHarness
 
 /*!
     The agent conversation: the transcript, the live stream, and the last error.
@@ -372,7 +373,7 @@ Item {
                 anchors.bottomMargin: 12
                 width: 34
                 height: 34
-                backgroundRadius: 17
+                backgroundRadius: AgentMetrics.pill(34)
                 icon: IconCode.SMALL_ARROW_DOWN
                 //! ⛔ THREE CONDITIONS, AND THE THIRD IS 第 165 条's FINDING. `!atYEnd` says it is useful
                 //! and `contentHeight > height` says it can do something - but this component draws BOTH
