@@ -35,6 +35,7 @@ import "./HomePage"
 import "./NotationPage"
 import "./MidiEditorPage"
 import "./AgentPage"
+import "./NotationReviewPage"
 import "./PublishPage"
 import "./DevTools"
 
@@ -137,6 +138,10 @@ DockWindow {
         AgentPage {
             topToolbarKeyNavSec: topToolbarKeyNavSec
             agentField: agentField
+        },
+
+        NotationReviewPage {
+            topToolbarKeyNavSec: topToolbarKeyNavSec
         },
 
         PublishPage {

@@ -58,6 +58,11 @@ bool NotationSelection::isNone() const
     return score()->selection().isNone();
 }
 
+bool NotationSelection::isSingle() const
+{
+    return score()->selection().isSingle();
+}
+
 bool NotationSelection::isRange() const
 {
     return score()->selection().isRange();
@@ -311,7 +316,7 @@ void NotationSelection::addToSelection(SelectionTarget target)
         addToSelection(MoveDirection::Down, MoveSelectionType::Track);
         break;
     default:
-        NOT_SUPPORTED << "SelectionTarget: " << str_conv(target);
+        NOT_SUPPORTED << "SelectionTarget: " << (int)target;
         break;
     }
 }

@@ -312,7 +312,6 @@ Note* NoteInput::addNote(Transaction&, Score* score, Chord* chord, const NoteVal
     InputState& is = externalInputState ? (*externalInputState) : score->inputState();
 
     Note* note = Factory::createNote(chord);
-    note->setOwnershipParent(chord);
     note->setTrack(chord->track());
     note->setNval(noteVal);
     score->undoAddElement(note);
@@ -323,7 +322,6 @@ Note* NoteInput::addNote(Transaction&, Score* score, Chord* chord, const NoteVal
         Accidental* a = Factory::createAccidental(note);
         a->setAccidentalType(at);
         a->setRole(AccidentalRole::USER);
-        a->setOwnershipParent(note);
         score->undoAddElement(a);
     }
 
@@ -428,12 +426,15 @@ Note* NoteInput::addPitch(Transaction& tx, Score* score, NoteVal& nval, bool add
     InputState& is = externalInputState ? (*externalInputState) : score->inputState();
 
     if (addFlag) {
-        ChordRest* c = toChordRest(is.lastSegment()->element(is.track()));
+        const Segment* lastSegment = is.lastSegment();
+        IF_ASSERT_FAILED(lastSegment) {
+            return nullptr;
+        }
+        ChordRest* c = toChordRest(lastSegment->element(is.track()));
         if (!c || !c->isChord()) {
             LOGD("NoteInput::addPitch: cr %s", c ? c->typeName() : "zero");
             return nullptr;
         }
-
         return addPitchToChord(tx, score, nval, toChord(c), externalInputState);
     }
 
@@ -494,8 +495,9 @@ Note* NoteInput::addPitch(Transaction& tx, Score* score, NoteVal& nval, bool add
         Segment* seg = score->setNoteRest(
             is.segment(), track, nval, duration, stemDirection, /* forceAccidental */ false, is.articulationIds(), /* rhythmic */ false,
             externalInputState);
-        if (seg) {
-            note = toChord(seg->element(track))->upNote();
+        EngravingItem* chordItem = seg ? seg->element(track) : nullptr;
+        if (chordItem && chordItem->isChord()) {
+            note = toChord(chordItem)->upNote();
         }
     }
 
@@ -607,7 +609,7 @@ Note* NoteInput::addTiedMidiPitch(Transaction& tx, Score* score, int pitch, bool
     if (prevChord) {
         Note* nn = prevChord->findNote(n->pitch());
         if (nn) {
-            Tie* tie = Factory::createTie(score->dummy());
+            Tie* tie = Factory::createTie(nn);
             tie->setStartNote(nn);
             tie->setEndNote(n);
             tie->setTick(tie->startNote()->tick());
@@ -629,7 +631,6 @@ std::pair<Note*, Note*> NoteInput::repitchReplaceNote(Transaction&, Score* score
                                                       bool forceAccidental)
 {
     Note* note = Factory::createNote(chord);
-    note->setOwnershipParent(chord);
     note->setTrack(chord->track());
     note->setNval(nval);
 
@@ -706,7 +707,6 @@ std::pair<Note*, Note*> NoteInput::repitchReplaceNote(Transaction&, Score* score
         Accidental* a = Factory::createAccidental(note);
         a->setAccidentalType(at);
         a->setRole(AccidentalRole::USER);
-        a->setOwnershipParent(note);
         score->undoAddElement(a);
     }
     score->setPlayNote(true);
@@ -1097,8 +1097,23 @@ Ret NoteInput::insertChordByInsertingTime(Transaction& tx, Score* score, const P
         Measure* m = lscore->tick2measure(tick);
         tx.push(new ChangeMeasureLen(m, targetMeasureLen));
         Segment* scoreSeg = m->tick2segment(tick);
+        // tuplets store their tick: move those from the insertion on with their segments
+        std::set<Tuplet*> tuplets;
         for (Segment* s = scoreSeg; s; s = s->next()) {
+            if (s->isChordRestType()) {
+                for (EngravingItem* e : s->elist()) {
+                    for (Tuplet* t = e ? toChordRest(e)->tuplet() : nullptr; t && t->tick() >= tick; t = t->tuplet()) {
+                        // shared tuplets follow their origin
+                        if (t->originItems().empty()) {
+                            tuplets.insert(t);
+                        }
+                    }
+                }
+            }
             s->undoChangeProperty(Pid::TICK, s->rtick() + len);
+        }
+        for (Tuplet* t : tuplets) {
+            t->undoChangeProperty(Pid::TICK, t->tick() + len);
         }
     }
 

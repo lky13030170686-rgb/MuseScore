@@ -36,7 +36,6 @@
 using namespace mu::playback;
 using namespace mu::engraving;
 using namespace muse;
-using namespace muse::actions;
 using namespace muse::ui;
 using namespace muse::uicomponents;
 using namespace muse::audio;
@@ -83,11 +82,11 @@ void PlaybackToolBarModel::setupConnections()
         emit isPlayAllowedChanged();
     });
 
-    globalContext()->playbackState()->playbackStatusChanged().onReceive(this, [this](audio::PlaybackStatus) {
+    playbackController()->isPlayingChanged().onReceive(this, [this](bool) {
         updatePlayItem();
     });
 
-    globalContext()->playbackState()->playbackPositionChanged().onReceive(this, [this](secs_t secs) {
+    playbackController()->playbackPositionChanged().onReceive(this, [this](secs_t secs) {
         updatePlayPosition(secs);
     });
 
@@ -100,7 +99,7 @@ void PlaybackToolBarModel::setupConnections()
 
     playbackController()->totalPlayTimeChanged().onNotify(this, [this]() {
         emit maxPlayTimeChanged();
-        secs_t pos = globalContext()->playbackState()->playbackPosition();
+        secs_t pos = playbackController()->playbackPosition();
         updatePlayPosition(pos);
     });
 
@@ -287,7 +286,7 @@ MeasureBeat PlaybackToolBarModel::measureBeat() const
 
 muse::uicomponents::MenuItem* PlaybackToolBarModel::makePlayItem()
 {
-    rcommand::Command command = globalContext()->playbackState()->isPlaying() ? PAUSE_COMMAND : PLAY_COMMAND;
+    rcommand::Command command = playbackController()->isPlaying() ? PAUSE_COMMAND : PLAY_COMMAND;
     MenuItem* item = makeMenuItem(command);
     item->setId(PLAY_TOGGLE_ID);
     return item;
@@ -297,7 +296,7 @@ void PlaybackToolBarModel::updatePlayItem()
 {
     MenuItem& item = findItem(PLAY_TOGGLE_ID);
     if (item.isValid()) {
-        rcommand::Command command = globalContext()->playbackState()->isPlaying() ? PAUSE_COMMAND : PLAY_COMMAND;
+        rcommand::Command command = playbackController()->isPlaying() ? PAUSE_COMMAND : PLAY_COMMAND;
         item.setCommandInfo(commandsRegister()->commandInfo(command));
         item.setId(PLAY_TOGGLE_ID);
     }
@@ -319,7 +318,7 @@ void PlaybackToolBarModel::rewind(secs_t secs)
         return;
     }
 
-    dispatch(rcommand::make_query(REWIND_COMMAND, { { "position", Val(secs) } }));
+    dispatchCommand(REWIND_COMMAND, { { "position", Val(secs) } });
 }
 
 void PlaybackToolBarModel::rewindToBeat(const MeasureBeat& beat)

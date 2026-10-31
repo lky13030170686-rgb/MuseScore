@@ -120,13 +120,13 @@
         <sizeIsSpatiumDependent>1</sizeIsSpatiumDependent>
         <eid>H_H</eid>
         <Text>
-          <eid>I_I</eid>
           <style>title</style>
+          <eid>I_I</eid>
           <text>Test</text>
           </Text>
         <Text>
-          <eid>J_J</eid>
           <style>subtitle</style>
+          <eid>J_J</eid>
           <text>measure</text>
           </Text>
         </VBox>
@@ -434,18 +434,18 @@
           <sizeIsSpatiumDependent>1</sizeIsSpatiumDependent>
           <eid>y_y</eid>
           <Text>
-            <eid>z_z</eid>
             <style>title</style>
+            <eid>z_z</eid>
             <text>Test</text>
             </Text>
           <Text>
-            <eid>0_0</eid>
             <style>subtitle</style>
+            <eid>0_0</eid>
             <text>measure</text>
             </Text>
           <Text>
-            <eid>1_1</eid>
             <style>instrument_excerpt</style>
+            <eid>1_1</eid>
             <text>Piano</text>
             </Text>
           </VBox>
@@ -705,18 +705,18 @@
           <sizeIsSpatiumDependent>1</sizeIsSpatiumDependent>
           <eid>WB_WB</eid>
           <Text>
-            <eid>XB_XB</eid>
             <style>title</style>
+            <eid>XB_XB</eid>
             <text>Test</text>
             </Text>
           <Text>
-            <eid>YB_YB</eid>
             <style>subtitle</style>
+            <eid>YB_YB</eid>
             <text>measure</text>
             </Text>
           <Text>
-            <eid>ZB_ZB</eid>
             <style>instrument_excerpt</style>
+            <eid>ZB_ZB</eid>
             <text>Flute</text>
             </Text>
           </VBox>
@@ -730,8 +730,14 @@
               <isHeader>1</isHeader>
               <eid>bB_bB</eid>
               </Clef>
-            <Rest>
+            <TimeSig>
               <eid>cB_cB</eid>
+              <linkedTo>o_o</linkedTo>
+              <sigN>2</sigN>
+              <sigD>4</sigD>
+              </TimeSig>
+            <Rest>
+              <eid>dB_dB</eid>
               <linkedTo>p_p</linkedTo>
               <durationType>measure</durationType>
               <duration>2/4</duration>
@@ -740,15 +746,9 @@
           </Measure>
         <Measure len="10/4">
           <multiMeasureRest>5</multiMeasureRest>
-          <eid>dB_dB</eid>
-          <mmRestLast>eB_eB</mmRestLast>
+          <eid>eB_eB</eid>
+          <mmRestLast>fB_fB</mmRestLast>
           <voice>
-            <TimeSig>
-              <eid>fB_fB</eid>
-              <linkedTo>o_o</linkedTo>
-              <sigN>2</sigN>
-              <sigD>4</sigD>
-              </TimeSig>
             <Tempo>
               <tempo>1.66667</tempo>
               <eid>gB_gB</eid>
@@ -758,7 +758,7 @@
               <eid>hB_hB</eid>
               <placement>above</placement>
               <durationType>measure</durationType>
-              <duration>8/4</duration>
+              <duration>10/4</duration>
               </Rest>
             </voice>
           </Measure>
@@ -796,7 +796,7 @@
             </voice>
           </Measure>
         <Measure>
-          <eid>eB_eB</eid>
+          <eid>fB_fB</eid>
           <voice>
             <Rest>
               <eid>oB_oB</eid>

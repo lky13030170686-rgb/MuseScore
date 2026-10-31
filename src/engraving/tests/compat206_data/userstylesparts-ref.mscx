@@ -245,38 +245,38 @@
         <sizeIsSpatiumDependent>1</sizeIsSpatiumDependent>
         <eid>I_I</eid>
         <Text>
-          <eid>J_J</eid>
           <style>user_1</style>
+          <eid>J_J</eid>
           <text>Title</text>
           </Text>
         <Text>
-          <eid>K_K</eid>
           <style>user_7</style>
+          <eid>K_K</eid>
           <text>Text7</text>
           </Text>
         <Text>
-          <eid>L_L</eid>
           <style>user_2</style>
+          <eid>L_L</eid>
           <text>Text 2</text>
           </Text>
         <Text>
-          <eid>M_M</eid>
           <style>user_3</style>
+          <eid>M_M</eid>
           <text>Text3</text>
           </Text>
         <Text>
-          <eid>N_N</eid>
           <style>user_4</style>
+          <eid>N_N</eid>
           <text>Text4</text>
           </Text>
         <Text>
-          <eid>O_O</eid>
           <style>user_5</style>
+          <eid>O_O</eid>
           <text>Text5</text>
           </Text>
         <Text>
-          <eid>P_P</eid>
           <style>user_6</style>
+          <eid>P_P</eid>
           <text>Text6</text>
           </Text>
         </VBox>
@@ -533,51 +533,56 @@
           <sizeIsSpatiumDependent>1</sizeIsSpatiumDependent>
           <eid>l_l</eid>
           <Text>
-            <eid>m_m</eid>
             <style>user_1</style>
+            <eid>m_m</eid>
             <text>Title</text>
             </Text>
           <Text>
-            <eid>n_n</eid>
             <style>user_7</style>
+            <eid>n_n</eid>
             <text>Text7</text>
             </Text>
           <Text>
-            <eid>o_o</eid>
             <style>user_2</style>
+            <eid>o_o</eid>
             <text>Text 2</text>
             </Text>
           <Text>
-            <eid>p_p</eid>
             <style>user_3</style>
+            <eid>p_p</eid>
             <text>Text3</text>
             </Text>
           <Text>
-            <eid>q_q</eid>
             <style>user_4</style>
+            <eid>q_q</eid>
             <text>Text4</text>
             </Text>
           <Text>
-            <eid>r_r</eid>
             <style>user_5</style>
+            <eid>r_r</eid>
             <text>Text5</text>
             </Text>
           <Text>
-            <eid>s_s</eid>
             <style>user_6</style>
+            <eid>s_s</eid>
             <text>Text6</text>
             </Text>
           <Text>
-            <eid>t_t</eid>
             <style>instrument_excerpt</style>
+            <eid>t_t</eid>
             <text>Piano</text>
             </Text>
           </VBox>
         <Measure>
           <eid>u_u</eid>
           <voice>
-            <Rest>
+            <TimeSig>
               <eid>v_v</eid>
+              <sigN>4</sigN>
+              <sigD>4</sigD>
+              </TimeSig>
+            <Rest>
+              <eid>w_w</eid>
               <durationType>measure</durationType>
               <duration>4/4</duration>
               </Rest>
@@ -585,14 +590,9 @@
           </Measure>
         <Measure len="12/4">
           <multiMeasureRest>3</multiMeasureRest>
-          <eid>w_w</eid>
-          <mmRestLast>x_x</mmRestLast>
+          <eid>x_x</eid>
+          <mmRestLast>y_y</mmRestLast>
           <voice>
-            <TimeSig>
-              <eid>y_y</eid>
-              <sigN>4</sigN>
-              <sigD>4</sigD>
-              </TimeSig>
             <Rest>
               <eid>z_z</eid>
               <placement>above</placement>
@@ -616,7 +616,7 @@
             </voice>
           </Measure>
         <Measure>
-          <eid>x_x</eid>
+          <eid>y_y</eid>
           <voice>
             <Rest>
               <eid>3_3</eid>
@@ -763,51 +763,56 @@
           <sizeIsSpatiumDependent>1</sizeIsSpatiumDependent>
           <eid>7_7</eid>
           <Text>
-            <eid>8_8</eid>
             <style>user_1</style>
+            <eid>8_8</eid>
             <text>Title</text>
             </Text>
           <Text>
-            <eid>9_9</eid>
             <style>user_7</style>
+            <eid>9_9</eid>
             <text>Text7</text>
             </Text>
           <Text>
-            <eid>+_+</eid>
             <style>user_2</style>
+            <eid>+_+</eid>
             <text>Text 2</text>
             </Text>
           <Text>
-            <eid>/_/</eid>
             <style>user_3</style>
+            <eid>/_/</eid>
             <text>Text3</text>
             </Text>
           <Text>
-            <eid>AB_AB</eid>
             <style>user_4</style>
+            <eid>AB_AB</eid>
             <text>Text4</text>
             </Text>
           <Text>
-            <eid>BB_BB</eid>
             <style>user_5</style>
+            <eid>BB_BB</eid>
             <text>Text5</text>
             </Text>
           <Text>
-            <eid>CB_CB</eid>
             <style>user_6</style>
+            <eid>CB_CB</eid>
             <text>Text6</text>
             </Text>
           <Text>
-            <eid>DB_DB</eid>
             <style>instrument_excerpt</style>
+            <eid>DB_DB</eid>
             <text>Flute 1</text>
             </Text>
           </VBox>
         <Measure>
           <eid>EB_EB</eid>
           <voice>
-            <Rest>
+            <TimeSig>
               <eid>FB_FB</eid>
+              <sigN>4</sigN>
+              <sigD>4</sigD>
+              </TimeSig>
+            <Rest>
+              <eid>GB_GB</eid>
               <durationType>measure</durationType>
               <duration>4/4</duration>
               </Rest>
@@ -815,14 +820,9 @@
           </Measure>
         <Measure len="12/4">
           <multiMeasureRest>3</multiMeasureRest>
-          <eid>GB_GB</eid>
-          <mmRestLast>HB_HB</mmRestLast>
+          <eid>HB_HB</eid>
+          <mmRestLast>IB_IB</mmRestLast>
           <voice>
-            <TimeSig>
-              <eid>IB_IB</eid>
-              <sigN>4</sigN>
-              <sigD>4</sigD>
-              </TimeSig>
             <Rest>
               <eid>JB_JB</eid>
               <placement>above</placement>
@@ -846,7 +846,7 @@
             </voice>
           </Measure>
         <Measure>
-          <eid>HB_HB</eid>
+          <eid>IB_IB</eid>
           <voice>
             <Rest>
               <eid>NB_NB</eid>
@@ -993,51 +993,56 @@
           <sizeIsSpatiumDependent>1</sizeIsSpatiumDependent>
           <eid>RB_RB</eid>
           <Text>
-            <eid>SB_SB</eid>
             <style>user_1</style>
+            <eid>SB_SB</eid>
             <text>Title</text>
             </Text>
           <Text>
-            <eid>TB_TB</eid>
             <style>user_7</style>
+            <eid>TB_TB</eid>
             <text>Text7</text>
             </Text>
           <Text>
-            <eid>UB_UB</eid>
             <style>user_2</style>
+            <eid>UB_UB</eid>
             <text>Text 2</text>
             </Text>
           <Text>
-            <eid>VB_VB</eid>
             <style>user_3</style>
+            <eid>VB_VB</eid>
             <text>Text3</text>
             </Text>
           <Text>
-            <eid>WB_WB</eid>
             <style>user_4</style>
+            <eid>WB_WB</eid>
             <text>Text4</text>
             </Text>
           <Text>
-            <eid>XB_XB</eid>
             <style>user_5</style>
+            <eid>XB_XB</eid>
             <text>Text5</text>
             </Text>
           <Text>
-            <eid>YB_YB</eid>
             <style>user_6</style>
+            <eid>YB_YB</eid>
             <text>Text6</text>
             </Text>
           <Text>
-            <eid>ZB_ZB</eid>
             <style>instrument_excerpt</style>
+            <eid>ZB_ZB</eid>
             <text>Flute 2</text>
             </Text>
           </VBox>
         <Measure>
           <eid>aB_aB</eid>
           <voice>
-            <Rest>
+            <TimeSig>
               <eid>bB_bB</eid>
+              <sigN>4</sigN>
+              <sigD>4</sigD>
+              </TimeSig>
+            <Rest>
+              <eid>cB_cB</eid>
               <durationType>measure</durationType>
               <duration>4/4</duration>
               </Rest>
@@ -1045,14 +1050,9 @@
           </Measure>
         <Measure len="12/4">
           <multiMeasureRest>3</multiMeasureRest>
-          <eid>cB_cB</eid>
-          <mmRestLast>dB_dB</mmRestLast>
+          <eid>dB_dB</eid>
+          <mmRestLast>eB_eB</mmRestLast>
           <voice>
-            <TimeSig>
-              <eid>eB_eB</eid>
-              <sigN>4</sigN>
-              <sigD>4</sigD>
-              </TimeSig>
             <Rest>
               <eid>fB_fB</eid>
               <placement>above</placement>
@@ -1076,7 +1076,7 @@
             </voice>
           </Measure>
         <Measure>
-          <eid>dB_dB</eid>
+          <eid>eB_eB</eid>
           <voice>
             <Rest>
               <eid>jB_jB</eid>

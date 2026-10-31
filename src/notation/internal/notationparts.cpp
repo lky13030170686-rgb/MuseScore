@@ -1269,6 +1269,11 @@ void NotationParts::insertNewParts(const PartInstrumentList& parts, const mu::en
 
     for (const PartInstrument& pi: parts) {
         if (pi.isExistingPart) {
+            // Update numbering for existing parts
+            int instrumentNumber = resolveExistingInstrumentNumber(pi.partId, pi.instrumentTemplate);
+            if (Part* existingPart = score()->partById(pi.partId)) {
+                score()->undo(new mu::engraving::ChangeInstrumentNumber(Fraction(-1, 1), existingPart, instrumentNumber));
+            }
             ++partIdx;
             continue;
         }
@@ -1342,8 +1347,7 @@ void NotationParts::sortParts(const PartInstrumentList& parts)
     score()->undo(new mu::engraving::SortStaves(score(), staffMapping));
 }
 
-int NotationParts::resolveNewInstrumentNumber(const InstrumentTemplate& instrument,
-                                              const PartInstrumentList& allNewInstruments) const
+int NotationParts::countExistingInstruments(const InstrumentTemplate& instrument) const
 {
     int count = 0;
 
@@ -1354,6 +1358,37 @@ int NotationParts::resolveNewInstrumentNumber(const InstrumentTemplate& instrume
             ++count;
         }
     }
+
+    return count;
+}
+
+int NotationParts::resolveExistingInstrumentNumber(const muse::ID& partId, const InstrumentTemplate& instrument) const
+{
+    int count = countExistingInstruments(instrument);
+
+    int ordinal = 0;
+
+    for (const Part* part : score()->parts()) {
+        const Instrument* partInstrument = part->instrument();
+
+        if (partInstrument->id() != instrument.id) {
+            continue;
+        }
+
+        ++ordinal;
+
+        if (part->id() == partId) {
+            return ordinal;
+        }
+    }
+
+    return count;
+}
+
+int NotationParts::resolveNewInstrumentNumber(const InstrumentTemplate& instrument,
+                                              const PartInstrumentList& allNewInstruments) const
+{
+    int count = countExistingInstruments(instrument);
 
     if (count > 0) {
         return count + 1;

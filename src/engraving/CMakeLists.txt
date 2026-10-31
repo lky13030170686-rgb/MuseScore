@@ -103,6 +103,8 @@ target_sources(engraving PRIVATE
 
     editing/addremoveelement.cpp
     editing/addremoveelement.h
+    editing/autospatium.cpp
+    editing/autospatium.h
     editing/clonevoice.cpp
     editing/clonevoice.h
     editing/cmd.cpp
@@ -154,6 +156,8 @@ target_sources(engraving PRIVATE
     editing/editparentheses.h
     editing/editpart.cpp
     editing/editpart.h
+    editing/editposition.cpp
+    editing/editposition.h
     editing/editproperty.cpp
     editing/editproperty.h
     editing/editrehearsalmark.cpp
@@ -182,6 +186,8 @@ target_sources(engraving PRIVATE
     editing/edittimesig.h
     editing/edittremolo.cpp
     editing/edittremolo.h
+    editing/edittuplet.cpp
+    editing/edittuplet.h
     editing/editvisibility.cpp
     editing/editvisibility.h
     editing/editvoice.cpp
@@ -328,8 +334,6 @@ target_sources(engraving PRIVATE
     compat/pageformat.h
     compat/writescorehook.cpp
     compat/writescorehook.h
-    compat/dummyelement.cpp
-    compat/dummyelement.h
     compat/engravingcompat.cpp
     compat/engravingcompat.h
 

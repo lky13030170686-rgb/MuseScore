@@ -186,6 +186,7 @@ bool StaffType::operator==(const StaffType& st) const
     equal &= (m_genTimesig == st.m_genTimesig);
     equal &= (m_genKeysig == st.m_genKeysig);
     equal &= (m_noteHeadScheme == st.m_noteHeadScheme);
+    equal &= (m_instrumentLabelVisibility == st.m_instrumentLabelVisibility);
     equal &= (m_durationFontSize == st.m_durationFontSize);
     equal &= (m_durationFontUserY == st.m_durationFontUserY);
     equal &= (m_fretFontSize == st.m_fretFontSize);
@@ -424,8 +425,21 @@ void StaffType::setFretPreset(const String& name)
 //    checks whether the internally computed metrics are is still valid and re-computes them, if not
 //---------------------------------------------------------
 
+void StaffType::setScore(Score* score)
+{
+    m_score = score;
+    if (m_score && m_group == StaffGroup::TAB) {
+        setDurationMetrics();
+        setFretMetrics();
+    }
+}
+
 void StaffType::setDurationMetrics()
 {
+    if (!m_score) {
+        return;
+    }
+
 // FontMetrics returns results unreliably rounded to integral pixels;
 // use a scaled up font and then scale computed values down
     Font font(durationFont());
@@ -448,6 +462,10 @@ void StaffType::setDurationMetrics()
 
 void StaffType::setFretMetrics()
 {
+    if (!m_score) {
+        return;
+    }
+
     FontMetrics fm(fretFont());
     RectF bb;
     // compute vertical displacement

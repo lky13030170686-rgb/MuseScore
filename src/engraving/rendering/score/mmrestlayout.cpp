@@ -110,7 +110,7 @@ void MMRestLayout::reuseExistingMMRest(LayoutContext& ctx, Measure* mmrMeasure, 
             nextLastMeasure = nextLastMeasure ? nextLastMeasure : ctx.mutDom().lastMeasure();
             const int numMeasuresInNewMMRest = nextLastMeasure->measureIndex() - nextFirstMeasure->measureIndex() + 1;
 
-            Measure* nextMMRMeasure = Factory::createMeasure(ctx.mutDom().dummyParent()->score());
+            Measure* nextMMRMeasure = Factory::createMeasure(ctx.mutDom().score());
             nextMMRMeasure->setTicks(remainingMMRDuration);
             nextMMRMeasure->setTick(nextFirstMeasure->tick());
             ctx.mutDom().undo(new ChangeMMRest(nextFirstMeasure, nextMMRMeasure));
@@ -183,7 +183,7 @@ void MMRestLayout::createMMRest(LayoutContext& ctx, Measure* firstMeasure, Measu
     if (mmrMeasure) {
         reuseExistingMMRest(ctx, mmrMeasure, lastMeasure, len);
     } else {
-        mmrMeasure = Factory::createMeasure(ctx.mutDom().dummyParent()->score());
+        mmrMeasure = Factory::createMeasure(ctx.mutDom().score());
         mmrMeasure->setTicks(len);
         mmrMeasure->setTick(firstMeasure->tick());
         ctx.mutDom().undo(new ChangeMMRest(firstMeasure, mmrMeasure));
@@ -201,13 +201,16 @@ void MMRestLayout::createMMRest(LayoutContext& ctx, Measure* firstMeasure, Measu
     Segment* chordRestSeg = mmrMeasure->undoGetSegmentR(SegmentType::ChordRest, Fraction(0, 1));
     for (size_t staffIdx = 0; staffIdx < ctx.dom().nstaves(); ++staffIdx) {
         track_idx_t track = staffIdx * VOICES;
-        if (chordRestSeg->element(track) == 0) {
+        EngravingItem* existing = chordRestSeg->element(track);
+        if (!existing) {
             MMRest* mmr = Factory::createMMRest(chordRestSeg);
             mmr->setDurationType(DurationType::V_MEASURE);
             mmr->setTicks(mmrMeasure->ticks());
             mmr->setTrack(track);
-            mmr->setOwnershipParent(chordRestSeg);
             ctx.mutDom().doUndoAddElement(mmr);
+        } else if (existing->isMMRest()) {
+            // a reused mmrMeasure may have changed length, so keep its MM rests in sync
+            toMMRest(existing)->setTicks(mmrMeasure->ticks());
         }
     }
 
@@ -818,7 +821,6 @@ void MMRestLayout::layoutMMRestRange(Measure* m, LayoutContext& ctx)
             rr = new MMRestRange(m);
             rr->setTrack(staffIdx * VOICES);
             rr->setGenerated(true);
-            rr->setOwnershipParent(m);
             m->add(rr);
         }
         // setXmlText is reimplemented to take care of brackets

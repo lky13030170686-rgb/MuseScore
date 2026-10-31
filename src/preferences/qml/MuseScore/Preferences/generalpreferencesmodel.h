@@ -34,8 +34,9 @@
 #include "interactive/iinteractive.h"
 #include "languages/ilanguagesconfiguration.h"
 #include "languages/ilanguagesservice.h"
-#include "shortcuts/ishortcutsconfiguration.h"
 #include "update/iupdateconfiguration.h"
+
+#include "shortcuts_v2/ishortcutsconfiguration.h"
 
 namespace mu::preferences {
 class GeneralPreferencesModel : public QObject, public muse::Contextable, public muse::async::Asyncable
@@ -63,6 +64,8 @@ class GeneralPreferencesModel : public QObject, public muse::Contextable, public
 
     Q_PROPERTY(
         bool needCheckForNewAppVersion READ needCheckForNewAppVersion WRITE setNeedCheckForNewAppVersion NOTIFY needCheckForNewAppVersionChanged)
+    Q_PROPERTY(
+        bool autoUpdateNewAppVersion READ autoUpdateNewAppVersion WRITE setAutoUpdateNewAppVersion NOTIFY autoUpdateNewAppVersionChanged)
 
     muse::GlobalInject<appshell::IAppShellConfiguration> configuration;
     muse::GlobalInject<muse::languages::ILanguagesConfiguration> languagesConfiguration;
@@ -96,6 +99,7 @@ public:
     void setShowWelcomeDialog(bool show);
 
     bool needCheckForNewAppVersion() const;
+    bool autoUpdateNewAppVersion() const;
     Q_INVOKABLE bool isAppUpdatable() const;
     Q_INVOKABLE QString museScorePrivacyPolicyUrl() const;
 
@@ -108,6 +112,7 @@ public slots:
     void setCurrentStartupMode(int mode);
     void setStartupScorePath(const QString& scorePath);
     void setNeedCheckForNewAppVersion(bool value);
+    void setAutoUpdateNewAppVersion(bool value);
 
 signals:
     void languagesChanged(QVariantList languages);
@@ -125,6 +130,7 @@ signals:
     void showWelcomeDialogChanged();
 
     void needCheckForNewAppVersionChanged(bool value);
+    void autoUpdateNewAppVersionChanged(bool value);
 
 private:
     muse::Progress m_languageUpdateProgress;

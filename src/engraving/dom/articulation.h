@@ -217,7 +217,7 @@ public:
 
 protected:
     friend class mu::engraving::Factory;
-    Articulation(ChordRest* parent, ElementType type = ElementType::ARTICULATION);
+    Articulation(DummyParentOr<ChordRest> parent, ElementType type = ElementType::ARTICULATION);
 
 private:
 

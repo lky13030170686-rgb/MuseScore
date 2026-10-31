@@ -85,7 +85,7 @@ ExportDialogModel::ExportDialogModel(QObject* parent)
         ExportType::makeWithSuffixes({ "wav" },
                                      muse::qtrc("project/export", "WAV audio"),
                                      muse::qtrc("project/export", "WAV audio files"),
-                                     "AudioSettingsPage.qml"),
+                                     "WavSettingsPage.qml"),
         ExportType::makeWithSuffixes({ "ogg" },
                                      muse::qtrc("project/export", "OGG audio"),
                                      muse::qtrc("project/export", "OGG audio files"),
@@ -93,7 +93,7 @@ ExportDialogModel::ExportDialogModel(QObject* parent)
         ExportType::makeWithSuffixes({ "flac" },
                                      muse::qtrc("project/export", "FLAC audio"),
                                      muse::qtrc("project/export", "FLAC audio files"),
-                                     "AudioSettingsPage.qml"),
+                                     "FlacSettingsPage.qml"),
         ExportType::makeWithSuffixes({ "aac" },
                                      muse::qtrc("project/export", "AAC audio"),
                                      muse::qtrc("project/export", "AAC audio files"),
@@ -277,7 +277,7 @@ void ExportDialogModel::selectSavedNotations()
 
 IMasterNotationPtr ExportDialogModel::masterNotation() const
 {
-    return context()->currentMasterNotation();
+    return context()->masterNotation();
 }
 
 bool ExportDialogModel::isMainNotation(INotationPtr notation) const

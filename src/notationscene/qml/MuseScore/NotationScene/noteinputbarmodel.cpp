@@ -24,27 +24,21 @@
 #include "rcommand/commandtypes.h"
 #include "types/translatablestring.h"
 
-#include "context/shortcutcontext.h"
-
 #include "notation/inotationelements.h" // IWYU pragma: keep
 #include "notation/inotationinteraction.h"
 #include "notation/inotationnoteinput.h"
 #include "notation/inotationselection.h"
 #include "notation/inotationundostack.h"
 
-#include "internal/notationuiactions.h"
 #include "notationcommands.h"
 
 using namespace mu;
 using namespace mu::notation;
 using namespace muse;
-using namespace muse::actions;
 using namespace muse::ui;
 using namespace muse::uicomponents;
 
 static const QString TOOLBAR_NAME("noteInput");
-
-static const ActionCode ADD_ACTION_CODE("add");
 
 const std::string NoteInputBarModel::CROSS_STAFF_BEAMING_SUBITEMS("cross-staff-beaming-subitems");
 const std::string NoteInputBarModel::TUPLET_SUBITEMS("tuplets-subitems");
@@ -149,7 +143,7 @@ const muse::ui::ToolConfig& NoteInputBarModel::defaultNoteInputConfig()
             { ToolConfig::____________, true },
             { CROSS_STAFF_BEAMING_SUBITEMS, true }, // service
             { TUPLET_SUBITEMS, true },              // service
-            { FLIP_COMMAND, true },
+            { FlipCommand::id, true },
             { ToolConfig::____________, true },
             { USE_VOICE_1_COMMAND, true },
             { USE_VOICE_2_COMMAND, true },

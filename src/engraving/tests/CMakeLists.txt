@@ -84,7 +84,9 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/split_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/splitstaff_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/staffmove_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/stavecentering_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/stavesharing_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/styledproperties_rw_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/system_locks_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/system_dividers_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/tempotimeline_tests.cpp
@@ -106,6 +108,7 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/lyrics_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/automation/utils/automationtestutils.h
     ${CMAKE_CURRENT_LIST_DIR}/page_locks_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/savehiddenparts_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/automation/automation_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/automation/automationrw_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/automation/scoreautomationcontroller_tests.cpp

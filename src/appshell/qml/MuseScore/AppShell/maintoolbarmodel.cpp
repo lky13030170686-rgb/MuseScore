@@ -28,9 +28,12 @@ using namespace mu::appshell;
 
 static const QString HOME_PAGE("musescore://home");
 static const QString NOTATION_PAGE("musescore://notation");
+static const QString NOTATION_REVIEW_PAGE("musescore://notation/review");
+//! Added by this fork: the MIDI (piano roll) page and the Agent page.
+//! ⚠️ Upstream now resolves the Score tab dynamically between `notation` and `notation/review`
+//! (`updateNotationPageItem()`), so these two must be added as their OWN items - they are different
+//! pages of the same project, not another "mode" of the Score tab.
 static const QString MIDI_PAGE("musescore://midi");
-//! NOTE: our addition - the Agent page, the agent harness's own workspace (see WindowContent.qml).
-//! It sits next to MIDI deliberately: both are "the same project, shown as something else".
 static const QString AGENT_PAGE("musescore://agent");
 static const QString PUBLISH_PAGE("musescore://publish");
 static const QString DEVTOOLS_PAGE("musescore://devtools");
@@ -38,19 +41,31 @@ static const QString DEVTOOLS_PAGE("musescore://devtools");
 static const QString TITLE_KEY("title");
 static const QString URI_KEY("uri");
 static const QString IS_TITLE_BOLD_KEY("isTitleBold");
+static const QString IS_CHECKED_KEY("isChecked");
 
-inline QVariantMap buildItem(const QString& title, const QString& uri)
+static bool isNotationPageUri(const QString& uri)
+{
+    return uri == NOTATION_PAGE || uri == NOTATION_REVIEW_PAGE;
+}
+
+static bool isItemChecked(const QString& itemUri, const QString& currentUri)
+{
+    return itemUri == currentUri || (isNotationPageUri(itemUri) && isNotationPageUri(currentUri));
+}
+
+inline QVariantMap buildItem(const QString& title, const QString& uri, const QString& currentUri)
 {
     QVariantMap item;
     item[TITLE_KEY] = title;
     item[URI_KEY] = uri;
     item[IS_TITLE_BOLD_KEY] = false;
+    item[IS_CHECKED_KEY] = isItemChecked(uri, currentUri);
 
     return item;
 }
 
 MainToolBarModel::MainToolBarModel(QObject* parent)
-    : QAbstractListModel(parent), muse::Contextable(muse::iocCtxForQmlObject(this))
+    : QAbstractListModel(parent), muse::Contextable(muse::iocCtxForQmlObject(this)), m_currentUri(HOME_PAGE)
 {
 }
 
@@ -65,6 +80,7 @@ QVariant MainToolBarModel::data(const QModelIndex& index, int role) const
     case TitleRole: return item[TITLE_KEY];
     case UriRole: return item[URI_KEY];
     case IsTitleBoldRole: return item[IS_TITLE_BOLD_KEY];
+    case IsCheckedRole: return item[IS_CHECKED_KEY];
     }
 
     return QVariant();
@@ -81,6 +97,7 @@ QHash<int, QByteArray> MainToolBarModel::roleNames() const
         { TitleRole, TITLE_KEY.toUtf8() },
         { UriRole, URI_KEY.toUtf8() },
         { IsTitleBoldRole, IS_TITLE_BOLD_KEY.toUtf8() },
+        { IsCheckedRole, IS_CHECKED_KEY.toUtf8() },
     };
 
     return roles;
@@ -91,27 +108,41 @@ void MainToolBarModel::load()
     beginResetModel();
 
     m_items.clear();
-    m_items << buildItem(muse::qtrc("appshell", "Home"), HOME_PAGE);
-    m_items << buildItem(muse::qtrc("appshell", "Score"), NOTATION_PAGE);
-    //! NOTE: our addition - the MIDI (piano roll) page, a sibling of Score, sharing its data.
-    m_items << buildItem(muse::qtrc("appshell", "MIDI"), MIDI_PAGE);
-    //! NOTE: our addition - the Agent page. ⚠️ Position is load-bearing: it goes between MIDI and
-    //! Publish so the tab order stays 主页|乐谱|MIDI|Agent|发布 (MIDI编辑页/README.md documents the
-    //! first three). The entry is a PAGE, not a dock panel - the notation page's Agent panel is a
-    //! separate, smaller window onto the same information field and stays where it is.
-    m_items << buildItem(muse::qtrc("appshell", "Agent"), AGENT_PAGE);
-    m_items << buildItem(muse::qtrc("appshell", "Publish"), PUBLISH_PAGE);
+    m_items << buildItem(muse::qtrc("appshell", "Home"), HOME_PAGE, m_currentUri);
+    m_items << buildItem(muse::qtrc("appshell", "Score"), NOTATION_PAGE, m_currentUri);
+    //! Added by this fork. Position is load-bearing: 主页|乐谱|MIDI|Agent|发布.
+    m_items << buildItem(muse::qtrc("appshell", "MIDI"), MIDI_PAGE, m_currentUri);
+    m_items << buildItem(muse::qtrc("appshell", "Agent"), AGENT_PAGE, m_currentUri);
+    m_items << buildItem(muse::qtrc("appshell", "Publish"), PUBLISH_PAGE, m_currentUri);
 
     if (globalConfiguration()->devModeEnabled()) {
-        m_items << buildItem(muse::qtrc("appshell", "DevTools"), DEVTOOLS_PAGE);
+        m_items << buildItem(muse::qtrc("appshell", "DevTools"), DEVTOOLS_PAGE, m_currentUri);
     }
 
     endResetModel();
 
     updateNotationPageItem();
-    context()->currentProjectChanged().onNotify(this, [this]() {
+
+    context()->projectChanged().onNotify(this, [this]() {
         updateNotationPageItem();
     });
+}
+
+QString MainToolBarModel::currentUri() const
+{
+    return m_currentUri;
+}
+
+void MainToolBarModel::setCurrentUri(const QString& uri)
+{
+    if (m_currentUri == uri) {
+        return;
+    }
+
+    m_currentUri = uri;
+    emit currentUriChanged();
+
+    updateCheckedState();
 }
 
 void MainToolBarModel::updateNotationPageItem()
@@ -119,13 +150,32 @@ void MainToolBarModel::updateNotationPageItem()
     for (int i = 0; i < m_items.size(); ++i) {
         QVariantMap& item = m_items[i];
 
-        if (item[URI_KEY] == NOTATION_PAGE) {
-            item[IS_TITLE_BOLD_KEY] = context()->currentProject() != nullptr;
+        if (isNotationPageUri(item[URI_KEY].toString())) {
+            item[URI_KEY] = QString::fromStdString(openProjectScenario()->resolveNotationPageUri().toString());
+            item[IS_TITLE_BOLD_KEY] = context()->project() != nullptr;
 
             QModelIndex modelIndex = index(i);
-            emit dataChanged(modelIndex, modelIndex, { IsTitleBoldRole });
+            emit dataChanged(modelIndex, modelIndex, { UriRole, IsTitleBoldRole });
 
             break;
         }
+    }
+}
+
+void MainToolBarModel::updateCheckedState()
+{
+    for (int i = 0; i < m_items.size(); ++i) {
+        QVariantMap& item = m_items[i];
+
+        QVariant& checkedValue = item[IS_CHECKED_KEY];
+        bool checked = isItemChecked(item[URI_KEY].toString(), m_currentUri);
+        if (checkedValue.toBool() == checked) {
+            continue;
+        }
+
+        checkedValue = checked;
+
+        QModelIndex modelIndex = index(i);
+        emit dataChanged(modelIndex, modelIndex, { IsCheckedRole });
     }
 }

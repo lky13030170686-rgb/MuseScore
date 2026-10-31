@@ -35,9 +35,6 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
 # Set up swiftrt.o and runtime library search paths
 include(InitializeSwift)
 
-# set(MACOSX_DEPLOYMENT_TARGET 12.0)
-# set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0)
-
 add_executable(MuseScoreQuickLookPreviewExtension
     MACOSX_BUNDLE
     PreviewProvider.swift
@@ -116,6 +113,7 @@ install(FILES ${QT_INSTALL_PLUGINS}/platforms/libqcocoa.dylib
 install(CODE "
     execute_process(COMMAND rm -f \"${the_appex_path}/Contents/MacOS/MuseScoreQuickLookPreviewExtension.emit-module.d\")
     execute_process(COMMAND rm -f \"${the_appex_path}/Contents/MacOS/MuseScoreQuickLookPreviewExtension.d\")
+    execute_process(COMMAND rm -rf \"${the_appex_path}/Contents/MacOS/MuseScoreQuickLookPreviewExtension.dSYM\")
     execute_process(COMMAND codesign --force --sign - --timestamp=none --options runtime --entitlements \"${CMAKE_CURRENT_SOURCE_DIR}/entitlements.plist\" \"${the_appex_path}\")
 ")
 

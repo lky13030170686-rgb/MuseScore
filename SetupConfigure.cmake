@@ -68,6 +68,9 @@ if (MUSE_APP_UNSTABLE)
     set(MUSE_APP_GUI_IDENTIFIER "${MUSE_APP_GUI_IDENTIFIER}Development")
 endif(MUSE_APP_UNSTABLE)
 
+# Branding for framework executables that stand in for the application.
+set(MUSE_APP_ICON_WIN "${PROJECT_SOURCE_DIR}/share/icons/AppIcon/MS4_AppIcon.ico")
+
 ###########################################
 # Setup paths
 ###########################################
@@ -384,6 +387,7 @@ if (NOT MUSE_ENABLE_UNIT_TESTS)
     set(MUE_BUILD_BRAILLE_TESTS OFF)
     set(MUE_BUILD_ENGRAVING_TESTS OFF)
     set(MUE_BUILD_IMPORTEXPORT_TESTS OFF)
+    set(MUE_BUILD_MUSESOUNDS_TESTS OFF)
     set(MUE_BUILD_NOTATION_TESTS OFF)
     set(MUE_BUILD_NOTATIONSCENE_TESTS OFF)
     set(MUE_BUILD_PLAYBACK_TESTS OFF)

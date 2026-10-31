@@ -165,7 +165,6 @@ add_to_link_if_exists(muse::workspace)
 
 add_to_link_if_exists(appshell)
 add_to_link_if_exists(braille)
-add_to_link_if_exists(context)
 add_to_link_if_exists(converter)
 add_to_link_if_exists(engraving)
 add_to_link_if_exists(iex_audioexport)
@@ -273,6 +272,18 @@ if (OS_IS_MAC)
         MACOSX_BUNDLE_INFO_PLIST ${PROJECT_SOURCE_DIR}/buildscripts/packaging/macOS/Info.plist.in
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER ${MACOSX_BUNDLE_GUI_IDENTIFIER}
     )
+
+    # Embed the update helper so codesign --deep signs it with the bundle.
+    if (TARGET museupdater)
+        add_dependencies(MuseScoreStudio museupdater)
+        add_custom_command(TARGET MuseScoreStudio POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy
+                $<TARGET_FILE:museupdater>
+                $<TARGET_BUNDLE_DIR:MuseScoreStudio>/Contents/MacOS/museupdater
+            COMMENT "Embedding update helper (museupdater) into the app bundle"
+            VERBATIM
+        )
+    endif()
 endif (OS_IS_MAC)
 
 if (CC_IS_MINGW)
@@ -361,7 +372,7 @@ if (OS_IS_WIN)
     endif (WIN_PORTABLE)
 
     if (MUE_RUN_WINDEPLOYQT)
-        set(deploy_tool_options_arg "--plugindir bin --qmldir ${PROJECT_SOURCE_DIR}")
+        set(deploy_tool_options_arg "--plugindir bin --qmldir ${PROJECT_SOURCE_DIR} --no-compiler-runtime")
         qt_generate_deploy_qml_app_script(
             TARGET MuseScoreStudio
             OUTPUT_SCRIPT deploy_script
