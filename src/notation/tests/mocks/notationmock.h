@@ -61,6 +61,8 @@ public:
     MOCK_METHOD(INotationUndoStackPtr, undoStack, (), (const, override));
     MOCK_METHOD(INotationStylePtr, style, (), (const, override));
     MOCK_METHOD(INotationElementsPtr, elements, (), (const, override));
+    //! Added by this fork: the raw engraving Score, for the agent harness' read side.
+    MOCK_METHOD(mu::engraving::Score*, score, (), (const, override));
     MOCK_METHOD(INotationAccessibilityPtr, accessibility, (), (const, override));
     MOCK_METHOD(INotationPartsPtr, parts, (), (const, override));
 
