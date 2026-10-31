@@ -115,6 +115,11 @@ qt_add_qml_module(agentharness_qml
         scoresave.cpp
         scoresave.h
     QML_FILES
+    # Six radii and four gaps (第 167 条): 17 files carried 34 radius literals in 11 values,
+    # so the numbers that ARE decisions live here and the rest stay visible at their call site.
+    # ⚠️ A singleton needs BOTH `pragma Singleton` and the property at the end of this file;
+    # Qt ignores the pragma alone and the failure is "AgentMetrics is not a type" at load time.
+    AgentMetrics.qml
         AgentPanel.qml
         AgentTranscriptRow.qml
         # A folded run of tool calls (第 132 条): one line, and the rows themselves on request. Its own
@@ -181,3 +186,6 @@ target_link_libraries(agentharness_qml PRIVATE
 target_include_directories(agentharness_qml PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+#! Qt treats a QML singleton as one only when this is set (第 167 条).
+set_source_files_properties(AgentMetrics.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
