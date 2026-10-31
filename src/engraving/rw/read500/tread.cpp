@@ -662,6 +662,16 @@ void TRead::readItemLink(EngravingItem* item, XmlReader& xml, ReadContext& ctx)
         return;
     }
 
+    //! NOTE: [our addition] A <linkedTo> may point into another score (a part file written by an
+    //! older build refers to the master's element). Linking across scores here left the part element
+    //! pointing at a master object, and the following addSpanner/addChord aborted the whole project
+    //! read - silently (exit 1320). Tolerate it: the part is re-linked by part/track on load.
+    if (mainElement->score() != item->score()) {
+        LOGD() << "Ignoring <linkedTo> that points into another score: " << item->typeName()
+               << " at " << ctx.tick().toString();
+        return;
+    }
+
     item->linkTo(mainElement);
 }
 

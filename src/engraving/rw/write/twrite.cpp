@@ -608,6 +608,16 @@ void TWrite::writeItemLink(const EngravingObject* item, XmlWriter& xml, WriteCon
 
     EngravingItem* mainElement = static_cast<EngravingItem*>(item->links()->mainElement());
     if (mainElement != item) {
+        //! NOTE: [our addition] Never write a <linkedTo> that points into ANOTHER score.
+        //! A part's element is linked to the master's copy, and writing that link made the reader
+        //! (read500::readItemLink) link the part element to a master object; the following
+        //! addSpanner/addChord then failed and the WHOLE project read was rejected (exit 1320)
+        //! with nothing in the log. Parts are re-linked by part/track when they are loaded, so the
+        //! element in the part file does not need this tag. See 进度快照.md 第 169 条.
+        if (mainElement->score() != item->score()) {
+            return;
+        }
+
         EID eidOfMainElement = mainElement->eid();
         DO_ASSERT(eidOfMainElement.isValid());
         xml.tag("linkedTo", eidOfMainElement.toStdString());
