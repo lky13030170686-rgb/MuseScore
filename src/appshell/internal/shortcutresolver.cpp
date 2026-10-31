@@ -40,6 +40,11 @@ static const std::string NOTATION_SELECTION_SCOPE = "NOTATION_SELECTION";
 static const std::string NOTATION_SINGLE_SELECTION_SCOPE = "NOTATION_SINGLE_SELECTION";
 static const std::string NOTATION_RANGE_SELECTION_SCOPE = "NOTATION_RANGE_SELECTION";
 static const std::string NOTATION_NOTE_INPUT_SCOPE = "NOTATION_NOTE_INPUT";
+//! Added by this fork (Jianpu): digits 1-7 / 0 and Up/Down mean scale degrees on a jianpu staff,
+//! while on a standard staff the same digits set the duration. That makes this a scope of its own,
+//! one step above NOTATION_NOTE_INPUT - and NOT a second binding of the same key (two registrations
+//! of one key make Qt report "ambiguous" and both stop working, see 进度快照.md 第 60 条).
+static const std::string NOTATION_JIANPU_SCOPE = "NOTATION_JIANPU";
 static const std::string NOTATION_TEXT_EDITING_SCOPE = "NOTATION_TEXT_EDITING";
 static const std::string PROJECT_SCOPE = "PROJECT";
 static const std::string APP_SCOPE = "APP";
@@ -68,7 +73,8 @@ int ShortcutResolver::scopePriority(const std::string& scope) const
             { NOTATION_SINGLE_SELECTION_SCOPE, [this]() { return isNotationFocusedAndSingleSelection() ? 7 : -1; } },
             { NOTATION_RANGE_SELECTION_SCOPE, [this]() { return isNotationFocusedAndRangeSelection() ? 7 : -1; } },
             { NOTATION_NOTE_INPUT_SCOPE, [this]() { return isNotationFocusedAndNoteInputMode() ? 8 : -1; } },
-            { NOTATION_TEXT_EDITING_SCOPE, [this]() { return isNotationFocusedAndTextEditing() ? 9 : -1; } },
+            { NOTATION_JIANPU_SCOPE, [this]() { return isNotationFocusedAndJianpuStaff() ? 9 : -1; } },
+            { NOTATION_TEXT_EDITING_SCOPE, [this]() { return isNotationFocusedAndTextEditing() ? 10 : -1; } },
         };
     }
 
@@ -94,6 +100,11 @@ bool ShortcutResolver::isNotationFocusedAndNoteInputMode() const
 bool ShortcutResolver::isNotationFocusedAndTabStaff() const
 {
     return isNotationFocused() && notationCommandsController()->isTablatureStaff();
+}
+
+bool ShortcutResolver::isNotationFocusedAndJianpuStaff() const
+{
+    return isNotationFocused() && notationCommandsController()->isJianpuStaff();
 }
 
 bool ShortcutResolver::isNotationFocusedAndHasSelection() const
@@ -151,6 +162,7 @@ muse::TranslatableString ShortcutResolver::scopeTitle(const std::string& scopeCo
         { NOTATION_SINGLE_SELECTION_SCOPE, TranslatableString("shortcuts", "NOTATION: SINGLE SELECTION") },
         { NOTATION_RANGE_SELECTION_SCOPE, TranslatableString("shortcuts", "NOTATION: RANGE SELECTION") },
         { NOTATION_NOTE_INPUT_SCOPE, TranslatableString("shortcuts", "NOTATION: NOTE INPUT") },
+        { NOTATION_JIANPU_SCOPE, TranslatableString("shortcuts", "NOTATION: JIANPU") },
         { NOTATION_TEXT_EDITING_SCOPE, TranslatableString("shortcuts", "NOTATION: TEXT EDITING") },
         { PROJECT_SCOPE, TranslatableString("shortcuts", "PROJECT") },
         { APP_SCOPE, TranslatableString("shortcuts", "APP") },

@@ -27,6 +27,7 @@
 
 namespace mu::engraving {
 class Chord;
+class Note;
 
 //---------------------------------------------------------
 //    @@ OctaveDot
@@ -43,7 +44,7 @@ class OctaveDot final : public EngravingItem
     DECLARE_CLASSOF(ElementType::OCTAVE_DOT)
 
 public:
-    OctaveDot(EngravingItem*);
+    OctaveDot(DummyParentOr<Note> parent);
     ~OctaveDot() override = default;
     OctaveDot& operator=(const OctaveDot&) = delete;
 

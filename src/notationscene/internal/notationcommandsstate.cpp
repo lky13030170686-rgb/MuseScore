@@ -390,7 +390,7 @@ void NotationCommandsState::init()
     //!
     //! 盯住 score 的数据变化通道：任何来源的编辑（记谱页、卷帘窗、插件…）都会让状态跟上。
     auto watchScoreChanges = [this]() {
-        const INotationPtr notation = globalContext()->currentNotation();
+        const INotationPtr notation = projectSession()->currentNotation();
         Score* score = notation ? notation->elements()->msScore() : nullptr;
         if (score) {
             score->changesChannel().onReceive(this, [this](const ScoreChanges&) {
@@ -399,7 +399,7 @@ void NotationCommandsState::init()
         }
     };
 
-    globalContext()->currentNotationChanged().onNotify(this, watchScoreChanges);
+    projectSession()->currentNotationChanged().onNotify(this, watchScoreChanges);
     watchScoreChanges();
 
     controller()->textEditingChanged().onReceive(this, [this](bool) {

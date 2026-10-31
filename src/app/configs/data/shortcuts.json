@@ -310,6 +310,22 @@
         ]
     },
     {
+        "scope": "NOTATION_JIANPU",
+        "_comment": "Added by this fork: on a Jianpu staff the digits are scale degrees (1 = tonic), not durations. Active only in note input on a Jianpu staff - see NOTATION_JIANPU in shortcutresolver.cpp.",
+        "shortcuts": [
+            {"command": "command://notation/enter-jianpu-degree-1", "sequences": ["1","Num+1"]},
+            {"command": "command://notation/enter-jianpu-degree-2", "sequences": ["2","Num+2"]},
+            {"command": "command://notation/enter-jianpu-degree-3", "sequences": ["3","Num+3"]},
+            {"command": "command://notation/enter-jianpu-degree-4", "sequences": ["4","Num+4"]},
+            {"command": "command://notation/enter-jianpu-degree-5", "sequences": ["5","Num+5"]},
+            {"command": "command://notation/enter-jianpu-degree-6", "sequences": ["6","Num+6"]},
+            {"command": "command://notation/enter-jianpu-degree-7", "sequences": ["7","Num+7"]},
+            {"command": "command://notation/enter-rest-jianpu", "sequences": ["0","Num+0"]},
+            {"command": "command://notation/jianpu-octave-up", "sequences": ["Up"]},
+            {"command": "command://notation/jianpu-octave-down", "sequences": ["Down"]}
+        ]
+    },
+    {
         "scope": "NOTATION_TEXT_EDITING",
         "shortcuts": [
             {"command": "command://notation/edittext-toggle-bold",  "sequences": ["Ctrl+B"]},

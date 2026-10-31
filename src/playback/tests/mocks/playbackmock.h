@@ -49,6 +49,9 @@ public:
                 (const TrackName& name, io::IODevice * data, const TrackParams& params), (override));
     MOCK_METHOD((async::Promise<TrackId, TrackParams>), addTrack,
                 (const TrackName& name, const mpe::PlaybackData& data, const TrackParams& params), (override));
+    //! Added by this fork (audio track): the file-path overload the engine uses for Sound_tracks.
+    MOCK_METHOD((async::Promise<TrackId, TrackParams>), addTrack,
+                (const TrackName& name, const std::string& filePath, const TrackParams& params), (override));
     MOCK_METHOD((async::Promise<TrackId, TrackParams>), addAuxTrack,
                 (const TrackName& trackName, const TrackParams& params), (override));
 

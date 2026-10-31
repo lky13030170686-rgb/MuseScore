@@ -38,7 +38,7 @@
 #include "async/asyncable.h"
 #include "async/promise.h"
 #include "modularity/ioc.h"
-#include "context/iglobalcontext.h"
+#include "project/iprojectsession.h"
 #include "interactive/iinteractive.h"
 #include "rcommand/icommanddispatcher.h"
 #include "rcommand/icommandsstate.h"
@@ -192,7 +192,7 @@ class FieldController : public QObject, public muse::Contextable, public muse::a
     //! lives in `muse::agentharness`, where a bare `context::` would resolve to the (nonexistent)
     //! `muse::context`. The models this pattern is copied from sit in `mu::notation`, so there the
     //! short form happens to work - copying it verbatim here is a compile error, not a subtle bug.
-    muse::ContextInject<mu::context::IGlobalContext> context = { this };
+    muse::ContextInject<mu::project::IProjectSession> context = { this };
     //! Used for two things, both of them observation rather than behaviour: asking whether the
     //! notation page is open, and (under MUSE_AGENT_DEMO_NOTATION) opening it so the field can be
     //! exercised without a human at the keyboard.

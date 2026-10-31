@@ -2056,8 +2056,8 @@ void PlaybackController::onWaveformChanged()
     // The notification arrives on the worker thread that finished decoding; score layout
     // and painting must happen on the main thread, so hop over before touching anything.
     QMetaObject::invokeMethod(qApp, [this]() {
-        // currentMasterNotation() hands back a shared_ptr, not a raw pointer.
-        const notation::IMasterNotationPtr masterNotation = globalContext()->currentMasterNotation();
+        // masterNotation() hands back a shared_ptr, not a raw pointer.
+        const notation::IMasterNotationPtr masterNotation = projectSession()->masterNotation();
         engraving::MasterScore* score = masterNotation ? masterNotation->masterScore() : nullptr;
         if (!score) {
             return;
@@ -2091,7 +2091,7 @@ void PlaybackController::onWaveformChanged()
         // picture only appeared once the user nudged the window, which made a freshly imported
         // waveform look missing and made a moved one look like the drag had done nothing.
         // Sent to the notation that is on screen, which is the one the view listens to.
-        const notation::INotationPtr notation = globalContext()->currentNotation();
+        const notation::INotationPtr notation = projectSession()->currentNotation();
         if (notation) {
             notation->notationChanged().send(muse::RectF());
         }

@@ -1772,7 +1772,7 @@ RecipeResult FieldController::saveScoreToItsFile()
     //! ⚠️ `mu::project`, not `muse::project`: the project layer is the APPLICATION's (it owns the file, the
     //! cloud and the autosave), while the notation layer under it is the framework's. The two namespaces
     //! look alike and only one of them has this type.
-    const mu::project::INotationProjectPtr project = context()->currentProject();
+    const mu::project::INotationProjectPtr project = context()->project();
 
     const bool hasProject = bool(project);
     const bool newlyCreated = hasProject && project->isNewlyCreated();

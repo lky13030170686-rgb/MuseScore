@@ -185,7 +185,10 @@ void NotationPageModel::openAgentPanel()
     //!
     //! This dispatches the SAME action the View menu and the toolbar go through, i.e. the case that
     //! is known to work (第 123 条).
-    dispatcher()->dispatch("dock-set-open", ActionData::make_arg2<QString, bool>(AGENT_PANEL_NAME, true));
+    commandDispatcher()->dispatch(dock::DOCK_SET_OPEN_COMMAND, {
+        { "dock_name", muse::Val(AGENT_PANEL_NAME.toStdString()) },
+        { "open", muse::Val(true) },
+    });
 }
 
 QString NotationPageModel::statusBarName() const

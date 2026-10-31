@@ -1638,7 +1638,7 @@ RecipeResult muse::agentharness::toggleArticulation(mu::engraving::Score* score,
     //! is not added - `EditChord::toggleArticulation` builds its own - so it is deleted immediately;
     //! leaking it here would be a leak per call.
     mu::engraving::Articulation* probe =
-        mu::engraving::Factory::createArticulation(score->dummy()->chord());
+        mu::engraving::Factory::createArticulation(mu::engraving::parentOrDummy<mu::engraving::ChordRest>(nullptr, score->dummy()));
     probe->setSymId(symbol);
     const bool wasThere = chord->hasArticulation(probe) != nullptr;
     delete probe;
@@ -1648,7 +1648,7 @@ RecipeResult muse::agentharness::toggleArticulation(mu::engraving::Score* score,
     //! producing a SECOND articulation - two staccato dots stacked on one notehead, which is what a
     //! caller asking twice would get.
     mu::engraving::Articulation* articulation =
-        mu::engraving::Factory::createArticulation(score->dummy()->chord());
+        mu::engraving::Factory::createArticulation(mu::engraving::parentOrDummy<mu::engraving::ChordRest>(nullptr, score->dummy()));
     articulation->setSymId(symbol);
     if (!mu::engraving::EditChord::toggleArticulation(score, found.note, articulation)) {
         //! ⚠️ `toggleArticulation` returns false in TWO different situations - it removed one, and it
@@ -2319,7 +2319,7 @@ RecipeResult muse::agentharness::setTimeSignature(mu::engraving::Score* score, i
                                      .arg(measureNumber).arg(numerator).arg(denominator));
     }
 
-    mu::engraving::TimeSig* ts = mu::engraving::Factory::createTimeSig(score->dummy()->segment());
+    mu::engraving::TimeSig* ts = mu::engraving::Factory::createTimeSig(mu::engraving::parentOrDummy<mu::engraving::Segment>(nullptr, score->dummy()));
     ts->setSig(wanted, mu::engraving::TimeSigType::NORMAL);
 
     mu::engraving::Transaction& tx = score->transactionManager()->currentOrDummyTransaction();

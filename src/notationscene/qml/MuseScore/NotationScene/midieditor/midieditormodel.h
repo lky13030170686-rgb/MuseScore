@@ -36,7 +36,7 @@
 #include "async/asyncable.h"
 
 #include "modularity/ioc.h"
-#include "context/iglobalcontext.h"
+#include "project/iprojectsession.h"
 #include "midi/imidiinport.h"
 
 #include "notation/inotation.h"
@@ -150,7 +150,7 @@ class MidiEditorModel : public QObject, public muse::Contextable, public muse::a
     //! 这三处必须问同一个来源，否则会出现"录到 A 谱表、插入到 B 谱表"这种自相矛盾的状态。
     Q_PROPERTY(int editStaff READ editStaff WRITE setEditStaff NOTIFY editStaffChanged)
 
-    muse::ContextInject<context::IGlobalContext> context = { this };
+    muse::ContextInject<project::IProjectSession> context = { this };
 
     //! The playback position and the solo state are the playback module's, not ours: this page only
     //! asks for them (see seekTick() / setSoloStaff()).

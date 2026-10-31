@@ -26,6 +26,8 @@
 #include "engravingitem.h"
 
 namespace mu::engraving {
+class ChordRest;
+
 //---------------------------------------------------------
 //    @@ DurationLine
 ///     Graphic representation of a duration line.
@@ -41,7 +43,7 @@ class DurationLine final : public EngravingItem
     DECLARE_CLASSOF(ElementType::DURATION_LINE)
 
 public:
-    DurationLine(EngravingItem*);
+    DurationLine(DummyParentOr<ChordRest> parent);
     ~DurationLine() override = default;
     DurationLine& operator=(const DurationLine&) = delete;
 

@@ -37,8 +37,8 @@
 
 #include "midi/midievent.h"
 
-#include "context/iglobalcontext.h"
-#include "context/iplaybackstate.h"
+#include "project/iprojectsession.h"
+
 
 #include "log.h"
 #include "translation.h"
@@ -156,17 +156,17 @@ void MidiEditorModel::init()
         reload();
     });
 
-    context()->playbackState()->playbackPositionChanged().onReceive(this, [this](muse::audio::secs_t pos) {
+    playbackController()->playbackPositionChanged().onReceive(this, [this](muse::audio::secs_t pos) {
         //! 录制用的参考时钟（见 recordTickAt()）。⚠️ 这个回调可能不在主线程上，所以这里
         //! **只写原子成员**，不碰任何 QML/模型状态。
         m_recordPosSecs.store(double(pos));
         m_recordPosWallMs.store(nowMs());
-        m_recordPosRunning.store(context()->playbackState()->isPlaying());
+        m_recordPosRunning.store(playbackController()->isPlaying());
 
         updatePlaybackState();
     });
 
-    context()->playbackState()->playbackStatusChanged().onReceive(this, [this](muse::audio::PlaybackStatus status) {
+    playbackController()->isPlayingChanged().onReceive(this, [this](bool isPlaying) {
         updatePlaybackState();
 
         //! ── 播放自己停下来 = 这一次录制到此为止 ────────────────────────────────────
@@ -175,7 +175,7 @@ void MidiEditorModel::init()
         //! 少了它，每次按下录制的下一刻就会提交一个空 take。
         //! ⚠️ 这里用**排队调用**而不是直接调：这个回调可能在音频线程上，
         //! 而写乐谱必须在主线程（下面 finishRecording 会开事务、改 engraving 模型）。
-        if (status == muse::audio::PlaybackStatus::Running) {
+        if (isPlaying) {
             m_recordSawPlaying = true;
         } else if (m_isRecording && m_recordSawPlaying) {
             QMetaObject::invokeMethod(this, [this]() { finishRecording(true); }, Qt::QueuedConnection);
@@ -479,9 +479,9 @@ void MidiEditorModel::updatePlaybackState()
     INotationPlaybackPtr playback = notation ? notation->masterNotation()->playback() : nullptr;
 
     const double tick = playback
-                        ? double(playback->secToTick(context()->playbackState()->playbackPosition()))
+                        ? double(playback->secToTick(playbackController()->playbackPosition()))
                         : 0.0;
-    const bool playing = context()->playbackState()->isPlaying();
+    const bool playing = playbackController()->isPlaying();
 
     if (qFuzzyCompare(tick, m_playbackTick) && playing == m_isPlaying) {
         return;
@@ -1685,7 +1685,7 @@ void MidiEditorModel::startRecording(int staffIndex){
 
     //! 参考时钟**立刻**初始化：第一个音可能比第一帧播放位置还早，那时用 0 会让它落在曲子开头。
     //! `running = false` 是刻意的 —— 还没开始走带时事件不该被外推。
-    m_recordPosSecs.store(double(context()->playbackState()->playbackPosition()));
+    m_recordPosSecs.store(double(playbackController()->playbackPosition()));
     m_recordPosWallMs.store(nowMs());
     m_recordPosRunning.store(false);
 

@@ -50,6 +50,8 @@ private:
     bool isNotationFocused() const;
     bool isNotationFocusedAndNoteInputMode() const;
     bool isNotationFocusedAndTabStaff() const;
+    //! Added by this fork: the current staff is a Jianpu staff (see NOTATION_JIANPU scope).
+    bool isNotationFocusedAndJianpuStaff() const;
     bool isNotationFocusedAndHasSelection() const;
     bool isNotationFocusedAndSingleSelection() const;
     bool isNotationFocusedAndRangeSelection() const;
