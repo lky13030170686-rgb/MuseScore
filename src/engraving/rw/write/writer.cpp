@@ -19,6 +19,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
 #include "writer.h"
 
 #include "../types/types.h"
@@ -42,6 +46,24 @@ using namespace muse;
 using namespace mu::engraving;
 using namespace mu::engraving::write;
 
+//! [our addition] "5.00" unless a 4.x hand-off format was asked for (see writeScore).
+//! MUSE_MSC_COMPAT=470 makes every save write <museScore version="4.70">, which MuseScore 4.7.x
+//! accepts; the rest of the file is otherwise unchanged.
+static std::string mscVersionForSave()
+{
+    static const int requested = []() -> int {
+        const char* env = std::getenv("MUSE_MSC_COMPAT");
+        return env ? std::atoi(env) : 0;
+    }();
+
+    if (requested >= 400 && requested < Constants::MSC_VERSION) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d.%02d", requested / 100, requested % 100);
+        return std::string(buf);
+    }
+
+    return std::string(Constants::MSC_VERSION_STR);
+}
 Writer::Writer()
 {
 }
@@ -58,7 +80,15 @@ bool Writer::writeScore(Score* score, io::IODevice* device, rw::WriteInOutData* 
 
     xml.startDocument();
 
-    xml.startElement("museScore", { { "version", Constants::MSC_VERSION_STR } });
+    //! NOTE: [our addition] A score can be written in an OLDER msc format so that MuseScore 4.x can
+    //! open it. MuseScore 4.7 refuses anything whose root version is not <= its own, and the version
+    //! attribute is the ONLY thing it refuses on - the rest of a 5.00 file is understood (measured
+    //! 2026-10-31: the same package opens in 4.7.5 once this string says "4.70").
+    //! Chosen by MUSE_MSC_COMPAT (e.g. 470); unset means the native 5.00 format.
+    //! ⚠️ This is a HAND-OFF format, not a working format: 5.0-only data (jianpu staff type, audio
+    //! track, per-note velocity) is not representable in 4.x and will be lost or ignored there.
+    const std::string saveVersion = mscVersionForSave();
+    xml.startElement("museScore", { { "version", saveVersion } });
 
     if (!MScore::testMode) {
         xml.tag("programVersion", application()->version().toString());
