@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 
 #include <QPainter>
@@ -688,19 +689,27 @@ void VideoWriter::pageGridOf(int pagesPerScreen, double pageAspect, double frame
     }
 
     //! NOTE Page height and frame height are both normalised to 1.
-    //! Columns ascending, so on a tie the wider arrangement (a single row, "连排") wins.
+    //! A grid may have MORE slots than pages (5 pages -> 3x2, 7 pages -> 4x2): the last row is
+    //! simply not full, and the caller centres the pages that are there. Restricting this to exact
+    //! factorisations would leave prime page counts (5, 7) with nothing but a single row/column.
+    //! Tie-break matters: 7 pages fit 4x2 and 5x2 with the SAME page size, while 5x2 wastes three
+    //! slots instead of one - so among equal scales prefer the arrangement with fewer empty slots,
+    //! and only then the wider one ("连排").
     double bestScale = 0.0;
+    int bestWaste = std::numeric_limits<int>::max();
 
     for (int c = 1; c <= pages; ++c) {
-        if (pages % c != 0) {
-            continue;
-        }
-
-        const int r = pages / c;
+        const int r = (pages + c - 1) / c;
         const double scale = std::min(frameAspect / (c * pageAspect), 1.0 / r);
+        const int waste = c * r - pages;
 
-        if (scale >= bestScale) {
+        const bool better = scale > bestScale + 1e-9
+                            || (std::abs(scale - bestScale) <= 1e-9
+                                && (waste < bestWaste || (waste == bestWaste && c > columns)));
+
+        if (better) {
             bestScale = scale;
+            bestWaste = waste;
             columns = c;
             rows = r;
         }
@@ -807,10 +816,21 @@ bool VideoWriter::generateScoreFramesMultiPage(muse::media::IVideoEncoderPtr enc
     //! per group instead of once per page, which is the point of showing several pages at once.
     int currentGroupStart = -1;
 
-    //! NOTE The last group is usually partial (15 pages with 4 per screen leaves 3). Keep the page
-    //! size but centre the pages that are actually there, so the last page does not sit in the
-    //! left corner. Only for a single row - a half filled grid looks accidental when centred.
-    double groupOffsetX = 0.0;
+    //! NOTE A group can fill fewer slots than the grid has: 5 pages in a 3x2 grid, 7 in a 4x2,
+    //! or a short last group (15 pages with 4 per screen leaves 3). Slots are never resized, but
+    //! the pages that ARE there are centred inside their row, so the last row does not lean left.
+    int groupPageCount = 0;
+
+    auto slotLeft = [&](int slot) {
+        const int row = slot / columns;
+        const int usedInRow = std::clamp(groupPageCount - row * columns, 0, columns);
+        const double rowOffset = (columns - usedInRow) * (pageWidth + gap) / 2.0;
+        return originX + rowOffset + (slot % columns) * (pageWidth + gap);
+    };
+
+    auto slotTop = [&](int slot) {
+        return originY + (slot / columns) * (pageHeight + gap);
+    };
 
     qp.save();
     qp.resetTransform();
@@ -839,11 +859,7 @@ bool VideoWriter::generateScoreFramesMultiPage(muse::media::IVideoEncoderPtr enc
         if (groupStart != currentGroupStart) {
             currentGroupStart = groupStart;
             pageCache.clear();
-
-            if (rows == 1) {
-                const int usedSlots = std::min(pagesPerScreen, static_cast<int>(pages.size()) - groupStart);
-                groupOffsetX = (columns - usedSlots) * (pageWidth + gap) / 2.0;
-            }
+            groupPageCount = std::min(pagesPerScreen, static_cast<int>(pages.size()) - groupStart);
         }
 
         for (int slot = 0; slot < pagesPerScreen; ++slot) {
@@ -862,10 +878,8 @@ bool VideoWriter::generateScoreFramesMultiPage(muse::media::IVideoEncoderPtr enc
                 it = pageCache.emplace(pageIndex, renderPage(pageIndex)).first;
             }
 
-            const int column = slot % columns;
-            const int row = slot / columns;
-            const QPoint slotOrigin(static_cast<int>(std::lrint(originX + groupOffsetX + column * (pageWidth + gap))),
-                                    static_cast<int>(std::lrint(originY + row * (pageHeight + gap))));
+            const QPoint slotOrigin(static_cast<int>(std::lrint(slotLeft(slot))),
+                                    static_cast<int>(std::lrint(slotTop(slot))));
 
             qp.drawImage(slotOrigin, it->second);
         }
@@ -878,10 +892,8 @@ bool VideoWriter::generateScoreFramesMultiPage(muse::media::IVideoEncoderPtr enc
 
         if (cursorSlot >= 0 && cursorSlot < pagesPerScreen
             && cursorRect.width() > 0.0 && cursorRect.height() > 0.0) {
-            const int column = cursorSlot % columns;
-            const int row = cursorSlot / columns;
-            const double slotX = originX + groupOffsetX + column * (pageWidth + gap);
-            const double slotY = originY + row * (pageHeight + gap);
+            const double slotX = slotLeft(cursorSlot);
+            const double slotY = slotTop(cursorSlot);
             const muse::PointF pagePos = pages.at(currentPage)->pos();
 
             const QRectF cursorDeviceRect(slotX + (cursorRect.x() - pagePos.x()) * scale,

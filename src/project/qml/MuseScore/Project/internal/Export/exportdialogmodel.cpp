@@ -646,27 +646,18 @@ ExportDialogModel::ViewMode ExportDialogModel::viewMode() const
 
 QVariantList ExportDialogModel::availablePagesPerScreen() const
 {
-    const std::map<int, QString> texts {
-        { 1, muse::qtrc("project/export", "Single page") },
-        { 2, muse::qtrc("project/export", "2 pages") },
-        { 3, muse::qtrc("project/export", "3 pages") },
-        { 4, muse::qtrc("project/export", "4 pages") },
-        { 6, muse::qtrc("project/export", "6 pages") },
-        { 8, muse::qtrc("project/export", "8 pages") },
-        { 9, muse::qtrc("project/export", "9 pages") },
-    };
-
     QVariantList result;
 
     for (int pages : videoExportConfiguration()->availablePagesPerScreen()) {
-        auto it = texts.find(pages);
-        if (it == texts.end()) {
-            continue;
-        }
+        //! NOTE One label per count ("5 pages"), not one string per preset: any count in the list
+        //! works, and the grid is derived from the count (see VideoWriter::pageGridOf()).
+        const QString text = pages == 1
+                             ? muse::qtrc("project/export", "Single page")
+                             : muse::qtrc("project/export", "%1 pages").arg(pages);
 
         QVariantMap obj;
-        obj["value"] = it->first;
-        obj["text"] = it->second;
+        obj["value"] = pages;
+        obj["text"] = text;
         result << obj;
     }
 

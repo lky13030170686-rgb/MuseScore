@@ -36755,33 +36755,8 @@ failed: %2</source>
     </message>
     <message>
         <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="651"/>
-        <source>2 pages</source>
-        <translation>2 页</translation>
-    </message>
-    <message>
-        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="652"/>
-        <source>3 pages</source>
-        <translation>3 页</translation>
-    </message>
-    <message>
-        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="653"/>
-        <source>4 pages</source>
-        <translation>4 页</translation>
-    </message>
-    <message>
-        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="654"/>
-        <source>6 pages</source>
-        <translation>6 页</translation>
-    </message>
-    <message>
-        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="655"/>
-        <source>8 pages</source>
-        <translation>8 页</translation>
-    </message>
-    <message>
-        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="656"/>
-        <source>9 pages</source>
-        <translation>9 页</translation>
+        <source>%1 pages</source>
+        <translation>%1 页</translation>
     </message>
     <message>
         <location filename="../../src/project/qml/MuseScore/Project/internal/Export/Mp4SettingsPage.qml" line="176"/>

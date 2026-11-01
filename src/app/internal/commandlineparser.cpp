@@ -158,7 +158,7 @@ void CommandLineParser::init()
     m_parser.addOption(QCommandLineOption("ts", "Pause before end of video in seconds (3.0)", "3.0"));
     m_parser.addOption(QCommandLineOption("no-audio", "Export video without audio"));
     //! LKY fork: several pages per frame, and no title card / no end logo
-    m_parser.addOption(QCommandLineOption("pages-per-screen", "Score pages shown at the same time [1, 2, 3, 4, 6, 8, 9]", "1"));
+    m_parser.addOption(QCommandLineOption("pages-per-screen", "Score pages shown at the same time [1..9]", "1"));
     m_parser.addOption(QCommandLineOption("no-title", "Do not draw the score title at the beginning"));
     m_parser.addOption(QCommandLineOption("no-logo", "Do not append the \"Made with MuseScore\" clip at the end"));
 #endif

@@ -35,9 +35,10 @@ static const double DEFAULT_TRAILING_SECONDS = 3.0;
 
 static const std::vector<std::string> AVAILABLE_RESOLUTIONS = { "2160p", "1440p", "1080p" };
 
-//! LKY fork: pages shown at the same time. 2/3/8 give a single row ("连排"), 4/6/9 a grid.
+//! LKY fork: pages shown at the same time. Any count works: `pageGridOf()` picks the arrangement
+//! that makes the pages largest, and a grid may have one slot to spare (5 -> 3x2, 7 -> 4x2).
 static const int DEFAULT_PAGES_PER_SCREEN = 1;
-static const std::vector<int> AVAILABLE_PAGES_PER_SCREEN = { 1, 2, 3, 4, 6, 8, 9 };
+static const std::vector<int> AVAILABLE_PAGES_PER_SCREEN = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
 static const bool DEFAULT_SHOW_TITLE_PAGE = true;
 static const bool DEFAULT_SHOW_END_LOGO = true;
 
