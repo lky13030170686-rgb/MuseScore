@@ -10273,6 +10273,21 @@ Score revision (write fence): %6</source>
         <translation>已记录的编辑</translation>
     </message>
     <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Selection</source>
+        <translation>选区</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentPanel.qml"/>
+        <source>Selection: %1</source>
+        <translation>选区：%1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>nothing selected</source>
+        <translation>未选中</translation>
+    </message>
+    <message>
         <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
         <source>Remember the API key in the settings file</source>
         <translation>把 API 密钥记住到设置文件</translation>

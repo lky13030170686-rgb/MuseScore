@@ -31,6 +31,10 @@ set(MODULE_TEST_SRC
     ${CMAKE_CURRENT_LIST_DIR}/addressing_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/semanticderive_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/scoredigest_tests.cpp
+    # What the user has selected (第 173 条): a range of ticks + staff indices turned into the address a tool
+    # would take. Pure - and it has to be, because the failure that matters (an exclusive `endTick` reported
+    # as the next measure) produces a perfectly ordinary-looking line.
+    ${CMAKE_CURRENT_LIST_DIR}/selectiondigest_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/notelocator_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/scorerecipes_tests.cpp
     # Editor state that is NOT score data (第 138 条): the measure-range selection the selection-driven

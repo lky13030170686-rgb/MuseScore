@@ -1941,6 +1941,11 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             QStringLiteral("Summarise the open score: title, measures, parts/staves, time signatures, key "
                            "signatures, the repeat structure and any 1st/2nd endings, per-staff note counts "
                            "and pitch ranges, and which measures are empty. "
+                           "The last line is `selection:` - what the user has selected in the editor RIGHT "
+                           "NOW, as the same measure/beat addresses the write tools take (e.g. "
+                           "`m3b2..m5b4 · staves 1..1 · 6 note(s)`), or `none`. Read it when the user says "
+                           "\"this\", \"here\" or \"the selected measures\" instead of naming a range; it "
+                           "changes without the score changing, so re-read it rather than remembering it. "
                            "Bounded in size, so it is always safe to call first."),
             schemaObject({}),
             toolScoreOverview,

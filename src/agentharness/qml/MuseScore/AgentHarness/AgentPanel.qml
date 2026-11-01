@@ -107,6 +107,20 @@ Item {
             text: root.field ? root.field.statusText : ""
         }
 
+        //! 🆕 What the user has selected (第 173 条), on the panel the user is actually looking at while they
+        //! select measures on the score behind it. ⛔ Shown ONLY when there is a selection: the panel is a
+        //! narrow dock, and a permanent "nothing selected" line would cost a row of the conversation to say
+        //! nothing. The Agent page's facts panel states it either way, because that surface has the room -
+        //! one property, two presentations, and neither re-derives the text.
+        StyledTextLabel {
+            Layout.fillWidth: true
+            visible: root.field !== null && root.field.selectionText.length > 0
+            horizontalAlignment: Text.AlignLeft
+            wrapMode: Text.WordWrap
+            color: ui.theme.fontSecondaryColor
+            text: root.field ? qsTrc("agentharness", "Selection: %1").arg(root.field.selectionText) : ""
+        }
+
         //! ── The information field's timeline ──────────────────────────────────────────────
         //! ⛔ THIS WAS LOST when the panel was rebuilt around the conversation, and its absence is not
         //! cosmetic: the transcript is what was SAID, this is what HAPPENED. An edit the user made with

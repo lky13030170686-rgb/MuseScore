@@ -45,6 +45,15 @@
 
 #include "engraving/dom/score.h"
 #include "engraving/dom/engravingitem.h"
+//! The user's selection (第 173 条): `INotationSelection` says WHETHER it is a single element or a range,
+//! `INotationSelectionRange` says WHERE it starts and ends (in ticks and staff indices).
+#include "notation/inotationselection.h"
+#include "notation/inotationselectionrange.h"
+//! `TConv::toXml(ElementType)` for the selected element's name - the non-translatable tag, same rule as
+//! the clef/dynamic names in `scoredigest.cpp`.
+#include "engraving/types/typesconv.h"
+//! `Note::pitch()` for "Note C4" - the pitch is what makes a single-note selection recognisable.
+#include "engraving/dom/note.h"
 //! `ScoreChanges::changedObjects` is keyed by `CommandType`, and `INotationUndoStack` only
 //! forward-declares it - this include is what makes the histogram below compile.
 #include "engraving/editing/transaction/undoablecommand.h"
@@ -68,6 +77,7 @@
 #include "llmtransport.h"
 #include "semanticderive.h"
 #include "scoredigest.h"
+#include "selectiondigest.h"
 //! Saving to the file the score came from (第 146 条): the refusal rule and the file judge are pure, and
 //! they live next to the reason they exist rather than inside this file.
 #include "scoresave.h"
@@ -404,6 +414,19 @@ void FieldController::unbind()
         }
     }
 
+    //! ⛔ THE SELECTION SUBSCRIPTION TOO, and from the interaction it was MADE on (第 173 条). The block above
+    //! asks the context for "the current notation", which during `currentNotationChanged` may already be the
+    //! new one - disconnecting there would leave the old subscription alive, and it would keep firing into a
+    //! controller whose `m_score` is now a different score. Holding the pointer is what makes the teardown
+    //! address the object that actually holds the subscription.
+    if (m_interaction) {
+        m_interaction->selectionChanged().disconnect(this);
+        m_interaction.reset();
+        //! The selection text is now empty, and the panel has to be told: the score it was describing is
+        //! going away, and a row that keeps showing the old range would be the panel inventing a fact.
+        emit selectionTextChanged();
+    }
+
     m_score = nullptr;
 }
 
@@ -479,8 +502,28 @@ void FieldController::bindToCurrentNotation()
         });
     }
 
+    //! ── The user's selection (第 173 条) ────────────────────────────────────────────────────────────
+    //! ⛔ NONE OF THE CHANNELS ABOVE FIRES WHEN THE SELECTION CHANGES. Clicking a measure, dragging a box or
+    //! pressing Ctrl+A changes nothing in the engraving model, so the score is not "changed" and the undo
+    //! stack does not move - which is exactly why the selection has to be subscribed to separately. Without
+    //! this line the panel's Selection row is right until the first click after a bind, and `score_overview`
+    //! keeps reporting the selection the user had when the score was opened.
+    if (INotationInteractionPtr interaction = notation->interaction()) {
+        m_interaction = interaction;
+        interaction->selectionChanged().onNotify(this, [this]() {
+            //! Only the derived text changes; the score facts are untouched. Emitting `fieldChanged()` here
+            //! would rebuild the transcript and the timeline on every mouse drag, to say nothing new.
+            emit selectionTextChanged();
+        });
+    }
+
     refreshScoreFacts();
     emit fieldChanged();
+
+    //! The new score's selection may already exist (and the previous one is gone), so the derived text is
+    //! re-read on rebind as well - otherwise the panel would show the previous score's selection until the
+    //! user's next click.
+    emit selectionTextChanged();
 
     //! Verification hook, at the very end of the bind so the tool sees a fully wired field: the
     //! change channel is subscribed, the grid is built, and `revision` has a real value.
@@ -860,13 +903,95 @@ QVariantList FieldController::recentOps() const
     return out;
 }
 
+QString FieldController::selectionText() const
+{
+    //! Read LIVE from the notation interaction - never cached (第 173 条). The selection changes without the
+    //! score changing, so anything that refreshed it from `changesChannel` would describe the selection the
+    //! user had a moment ago, and the panel would be showing a stale answer to "what am I pointing at".
+    if (!m_score || !m_interaction) {
+        return QString();
+    }
+
+    const INotationSelectionPtr selection = m_interaction->selection();
+    if (!selection || selection->isNone()) {
+        return QString();
+    }
+
+    SelectionFacts facts;
+
+    if (selection->isRange()) {
+        const INotationSelectionRangePtr range = selection->range();
+        if (!range) {
+            return QString();
+        }
+
+        const int startTick = int(range->startTick().ticks());
+        const int endTick = int(range->endTick().ticks());
+
+        //! ⛔ `endTick()` IS EXCLUSIVE. Asking the grid about that tick answers "the measure AFTER the last
+        //! selected one" whenever the selection ends exactly on a barline - a selection of measures 3..5
+        //! would be reported as 3..6. The conversion (and its test) lives in `selectiondigest` so the rule
+        //! has one home.
+        const int lastTick = rangeLastTick(startTick, endTick);
+
+        const ScoreAddress start = addressForTick(m_grid, startTick);
+        const ScoreAddress end = addressForTick(m_grid, lastTick);
+
+        facts.kind = SelectionFacts::Kind::Range;
+        facts.firstMeasure = start.measure;
+        facts.firstBeat = start.beat;
+        facts.lastMeasure = end.measure;
+        facts.lastBeat = end.beat;
+
+        //! ⛔ `endStaffIndex()` is exclusive too (第 173 条): a one-staff selection is `0..1` and must read
+        //! "staff 1", not "staves 1..2". Same rule, same reason, different unit - hence the same module.
+        const StaffSpan staffSpan = staffSpanForDisplay(int(range->startStaffIndex()),
+                                                        int(range->endStaffIndex()));
+        facts.firstStaff = staffSpan.first;
+        facts.lastStaff = staffSpan.last;
+        facts.noteCount = int(selection->notes().size());
+        return describeSelection(facts);
+    }
+
+    if (selection->isSingle()) {
+        mu::engraving::EngravingItem* item = selection->element();
+        if (!item) {
+            return QString();
+        }
+
+        const ScoreAddress address = addressForTick(m_grid, int(item->tick().ticks()));
+
+        facts.kind = SelectionFacts::Kind::Single;
+        facts.firstMeasure = address.measure;
+        facts.firstBeat = address.beat;
+        if (item->staffIdx() != muse::nidx) {
+            facts.firstStaff = int(item->staffIdx()) + 1;
+            facts.lastStaff = facts.firstStaff;
+        }
+        facts.elementType = QString(TConv::toXml(item->type()).toQLatin1String());
+        if (item->isNote()) {
+            facts.pitch = pitchName(toNote(item)->pitch());
+        }
+        return describeSelection(facts);
+    }
+
+    return QString();
+}
+
 QString FieldController::digestOverview() const
 {
     if (!m_score) {
         return QStringLiteral("(no score open)");
     }
 
-    const QString text = buildScoreOverview(m_score);
+    QString text = buildScoreOverview(m_score);
+
+    //! The selection is the one fact the digest cannot derive from the score: it describes what the USER is
+    //! pointing at, which nothing in the engraving model records (第 173 条). Said out loud even when it is
+    //! empty (`selection: none`), because "nothing is selected" is itself the answer to "why did you not act
+    //! on what I selected" - and a missing line would be read as "the tool does not report selections".
+    const QString selection = selectionText();
+    text += QStringLiteral("\nselection: %1").arg(selection.isEmpty() ? QStringLiteral("none") : selection);
 
     //! MUSE_AGENT_FIELD_TRACE also dumps the digest, because "what would the agent be told" is the
     //! question the read side exists to answer - and the only way to answer it without an agent

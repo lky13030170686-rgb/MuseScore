@@ -40,6 +40,10 @@
 #include "modularity/ioc.h"
 #include "project/iprojectsession.h"
 #include "interactive/iinteractive.h"
+//! `INotationInteractionPtr` - held so the field can (a) read the user's selection and (b) tear down its
+//! `selectionChanged` subscription on the object it was made on (第 173 条). A pointer stored only in the
+//! .cpp would leave `unbind()` guessing which notation to disconnect from after a score switch.
+#include "notation/inotationinteraction.h"
 #include "rcommand/icommanddispatcher.h"
 #include "rcommand/icommandsstate.h"
 #include "rcommand/icommandsregister.h"
@@ -187,6 +191,16 @@ class FieldController : public QObject, public muse::Contextable, public muse::a
     Q_PROPERTY(QVariantList recentOps READ recentOps NOTIFY fieldChanged)
     //! Human-readable one-line status, for the panel header.
     Q_PROPERTY(QString statusText READ statusText NOTIFY fieldChanged)
+    //! What the user has selected right now, as one compact line (第 173 条): "m3b2..m5b4 · staves 1..1 ·
+    //! 6 note(s)", or empty when nothing is selected. The SAME string goes into `score_overview` and into
+    //! the panel's "Selection" row, so the agent and the person looking over its shoulder cannot be told
+    //! two different things about what is selected.
+    //! ⚠️ It has to be a PROPERTY: `selectionText()` is re-read whenever the selection changes, and an
+    //! invokable would be evaluated once and then go stale (第 84/131 条).
+    //! ⛔ NOT `fieldChanged`: that is the property that says the SCORE moved, and everything expensive hangs
+    //! off it (the transcript projection, the timeline, the tool list). Selecting measures with the mouse
+    //! changes none of those, and firing it on every drag would rebuild the conversation to say nothing.
+    Q_PROPERTY(QString selectionText READ selectionText NOTIFY selectionTextChanged)
 
     //! NOTE the interface is `mu::context::IGlobalContext`, NOT `muse::context::...`: this class
     //! lives in `muse::agentharness`, where a bare `context::` would resolve to the (nonexistent)
@@ -667,6 +681,9 @@ public:
     //! Semantic layer, newest first. Pure derivation from `events()` + the measure grid.
     QVariantList recentOps() const;
     QString statusText() const;
+    //! The user's current selection, one compact line (empty when nothing is selected). Read live from
+    //! the notation interaction - never cached, because the selection changes without the score changing.
+    QString selectionText() const;
 
     //! Test/diagnostic seam: the raw events themselves, oldest first.
     const std::deque<RawFieldEvent>& events() const { return m_events; }
@@ -686,6 +703,8 @@ public:
 
 signals:
     void fieldChanged();
+    //! The user's selection moved (第 173 条). Separate from `fieldChanged` on purpose - see the property.
+    void selectionTextChanged();
 
 private:
     void bindToCurrentNotation();
@@ -711,6 +730,16 @@ private:
     bool undoStackCanUndo() const;
 
     mu::engraving::Score* m_score = nullptr;
+
+    //! The notation interaction this field is subscribed to, kept so `unbind()` can disconnect the
+    //! `selectionChanged` subscription from the object it was MADE on (第 173 条). ⚠️ `unbind()` runs from
+    //! `currentNotationChanged`, at which point asking the context for "the current notation" may already
+    //! answer with the NEW one - disconnecting there would leave the old subscription alive and firing into
+    //! a controller that now describes a different score.
+    //! ⚠️ `mu::notation`, not `muse::notation`: the framework is `muse::`, but the engraving/notation
+    //! modules kept the old `mu::` namespace, and this file already spells `mu::engraving::Score` for the
+    //! same reason.
+    mu::notation::INotationInteractionPtr m_interaction;
 
     //! Flattened measure grid, rebuilt whenever the score changes. Kept as a value (never pointers)
     //! for the same reason nothing else here caches engraving objects: a stale grid means the model

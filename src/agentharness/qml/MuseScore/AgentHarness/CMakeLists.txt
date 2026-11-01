@@ -42,6 +42,12 @@ qt_add_qml_module(agentharness_qml
         semanticderive.h
         scoredigest.cpp
         scoredigest.h
+        # What the USER is pointing at (第 173 条): the selection is the one fact the score cannot tell you,
+        # and turning "a range in ticks + staff indices" into "m3b2..m5b4 · staves 1..1 · 6 note(s)" is
+        # arithmetic whose off-by-one (an exclusive `endTick`) is invisible on a screenshot - so it is a pure
+        # function with its own tests rather than a few lines inside the controller.
+        selectiondigest.cpp
+        selectiondigest.h
         tools.cpp
         tools.h
         # The agent loop's verifiable core. `sessionlog` is the single source of truth (the model's

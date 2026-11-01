@@ -166,6 +166,34 @@ Item {
                 value: root.field ? String(root.field.staffCount) : "—"
             }
 
+            //! ── What the user is pointing at (第 173 条) ──────────────────────────────────────────
+            //! Its own two-line block rather than a `FactRow`: the value ("m3b2..m5b4 · staves 1..1 ·
+            //! 6 note(s)") does not fit beside a label in a 280px panel, and `FactRow` elides to the right -
+            //! so the staff span and the note count, the two parts that qualify the range, would be the ones
+            //! cut off. Wrapping costs one row of height and keeps the sentence whole.
+            //! ⚠️ The SAME property the agent reads through `score_overview` (one string, two readers): a
+            //! second formatting here is how the panel and the model start disagreeing about the selection.
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 1
+
+                StyledTextLabel {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignLeft
+                    color: ui.theme.fontSecondaryColor
+                    text: qsTrc("agentharness", "Selection")
+                }
+
+                StyledTextLabel {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignLeft
+                    wrapMode: Text.Wrap
+                    text: root.field && root.field.selectionText.length > 0
+                          ? root.field.selectionText
+                          : qsTrc("agentharness", "nothing selected")
+                }
+            }
+
             FactRow {
                 //! ⛔ `revision` IS the fence - the same number `score_revision` returns and `expectRevision`
                 //! compares (第 140 条). It used to be a private event counter wearing this name, so the
