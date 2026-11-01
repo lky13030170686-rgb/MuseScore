@@ -2037,8 +2037,11 @@ Item {
 
                 anchors.verticalCenter: parent.verticalCenter
                 visible: root.hasScore && text.length > 0
+                //! ⚠️ The count is INSIDE the translated string: "Recording" + " 3" needs no word in
+                //! between in English and does in Chinese ("已录 3 个音"). A noun bolted onto a number
+                //! from outside is the one thing a translator cannot fix.
                 text: root.recording
-                      ? "● " + qsTrc("notationscene", "Recording") + " " + root.model.recordedNoteCount
+                      ? "● " + qsTrc("notationscene", "Recording %1").arg(root.model.recordedNoteCount)
                       : root.takeSummary
                 color: root.recording ? root.recordColor : root.dimTextColor
                 font: ui.theme.bodyFont
@@ -2376,14 +2379,19 @@ Item {
                 //! 左边的提示文字靠"省略号"给它腾地方，见 `hintLabel` 的 anchors）。
                 //! `Horizontal` 那一档是 `minWidth = 24` / `margins = 12` —— 三个短标签该有的宽度。
                 buttonType: FlatButton.Horizontal
-                text: qsTrc("notationscene", "Del")
+                //! ⚠️ The label is the ACTION ("删除"), not the key cap "Del": next to "拷贝" and "粘贴" a
+                //! lone English key name is the one word in this row that would stay untranslated. The key
+                //! itself is still in the tooltip's story and in the hint line.
+                text: qsTrc("notationscene", "Delete")
                 transparent: true
                 enabled: root.selectedCount > 0
 
                 toolTipTitle: qsTrc("notationscene", "Delete the selected notes")
                 toolTipDescription: qsTrc("notationscene", "The last note of a chord becomes a rest of the same length, so the measure stays complete (same as Delete on the notation page)")
 
-                accessible.name: text + "  " + qsTrc("global", "Delete")
+                //! ⚠️ NOT `text + "  " + Delete` any more: once the label IS "删除" that construction reads
+                //! "删除  删除" to a screen reader.
+                accessible.name: text
 
                 onClicked: root.model.deleteSelectedNotes()
             }

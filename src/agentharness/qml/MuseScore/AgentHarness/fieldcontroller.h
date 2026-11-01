@@ -324,6 +324,12 @@ public:
     Q_PROPERTY(bool agentConfigured READ agentConfigured NOTIFY fieldChanged)
     Q_PROPERTY(QString agentLastError READ agentLastError NOTIFY fieldChanged)
     Q_PROPERTY(QString agentApiKeySource READ agentApiKeySource NOTIFY fieldChanged)
+    //! The same provenance, as a word a person reads. ⛔ The TOKEN above stays untranslated on purpose: it
+    //! is compared against values in QML and in tests ("environment" / "stored" / "set" / "none"), so
+    //! translating it would turn a logic value into a display value. The label is derived from it here,
+    //! once, instead of being re-derived by every surface that prints it (the composer, the settings
+    //! dialog, the About block) - three copies would eventually disagree with each other.
+    Q_PROPERTY(QString agentApiKeySourceLabel READ agentApiKeySourceLabel NOTIFY fieldChanged)
     //! The model ids the endpoint says it serves, and how the last attempt to ask went. The list is a
     //! PROPERTY (not an invokable) for the usual reason: the menu binding has to re-evaluate when the
     //! answer arrives, and an invokable getter has nothing to connect to (第 125 条).
@@ -455,6 +461,7 @@ public:
     //! Reported rather than guessed at, because "it works on my machine" is usually an environment
     //! variable someone forgot they set.
     QString agentApiKeySource() const;
+    QString agentApiKeySourceLabel() const;
     //! The model ids from the last successful `refreshAgentModels()`, as a list of strings for the menu.
     QVariantList agentModelIds() const;
     bool agentModelsLoading() const;

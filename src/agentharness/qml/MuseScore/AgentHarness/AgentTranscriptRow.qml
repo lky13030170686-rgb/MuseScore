@@ -89,6 +89,27 @@ Item {
     readonly property bool isUser: root.kind === "user"
     readonly property bool isTool: root.kind === "toolCall" || root.kind === "toolResult"
     readonly property bool isToolResult: root.kind === "toolResult"
+    //! ⛔ `roleLabel` is a TOKEN, not a word to print: the transcript builder puts "you" / "agent" /
+    //! "tool" / "think" / "error" there, and those values are also what the code and the docs reason
+    //! about. This is the one place they become words. Kept as a switch of `qsTrc` LITERALS (not
+    //! `qsTrc(token)`) so the extractor sees every string, and an unknown token is shown as it came
+    //! rather than swallowed - a blank role line would be the worst of the three behaviours.
+    readonly property string roleDisplay: {
+        switch (root.roleLabel) {
+        case "you":
+            return qsTrc("agentharness", "you")
+        case "agent":
+            return qsTrc("agentharness", "agent")
+        case "tool":
+            return qsTrc("agentharness", "tool")
+        case "think":
+            return qsTrc("agentharness", "thought")
+        case "error":
+            return qsTrc("agentharness", "error")
+        default:
+            return root.roleLabel
+        }
+    }
     //! Exactly the answer rows. `attempt` (a failed round's reason) is a message too, but it is not the
     //! model's prose and nobody writes lists in it, so it stays verbatim.
     readonly property bool isAssistant: root.kind === "assistant"
@@ -156,7 +177,7 @@ Item {
             //! The role is a separate small line rather than a prefix, so a long answer does not have
             //! its first line pushed off to the right by "agent: ".
             opacity: 0.65
-            text: root.roleLabel
+            text: root.roleDisplay
         }
 
         StyledTextLabel {

@@ -567,7 +567,8 @@ Popup {
                                     return qsTrc("agentharness", "Gateway: %1\nModel: %2\nKey: %3\nTools: %4\nSession events: %5\nScore revision (write fence): %6")
                                            .arg(root.field.agentBaseUrl)
                                            .arg(root.field.agentModel)
-                                           .arg(root.field.agentApiKeySource)
+                                           //! ⚠️ The label, not the raw provenance token - see AgentComposer.
+                                           .arg(root.field.agentApiKeySourceLabel)
                                            .arg(root.field.toolCount)
                                            .arg(root.field.eventCount)
                                            .arg(root.field.revision)
@@ -625,7 +626,10 @@ Popup {
                                 wrapMode: Text.WordWrap
                                 color: ui.theme.fontSecondaryColor
                                 text: qsTrc("agentharness",
-                                            "Resets the gateway, the model, the step guard and the column widths. The API key is untouched - it is never stored.")
+                                            //! ⛔ Not "it is never stored" any more: since 第 131 条 the key MAY be
+                                            //! stored, at the user's explicit choice ("remember"), and a sentence that
+                                            //! contradicts the checkbox three rows above it is worse than a short one.
+                                            "Resets the gateway, the model, the step guard and the column widths. The API key is untouched.")
                             }
                         }
                     }

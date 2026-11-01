@@ -24,6 +24,12 @@
 #include <QDateTime>
 #include <QUuid>
 
+//! The two placeholder titles are the only strings in this file a PERSON reads (`sessionTitleFrom` is
+//! display-only; a stored name comes from a `session/title` event). Through `qtrc` a missing translation
+//! falls back to the English source, which is also what the unit tests assert - no translator is installed
+//! there, so they keep comparing against these literals.
+#include "translation.h"
+
 using namespace muse::agentharness;
 
 namespace {
@@ -85,8 +91,8 @@ QString muse::agentharness::sessionTitleFrom(const SessionLog& log, int maxChars
     //! A session that exists but has said nothing yet is a real state - the list shows it as the current
     //! row while the user is typing the first message - so it gets a label rather than an empty cell.
     if (text.isEmpty()) {
-        return sessionHasContent(log) ? QStringLiteral("(no message yet)")
-                                      : QStringLiteral("(new session)");
+        return sessionHasContent(log) ? muse::qtrc("agentharness", "(no message yet)")
+                                      : muse::qtrc("agentharness", "(new session)");
     }
 
     return elideTitle(text, maxChars);

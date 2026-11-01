@@ -212,7 +212,12 @@ Item {
             //! one will have: same body, same 14/24, same markdown.
             footer: Item {
                 width: transcriptView.width
-                height: streamingRow.implicitHeight
+                //! ⛔ EMPTY FOOTER TAKES NO ROOM (第 172 条). The row below always exists - it is the
+                //! arriving answer - but with nothing arriving it still drew its ROLE line, so an idle
+                //! panel ended with a stray "agent" (now "助手") under the last real row. The body is
+                //! empty and only the label showed, which reads like a message that failed to arrive.
+                visible: root.streaming.length > 0
+                height: visible ? streamingRow.implicitHeight : 0
 
                 AgentTranscriptRow {
                     id: streamingRow

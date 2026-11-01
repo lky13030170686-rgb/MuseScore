@@ -146,9 +146,13 @@ Item {
                 //! The source is shown because "it works on my machine" is usually an environment
                 //! variable someone forgot they set - and a key that came from the environment cannot
                 //! be cleared from here.
+                //! ⛔ The LABEL, not the token (`agentApiKeySource` is "environment"/"stored"/... and is
+                //! compared against those values elsewhere). Printing the token inside a translated
+                //! sentence is what makes a Chinese UI read "密钥：stored" - the word is English while the
+                //! sentence around it is not.
                 text: root.keySource === "none"
                       ? qsTrc("agentharness", "Set key")
-                      : qsTrc("agentharness", "Key: %1").arg(root.keySource)
+                      : qsTrc("agentharness", "Key: %1").arg(root.field ? root.field.agentApiKeySourceLabel : "")
                 enabled: !root.running
 
                 onClicked: {

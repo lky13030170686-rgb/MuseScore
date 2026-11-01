@@ -9753,6 +9753,929 @@ followed by dashes</source>
     </message>
 </context>
 <context>
+    <name>agentharness</name>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>%1 model(s) listed - press List to choose one</source>
+        <translation>已列出 %1 个模型 — 按“列表”选择</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>%1 model(s) remembered%2</source>
+        <translation>已记住 %1 个模型%2</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>%1 · %2</source>
+        <translation>%1 · %2</translation>
+    </message>
+    <message>
+        <source>%1 · %2 measures · %3 staves · %4 events · rev %5</source>
+        <translation>%1 · %2 小节 · %3 谱表 · %4 条事件 · 修订 %5</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>%1 · in use</source>
+        <translation>%1 · 使用中</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolGroupRow.qml"/>
+        <source>%n failed</source>
+        <translation><numerusform>失败 %n 个</numerusform></translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolGroupRow.qml"/>
+        <source>%n tool call(s)</source>
+        <translation><numerusform>%n 次工具调用</numerusform></translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolGroupRow.qml"/>
+        <source>%n tool result(s)</source>
+        <translation><numerusform>%n 条工具结果</numerusform></translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>, fetched %1</source>
+        <translation>，获取于 %1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>A model id the gateway does not list can still be used - add it here and it appears in the selector like any other.</source>
+        <translation>网关没有列出的模型 id 依然可用 — 在这里填上，它就会像其他模型一样出现在选择器里。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>A turn is running - stop it first</source>
+        <translation>有一轮对话正在运行 — 请先停止</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>API key</source>
+        <translation>API 密钥</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>API key configured</source>
+        <translation>API 密钥已配置</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>API key configured and remembered in the settings file</source>
+        <translation>API 密钥已配置，并已记住在设置文件中</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>API key configured for this session only</source>
+        <translation>API 密钥仅为本次会话配置</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>API key missing</source>
+        <translation>缺少 API 密钥</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>API key missing - the agent cannot send anything yet</source>
+        <translation>缺少 API 密钥 — 助手暂时发不出任何内容</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>API key provided by the launch environment (read-only)</source>
+        <translation>API 密钥来自启动环境变量（只读）</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>About</source>
+        <translation>关于</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Add</source>
+        <translation>添加</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Add a model id</source>
+        <translation>添加模型 id</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Add this model to the list</source>
+        <translation>把这个模型加入列表</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Agent</source>
+        <translation>Agent</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Agent page columns</source>
+        <translation>Agent 页栏宽</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentPanel.qml"/>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Agent settings</source>
+        <translation>Agent 设置</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolInspector.qml"/>
+        <source>Arguments</source>
+        <translation>参数</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Ask about this score, or tell it what to change</source>
+        <translation>问一问这份乐谱，或者告诉它要改什么</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Asking the provider…</source>
+        <translation>正在询问提供方…</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Assistant</source>
+        <translation>助手</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConversationView.qml"/>
+        <source>Back to the bottom</source>
+        <translation>回到最新消息</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>CONNECTION</source>
+        <translation>连接</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Cancel</source>
+        <translation>取消</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Cancel deleting</source>
+        <translation>取消删除</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Cancel renaming</source>
+        <translation>取消重命名</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Close</source>
+        <translation>关闭</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Close settings</source>
+        <translation>关闭设置</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Close the search</source>
+        <translation>关闭搜索</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Configured - enter a new value to replace</source>
+        <translation>已配置 — 输入新值可替换</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Confirm deleting this session</source>
+        <translation>确认删除这个会话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Connection</source>
+        <translation>连接</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Conversation</source>
+        <translation>对话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>Copied</source>
+        <translation>已复制</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>Copy the answer as text</source>
+        <translation>把回答复制为纯文本</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>Copy this answer</source>
+        <translation>拷贝这条回答</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Could not list models: %1</source>
+        <translation>无法列出模型：%1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Delete</source>
+        <translation>删除</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Delete session: %1</source>
+        <translation>删除会话：%1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Delete this session</source>
+        <translation>删除这个会话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Delete this session?</source>
+        <translation>删除这个会话？</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Drag the vertical boundaries on the Agent page to change them. The widths are remembered: left %1 px, right %2 px (defaults 280 / 320).</source>
+        <translation>在 Agent 页拖动栏间竖线即可调整宽度。宽度会被记住：左 %1 px、右 %2 px（默认 280 / 320）。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Enter sends · Shift+Enter adds a line</source>
+        <translation>Enter 发送 · Shift+Enter 换行</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Enter your API key</source>
+        <translation>输入 API 密钥</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Environment variables win over these preferences: MUSE_AGENT_API_BASE, MUSE_AGENT_MODEL and MUSE_AGENT_MAX_STEPS are read at startup, so a value set there cannot be changed from this panel.</source>
+        <translation>环境变量优先于这些偏好：MUSE_AGENT_API_BASE、MUSE_AGENT_MODEL 与 MUSE_AGENT_MAX_STEPS 在启动时读取，因此在这里改不动它们。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Events</source>
+        <translation>事件</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Example question - %1</source>
+        <translation>示例问题 — %1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolInspector.qml"/>
+        <source>FAILED</source>
+        <translation>失败</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Fetch</source>
+        <translation>获取</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Fetch available models</source>
+        <translation>获取可用模型</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Filter the conversations</source>
+        <translation>筛选会话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Forget key</source>
+        <translation>忘记密钥</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Forget the API key</source>
+        <translation>忘记 API 密钥</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>Gateway address</source>
+        <translation>网关地址</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>Gateway, e.g. https://api.deepseek.com</source>
+        <translation>网关，例如 https://api.deepseek.com</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Gateway: %1
+Model: %2
+Key: %3
+Tools: %4
+Session events: %5
+Score revision (write fence): %6</source>
+        <translation>网关：%1
+模型：%2
+密钥：%3
+工具：%4
+会话事件：%5
+乐谱修订号（写入栅栏）：%6</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentPanel.qml"/>
+        <source>Hide sessions</source>
+        <translation>隐藏会话列表</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolGroupRow.qml"/>
+        <source>Hide the details of %1</source>
+        <translation>收起 %1 的详情</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>Hide the full tool result</source>
+        <translation>收起完整工具结果</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Hide the list of tools</source>
+        <translation>收起工具列表</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConversationView.qml"/>
+        <source>Hide thinking (%1)</source>
+        <translation>收起思考（%1）</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentPanel.qml"/>
+        <source>Hide what happened</source>
+        <translation>收起发生了什么</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Hide what the model received</source>
+        <translation>收起模型收到的内容</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>How much work one message may cost</source>
+        <translation>一条消息最多能花多少工作量</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>In force: %1 step(s) per turn</source>
+        <translation>当前生效：每轮 %1 步</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>In use: %1 · %2</source>
+        <translation>使用中：%1 · %2</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Interface</source>
+        <translation>界面</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>It can read this score and change it. Every edit it makes is one undo step.</source>
+        <translation>它能读取并修改这份乐谱。它做的每一次编辑都是一个撤销步。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Kept between runs - one file per session, in the application data folder.</source>
+        <translation>会跨运行保留 — 每个会话一个文件，存放在应用数据目录。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Key: %1</source>
+        <translation>密钥：%1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>List</source>
+        <translation>列表</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>List the models this gateway serves</source>
+        <translation>列出这个网关提供的模型</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Measures</source>
+        <translation>小节</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Message to the agent</source>
+        <translation>发给助手的消息</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Messages the model received</source>
+        <translation>模型收到的消息</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>Model</source>
+        <translation>模型</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Model id, e.g. opencode-go/deepseek-v4.1-flash</source>
+        <translation>模型 id，例如 opencode-go/deepseek-v4.1-flash</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>Model, e.g. deepseek-chat</source>
+        <translation>模型，例如 deepseek-chat</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Models</source>
+        <translation>模型</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Name</source>
+        <translation>名称</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>New session</source>
+        <translation>新建会话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>New session name</source>
+        <translation>新会话名称</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Newest tool call</source>
+        <translation>最近一次工具调用</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>No conversation matches “%1”.</source>
+        <translation>没有与“%1”匹配的会话。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>No matching models.</source>
+        <translation>没有匹配的模型。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>No models known for this gateway yet. Fetch them, or add one by hand - an id the provider does not list can still be used.</source>
+        <translation>这个网关还没有已知模型。可以获取，也可以手工添加 — 提供方没有列出的 id 同样能用。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolInspector.qml"/>
+        <source>No tool call yet</source>
+        <translation>还没有工具调用</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolInspector.qml"/>
+        <source>OK</source>
+        <translation>成功</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>One turn = up to this many model round-trips. A model that keeps calling tools without converging is stopped here, and the conversation says so (“stopped after N steps…”) - the limit is ours, not yours, which is why it can be changed.</source>
+        <translation>一轮 = 最多这么多次模型往返。模型若一直调用工具而不收敛，就会在这里被停下，对话里也会说明（“stopped after N steps…”）— 这个上限是我们定的，不是你的限制，所以才可改。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Paste an API key (kept for this session)</source>
+        <translation>粘贴 API 密钥（仅本次会话保留）</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConnectionPanel.qml"/>
+        <source>Press Enter in a field to apply. The API key has its own section: Models.</source>
+        <translation>在字段里按 Enter 生效。API 密钥有单独的分节：模型。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Provider</source>
+        <translation>提供方</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Recorded edits</source>
+        <translation>已记录的编辑</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Remember the API key in the settings file</source>
+        <translation>把 API 密钥记住到设置文件</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Remember the key in the settings file (plain text, on this machine)</source>
+        <translation>把密钥记住到设置文件（明文，保存在本机）</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Remove %1 from the list</source>
+        <translation>从列表移除 %1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Remove from the list</source>
+        <translation>从列表移除</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Rename session</source>
+        <translation>重命名会话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Rename session: %1</source>
+        <translation>重命名会话：%1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Rename this session</source>
+        <translation>重命名这个会话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Reset all agent preferences</source>
+        <translation>重置所有 Agent 偏好</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Reset columns</source>
+        <translation>重置栏宽</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Reset every agent preference</source>
+        <translation>重置每一条 Agent 偏好</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Reset the Agent page columns</source>
+        <translation>重置 Agent 页栏宽</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Resets the gateway, the model, the step guard and the column widths. The API key is untouched.</source>
+        <translation>重置网关、模型、步数护栏与栏宽。API 密钥不受影响。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolInspector.qml"/>
+        <source>Result</source>
+        <translation>结果</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Revision (write fence)</source>
+        <translation>修订号（写入栅栏）</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>SCORE</source>
+        <translation>乐谱</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Save</source>
+        <translation>保存</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Save name</source>
+        <translation>保存名称</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Save the new session name</source>
+        <translation>保存新的会话名称</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConversationView.qml"/>
+        <source>Scroll to the newest message</source>
+        <translation>滚动到最新消息</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Search models</source>
+        <translation>搜索模型</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Search the conversations</source>
+        <translation>搜索会话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Send</source>
+        <translation>发送</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Send to agent</source>
+        <translation>发送给助手</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentPanel.qml"/>
+        <source>Sessions (%1)</source>
+        <translation>会话（%1）</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Set API key</source>
+        <translation>设置 API 密钥</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Set an API key first</source>
+        <translation>请先设置 API 密钥</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Set key</source>
+        <translation>设置密钥</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentPanel.qml"/>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Settings</source>
+        <translation>设置</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConversationView.qml"/>
+        <source>Show or hide the model's reasoning</source>
+        <translation>显示或隐藏模型的推理</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentPanel.qml"/>
+        <source>Show or hide the score timeline</source>
+        <translation>显示或隐藏乐谱时间线</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentPanel.qml"/>
+        <source>Show or hide the session list</source>
+        <translation>显示或隐藏会话列表</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Show settings file</source>
+        <translation>显示设置文件</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolGroupRow.qml"/>
+        <source>Show the details of %1</source>
+        <translation>展开 %1 的详情</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>Show the full tool result</source>
+        <translation>展开完整工具结果</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Show the list of tools</source>
+        <translation>展开工具列表</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Show the settings file location</source>
+        <translation>显示设置文件位置</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Show what the model received</source>
+        <translation>展开模型收到的内容</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Start a new conversation</source>
+        <translation>开始一个新会话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Staves</source>
+        <translation>谱表</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Steps per turn</source>
+        <translation>每轮步数</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Stop</source>
+        <translation>停止</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentComposer.qml"/>
+        <source>Stop the agent</source>
+        <translation>停止助手</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Switch to session: %1</source>
+        <translation>切换到会话：%1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>Switch to this session</source>
+        <translation>切换到这个会话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Talk to your score</source>
+        <translation>和你的乐谱对话</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>The API key has its own section, next to this one, because a key belongs to a model list rather than to an address. It can be entered in the composer too (“Set key”).</source>
+        <translation>API 密钥有单独的分节，就在这一节旁边 — 因为密钥属于模型清单，而不属于一个地址。也可以在输入框里填（“设置密钥”）。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>The agent is working</source>
+        <translation>助手正在工作</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>The gateway address is edited in the Connection section. Every model below belongs to it.</source>
+        <translation>网关地址在“连接”分节里编辑。下面的每个模型都属于它。</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>The last turn failed - open the settings</source>
+        <translation>上一轮失败了 — 打开设置</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>The session record, as the model sees it</source>
+        <translation>会话记录（模型看到的样子）</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>The tools this agent is allowed to call</source>
+        <translation>这个助手可以调用的工具</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>The whole result, not just its first line</source>
+        <translation>完整结果，而不只是第一行</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConversationView.qml"/>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>Think</source>
+        <translation>思考</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentToolGroupRow.qml"/>
+        <source>Tool calls the agent made here</source>
+        <translation>助手在这里做过的工具调用</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentFactsPanel.qml"/>
+        <source>Tools (%1)</source>
+        <translation>工具（%1）</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Trajectory</source>
+        <translation>轨迹</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Use</source>
+        <translation>使用</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Use %1</source>
+        <translation>使用 %1</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentModelsSection.qml"/>
+        <source>Use this API key</source>
+        <translation>使用这个 API 密钥</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentPanel.qml"/>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>What happened (%1)</source>
+        <translation>发生了什么（%1）</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>What has changed in this score so far?</source>
+        <translation>这份乐谱到现在改了什么？</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>What is in force</source>
+        <translation>当前生效的设置</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>What is in this score?</source>
+        <translation>这份乐谱里有什么？</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSettingsDialog.qml"/>
+        <source>Where the preferences are stored</source>
+        <translation>偏好保存在哪里</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Working…</source>
+        <translation>正在工作…</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentWorkbench.qml"/>
+        <source>Write four quarter notes into measure 2</source>
+        <translation>把第 2 小节写成四个四分音符</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentSessionList.qml"/>
+        <source>You are in this session</source>
+        <translation>你在这个会话中</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>agent</source>
+        <translation>助手</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>error</source>
+        <translation>错误</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentConversationView.qml"/>
+        <source>thinking…</source>
+        <translation>思考中…</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>thought</source>
+        <translation>思考</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>tool</source>
+        <translation>工具</translation>
+    </message>
+    <message>
+        <location filename="../../src/agentharness/qml/MuseScore/AgentHarness/AgentTranscriptRow.qml"/>
+        <source>you</source>
+        <translation>你</translation>
+    </message>
+    <message>
+        <source>no score</source>
+        <translation>没有乐谱</translation>
+    </message>
+    <message>
+        <source>(untitled)</source>
+        <translation>（未命名）</translation>
+    </message>
+    <message>
+        <source>environment variable</source>
+        <translation>环境变量</translation>
+    </message>
+    <message>
+        <source>saved</source>
+        <translation>已保存</translation>
+    </message>
+    <message>
+        <source>set this session</source>
+        <translation>本次会话</translation>
+    </message>
+    <message>
+        <source>none</source>
+        <translation>未设置</translation>
+    </message>
+    <message>
+        <source>(new session)</source>
+        <translation>，获取于 %1</translation>
+    </message>
+    <message>
+        <source>(no message yet)</source>
+        <translation>网关没有列出的模型 id 依然可用 — 在这里填上，它就会像其他模型一样出现在选择器里。</translation>
+    </message>
+</context>
+
+<context>
     <name>appshell</name>
     <message>
         <location filename="../../src/appshell/qml/MuseScore/AppShell/HomePage/HomeMenu.qml" line="56"/>
@@ -10024,6 +10947,26 @@ This action cannot be undone.</source>
         <location filename="../../src/preferences/qml/MuseScore/Preferences/preferencesmodel.cpp" line="225"/>
         <source>Reset preferences</source>
         <translation>重置偏好设置</translation>
+    </message>
+    <message>
+        <location filename="../../src/appshell/qml/MuseScore/AppShell/MidiEditorPage/MidiEditorPage.qml"/>
+        <source>No MIDI input device: pick one in Preferences → Audio &amp; MIDI. The computer keyboard still plays: C D E F G A B, Z/X = octave</source>
+        <translation>没有 MIDI 输入设备：请在“偏好设置 → 音频与 MIDI”里选择一个。电脑键盘仍然可以弹：C D E F G A B，Z/X 切换八度</translation>
+    </message>
+    <message>
+        <location filename="../../src/appshell/qml/MuseScore/AppShell/MidiEditorPage/MidiEditorPage.qml"/>
+        <source>Play along from the playhead: everything you play is captured, then quantized and written into the selected staff. No MIDI keyboard? Play with the computer keyboard: C D E F G A B, Z/X = octave</source>
+        <translation>从播放头开始跟着弹：你弹的每个音都会被记录，随后量化并写入当前选中的谱表。没有 MIDI 键盘？用电脑键盘弹：C D E F G A B，Z/X 切换八度</translation>
+    </message>
+    <message>
+        <location filename="../../src/appshell/qml/MuseScore/AppShell/MidiEditorPage/MidiEditorPage.qml"/>
+        <source>Record</source>
+        <translation>录制</translation>
+    </message>
+    <message>
+        <location filename="../../src/appshell/qml/MuseScore/AppShell/MidiEditorPage/MidiEditorPage.qml"/>
+        <source>Stop and write what was played into the score (one undo step). No MIDI keyboard? Play with the computer keyboard: C D E F G A B, Z/X = octave</source>
+        <translation>停止，并把弹过的内容写进乐谱（一个撤销步）。没有 MIDI 键盘？用电脑键盘弹：C D E F G A B，Z/X 切换八度</translation>
     </message>
 </context>
 <context>
@@ -30707,6 +31650,218 @@ If the issue persists, follow the steps at the troubleshooting link below.</sour
         <translation>已打开的文件</translation>
     </message>
 </context>
+<context>
+    <name>notationscene</name>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Click = play from here · drag = loop this range · right-click = clear the loop</source>
+        <translation>单击 = 从这里开始播放 · 拖动 = 循环这一段 · 右击 = 取消循环</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Click to add a point, drag a point to move it, drag the square handle to bend the curve, right-click to remove. Hollow points belong to a dynamic mark and are read-only</source>
+        <translation>单击添加控制点，拖动控制点移动它，拖方形手柄改变曲线弯曲，右击删除。空心点属于力度记号，只读</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Copy</source>
+        <translation>拷贝</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Copy the selected notes</source>
+        <translation>拷贝选中的音符</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Curve</source>
+        <translation>曲线</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Delete</source>
+        <translation>删除</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Delete the selected notes</source>
+        <translation>删除选中的音符</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Draw: drag on empty space to write a note (the drag sets its length) · on an existing note the drag changes its notated length</source>
+        <translation>画笔：在空白处拖动即写入一个音符（拖动决定长度）· 在已有音符上拖动则改记谱时值</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Erase: click or sweep over notes to delete them (one command for the whole sweep, so one undo brings them back)</source>
+        <translation>橡皮：单击或划过音符即可删除（整笔一个命令，一次撤销就能恢复）</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Fit</source>
+        <translation>适合</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Fit to width</source>
+        <translation>适合宽度</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Grid</source>
+        <translation>网格</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>MIDI editor</source>
+        <translation>MIDI 编辑器</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Mixer</source>
+        <translation>混音器</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Move: drag a note to change its time and pitch · right edge = played length · Shift+drag = played start · drag empty space = box select</source>
+        <translation>移动：拖动音符改变它的时间与音高 · 右边缘 = 演奏时长 · Shift+拖动 = 演奏起点 · 拖空白处 = 框选</translation>
+    </message>
+    <message>
+        <source>Off</source>
+        <translation>关</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Open a score to edit it as MIDI</source>
+        <translation>打开一份乐谱，以 MIDI 方式编辑</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Paste</source>
+        <translation>粘贴</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Paste at the playhead</source>
+        <translation>粘贴到播放头</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Pastes on the staff being edited, starting at the playback position, and selects what it pasted</source>
+        <translation>粘贴到正在编辑的谱表上，从播放位置开始，并选中粘贴出来的内容</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Pitch, length, velocity and the played layer - everything that makes the note sound the way it does</source>
+        <translation>音高、长度、力度与演奏层 — 决定这个音听起来是什么样的一切</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Play only the staff being edited (turns the mixer's solo on for it)</source>
+        <translation>只播放正在编辑的谱表（会为它打开混音器上的独奏）</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Played %</source>
+        <translation>演奏 %</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Played velocity lane</source>
+        <translation>演奏力度车道</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Quantize grid applied when the take is written</source>
+        <translation>录音写回乐谱时应用的量化网格</translation>
+    </message>
+    <message>
+        <source>Recorded %1 notes, wrote %2, skipped %3</source>
+        <translation>录了 %1 个音，写入 %2 个，跳过 %3 个</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Recording %1</source>
+        <translation>已录 %1 个音</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Redo (Ctrl+Shift+Z)</source>
+        <translation>恢复 (Ctrl+Shift+Z)</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Show or hide the lane under the roll</source>
+        <translation>显示或隐藏卷帘下方的车道</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Show or hide the mixer - the very tracks the score plays through</source>
+        <translation>显示或隐藏混音器 — 就是乐谱播放经过的那些轨道</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Snap of every drag, and the length of a note inserted by double-clicking</source>
+        <translation>每次拖动的吸附精度，也是双击插入音符的时值</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Solo</source>
+        <translation>独奏</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Split: click a note to cut it in two at that point - the halves are tied, so the sound does not change</source>
+        <translation>剪刀：在音符上单击，就在该处把它切成两半 — 两半用连音线连起来，所以声音不变</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Staff</source>
+        <translation>谱表</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>The last note of a chord becomes a rest of the same length, so the measure stays complete (same as Delete on the notation page)</source>
+        <translation>和弦的最后一个音会变成同样长度的休止符，小节因此保持完整（与记谱页的 Delete 相同）</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>The tool decides what the mouse does: Move = drag time+pitch · Draw = write a note on empty space · Split = cut a note in two (tied) · Trim = change the notated length · Erase = click or sweep to delete. Click = select, Ctrl+click / drag a box = multi-select, Del / Ctrl+C / Ctrl+V. Velocity lane: drag = own velocity, right-click = follow dynamics. Ruler: click = play from here, drag = loop, right-click = clear loop</source>
+        <translation>工具决定鼠标做什么：移动 = 拖动时间+音高 · 画笔 = 在空白处写音符 · 剪刀 = 把音符切成两半（带连音线）· 拉长 = 改记谱时值 · 橡皮 = 单击或划过来删除。单击 = 选中，Ctrl+单击 / 拖框 = 多选，Del / Ctrl+C / Ctrl+V。力度车道：拖动 = 单音力度，右击 = 跟随表情记号。标尺：单击 = 从这里播放，拖动 = 循环，右击 = 取消循环</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Trim: drag a note to change its notated length (the outer frame). Shortening fills with rests, lengthening splits at barlines and ties</source>
+        <translation>拉长：拖动音符改变它的记谱时值（外框）。缩短会补休止符，拉长会在小节线处拆开并加连音线</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Undo (Ctrl+Z)</source>
+        <translation>撤销 (Ctrl+Z)</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Velocity</source>
+        <translation>力度</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Velocity lane channel: off = each note's own velocity (overrides the dynamics), on = played velocity in percent (multiplies what the note would get). 100% (the middle line) means untouched; right-click resets it</source>
+        <translation>力度车道通道：关 = 每个音自己的力度（覆盖表情记号），开 = 以百分比表示的演奏力度（乘在本来该有的力度上）。100%（中线）表示没动过；右击可重置</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Zoom in</source>
+        <translation>放大</translation>
+    </message>
+    <message>
+        <location filename="../../src/notationscene/qml/MuseScore/NotationScene/MidiEditorView.qml"/>
+        <source>Zoom out</source>
+        <translation>缩小</translation>
+    </message>
+</context>
+
 <context>
     <name>noteInputMethod</name>
     <message>

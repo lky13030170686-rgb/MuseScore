@@ -38,6 +38,10 @@
 #include "engraving/editing/transaction/transaction.h"
 
 #include "log.h"
+//! `muse::qtrc` - the strings this file puts in FRONT of a person (`statusText`, the key's provenance
+//! label). Everything this file hands to the MODEL stays untranslated on purpose: those are the tool
+//! results, and the model reads one language, not the user's.
+#include "translation.h"
 
 #include "engraving/dom/score.h"
 #include "engraving/dom/engravingitem.h"
@@ -2617,6 +2621,24 @@ QString FieldController::agentApiKeySource() const
     return QStringLiteral("none");
 }
 
+QString FieldController::agentApiKeySourceLabel() const
+{
+    //! One derivation, three readers (the composer's key line, the About block, and any panel that prints
+    //! it later). The token is what the code compares; this is what a person reads. Missing translations
+    //! fall back to English on their own, which is the whole point of going through `qtrc`.
+    const QString source = agentApiKeySource();
+    if (source == QStringLiteral("environment")) {
+        return muse::qtrc("agentharness", "environment variable");
+    }
+    if (source == QStringLiteral("stored")) {
+        return muse::qtrc("agentharness", "saved");
+    }
+    if (source == QStringLiteral("set")) {
+        return muse::qtrc("agentharness", "set this session");
+    }
+    return muse::qtrc("agentharness", "none");
+}
+
 QVariantList FieldController::agentTranscript() const
 {
     //! Derived from the log, in the same spirit as the model history: the panel's transcript and the
@@ -2737,15 +2759,18 @@ QVariantList FieldController::agentTranscript() const
 QString FieldController::statusText() const
 {
     if (!m_score) {
-        return QStringLiteral("no score");
+        return muse::qtrc("agentharness", "no score");
     }
 
     //! ⛔ THE TWO NUMBERS, AND WHY THIS LINE SHOWS BOTH (第 140 条). `events` is how much this field has
     //! recorded; `rev` is the score's revision - the number a write is fenced against (`expectRevision`),
     //! i.e. the one a reader of this line is meant to use. They are deliberately different numbers and they
     //! diverge as soon as anything is undone, which is why the words around them have to differ too.
-    return QStringLiteral("%1 · %2 measures · %3 staves · %4 events · rev %5")
-           .arg(m_scoreName.isEmpty() ? QStringLiteral("(untitled)") : m_scoreName)
+    //!
+    //! ⚠️ Translated as ONE string rather than by gluing translated words around numbers: word order and
+    //! the words for "measures"/"staves" do not survive being assembled piecewise in another language.
+    return muse::qtrc("agentharness", "%1 · %2 measures · %3 staves · %4 events · rev %5")
+           .arg(m_scoreName.isEmpty() ? muse::qtrc("agentharness", "(untitled)") : m_scoreName)
            .arg(m_measureCount)
            .arg(m_staffCount)
            .arg(eventCount())
