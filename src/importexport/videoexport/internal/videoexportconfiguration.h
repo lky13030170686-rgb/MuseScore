@@ -53,6 +53,17 @@ public:
     double trailingSec() const override;
     void setTrailingSec(std::optional<double> trailingSec) override;
 
+    //! LKY fork: multi-page frames + optional title/logo
+    int pagesPerScreen() const override;
+    void setPagesPerScreen(std::optional<int> pagesPerScreen) override;
+    const std::vector<int>& availablePagesPerScreen() const override;
+
+    bool showTitlePage() const override;
+    void setShowTitlePage(std::optional<bool> show) override;
+
+    bool showEndLogo() const override;
+    void setShowEndLogo(std::optional<bool> show) override;
+
 private:
     std::optional<ViewMode> m_viewMode = std::nullopt;
     std::optional<bool> m_showPiano = std::nullopt;
@@ -61,6 +72,9 @@ private:
     std::optional<int> m_fps = std::nullopt;
     std::optional<double> m_leadingSec = std::nullopt;
     std::optional<double> m_trailingSec = std::nullopt;
+    std::optional<int> m_pagesPerScreen = std::nullopt;
+    std::optional<bool> m_showTitlePage = std::nullopt;
+    std::optional<bool> m_showEndLogo = std::nullopt;
 };
 }
 

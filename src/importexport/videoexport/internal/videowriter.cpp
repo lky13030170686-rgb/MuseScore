@@ -21,7 +21,9 @@
  */
 #include "videowriter.h"
 
+#include <algorithm>
 #include <cmath>
+#include <map>
 
 #include <QPainter>
 #include <QThread>
@@ -113,6 +115,13 @@ muse::Ret VideoWriter::write(INotationPtr notation, muse::io::IODevice& device, 
     muse::io::path_t tempAudioPath = finalPath + ".tmp_audio.aac";
 
     auto encoder = videoEncodeResolver()->currentVideoEncoder();
+
+    //! NOTE LKY fork: without FFmpeg loaded there is no encoder. Upstream dereferenced it and
+    //! crashed with SIGSEGV; a plain error is more useful (the console run hits this).
+    IF_ASSERT_FAILED(encoder) {
+        LOGE() << "no video encoder available (FFmpeg is not loaded)";
+        return make_ret(muse::Ret::Code::InternalError);
+    }
 
     muse::media::IVideoEncoder::Options encoderOptions;
     encoderOptions.format = "mp4";
@@ -235,6 +244,21 @@ VideoWriter::Config VideoWriter::makeConfig() const
     cfg.trailingSec = configuration()->trailingSec();
 
     cfg.viewMode = configuration()->viewMode();
+
+    //! LKY fork: multi-page frames + optional title/logo segments.
+    //! Disabling a segment zeroes its length here (and not in `VideoWriter::write()`), because the
+    //! audio export reads `leadingSec`/`trailingSec` from the very same Config for its silence.
+    cfg.pagesPerScreen = configuration()->pagesPerScreen();
+    cfg.showTitlePage = configuration()->showTitlePage();
+    cfg.showEndLogo = configuration()->showEndLogo();
+
+    if (!cfg.showTitlePage) {
+        cfg.leadingSec = 0.0f;
+    }
+
+    if (!cfg.showEndLogo) {
+        cfg.trailingSec = 0.0f;
+    }
 
     return cfg;
 }
@@ -445,7 +469,13 @@ void VideoWriter::doGenerate(muse::media::IVideoEncoderPtr encoder, INotationPtr
     }
 
     // Add score frames
-    if (!generateScoreFrames(encoder, notation, painter, frame, actualConfig, totalPlayTimeSec, leadingFrameCount, totalFrameCount)) {
+    //! LKY fork: with more than one page per screen the frame is painted by our own renderer.
+    const bool scoreFramesGenerated = actualConfig.pagesPerScreen > 1
+                                      ? generateScoreFramesMultiPage(encoder, notation, qp, frame, actualConfig,
+                                                                     totalPlayTimeSec, leadingFrameCount, totalFrameCount)
+                                      : generateScoreFrames(encoder, notation, painter, frame, actualConfig,
+                                                            totalPlayTimeSec, leadingFrameCount, totalFrameCount);
+    if (!scoreFramesGenerated) {
         return;
     }
 
@@ -630,6 +660,242 @@ bool VideoWriter::generateScoreFrames(muse::media::IVideoEncoderPtr encoder, INo
 
         encoder->encodeImage(frame);
     }
+
+    return true;
+}
+
+// ============================================================================
+// LKY fork: several pages on screen at the same time ("连排多页")
+//
+// Why it is a separate renderer instead of a tweak of `generateScoreFrames()`:
+// `INotationPainting::paintPrint()` always paints ONE page, and every page is painted at its own
+// origin (paintItem() uses `item->pagePos()`, which is page-relative - see Paint::paintScore()).
+// So "show N pages" cannot be done by asking the paint code for a range: it would stack all pages
+// at the same place. We paint each page into its own QImage and compose them instead, which also
+// gives us a place to cache a page (a page is redrawn for every frame it appears in, and painting
+// it from scratch costs milliseconds).
+// ============================================================================
+
+void VideoWriter::pageGridOf(int pagesPerScreen, double pageAspect, double frameAspect, int& columns, int& rows)
+{
+    const int pages = std::max(1, pagesPerScreen);
+
+    columns = 1;
+    rows = pages;
+
+    if (pageAspect <= 0.0 || frameAspect <= 0.0) {
+        return;
+    }
+
+    //! NOTE Page height and frame height are both normalised to 1.
+    //! Columns ascending, so on a tie the wider arrangement (a single row, "连排") wins.
+    double bestScale = 0.0;
+
+    for (int c = 1; c <= pages; ++c) {
+        if (pages % c != 0) {
+            continue;
+        }
+
+        const int r = pages / c;
+        const double scale = std::min(frameAspect / (c * pageAspect), 1.0 / r);
+
+        if (scale >= bestScale) {
+            bestScale = scale;
+            columns = c;
+            rows = r;
+        }
+    }
+}
+
+bool VideoWriter::generateScoreFramesMultiPage(muse::media::IVideoEncoderPtr encoder, INotationPtr notation,
+                                               QPainter& qp, QImage& frame, const Config& config,
+                                               float totalPlayTimeSec, int leadingFrameCount, int totalFrameCount)
+{
+    int scoreFrameCount = static_cast<int>(totalPlayTimeSec * config.fps);
+    if (scoreFrameCount <= 0) {
+        return true;
+    }
+
+    PageList pages = notation->elements()->pages();
+    if (pages.empty()) {
+        return true;
+    }
+
+    INotationPaintingPtr painting = notation->painting();
+    INotationPlaybackPtr playback = notation->masterNotation()->playback();
+
+    //! NOTE Pages of one score share a page style, and `Paint::paintScore()` uses the FIRST page
+    //! size for its viewport as well - so the slot geometry is derived from that page only.
+    INotationPainting::Options sizeOpt;
+    sizeOpt.fromPage = 0;
+    sizeOpt.toPage = 0;
+    const muse::SizeF pageSizeInch = painting->pageSizeInch(sizeOpt);
+    if (pageSizeInch.width() <= 0.0 || pageSizeInch.height() <= 0.0) {
+        LOGE() << "invalid page size, cannot lay pages out";
+        return true;
+    }
+
+    int columns = 1;
+    int rows = 1;
+    pageGridOf(config.pagesPerScreen,
+               pageSizeInch.width() / pageSizeInch.height(),
+               static_cast<double>(config.width) / config.height,
+               columns, rows);
+    const int pagesPerScreen = columns * rows;
+
+    const int gap = std::max(1, static_cast<int>(std::lrint(config.width * 0.004)));
+    const double availableWidth = config.width - gap * (columns - 1);
+    const double availableHeight = config.height - gap * (rows - 1);
+    const double dpi = std::min(availableWidth / (columns * pageSizeInch.width()),
+                                availableHeight / (rows * pageSizeInch.height()));
+    const int pageWidth = std::max(1, static_cast<int>(std::lrint(pageSizeInch.width() * dpi)));
+    const int pageHeight = std::max(1, static_cast<int>(std::lrint(pageSizeInch.height() * dpi)));
+    const double gridWidth = columns * pageWidth + gap * (columns - 1);
+    const double gridHeight = rows * pageHeight + gap * (rows - 1);
+    const double originX = (config.width - gridWidth) / 2.0;
+    const double originY = (config.height - gridHeight) / 2.0;
+
+    const int pageDpi = std::max(1, static_cast<int>(std::lrint(dpi)));
+    //! NOTE Device pixels per engraving unit. `paintPrint()` maps the page onto `pageSizeInch * pageDpi`.
+    const double scale = static_cast<double>(pageDpi) / engraving::DPI;
+
+    LOGI() << "pages per screen: " << config.pagesPerScreen << " (" << columns << "x" << rows << ")"
+           << ", page image: " << pageWidth << "x" << pageHeight << ", dpi: " << pageDpi;
+
+    std::map<int, QImage> pageCache;
+
+    auto renderPage = [&](int pageIndex) {
+        QImage image(pageWidth, pageHeight, QImage::Format_RGB32);
+        image.setDotsPerMeterX(std::lrint((pageDpi * 1000) / engraving::INCH));
+        image.setDotsPerMeterY(std::lrint((pageDpi * 1000) / engraving::INCH));
+        image.fill(Qt::white);
+
+        INotationPainting::Options opt;
+        opt.fromPage = pageIndex;
+        opt.toPage = pageIndex;
+        opt.deviceDpi = pageDpi;
+
+        {
+            QPainter pagePainter(&image);
+            pagePainter.setRenderHint(QPainter::Antialiasing, true);
+            pagePainter.setRenderHint(QPainter::TextAntialiasing, true);
+
+            {
+                Painter painter(&pagePainter, "video_writer");
+                painting->paintPrint(&painter, opt);
+            }
+        }
+
+        return image;
+    };
+
+    auto pageIndexByTick = [&pages](tick_t tick) {
+        for (size_t i = 0; i < pages.size(); ++i) {
+            if (tick < static_cast<tick_t>(pages.at(i)->endTick().ticks())) {
+                return static_cast<int>(i);
+            }
+        }
+        return static_cast<int>(pages.size()) - 1;
+    };
+
+    PlaybackCursor cursor(iocContext());
+    cursor.setNotation(notation);
+
+    const QColor CURSOR_COLOR(2, 109, 203, 127);
+
+    //! NOTE Pages are shown in fixed groups (0..n-1, n..2n-1, ...): the picture then changes once
+    //! per group instead of once per page, which is the point of showing several pages at once.
+    int currentGroupStart = -1;
+
+    //! NOTE The last group is usually partial (15 pages with 4 per screen leaves 3). Keep the page
+    //! size but centre the pages that are actually there, so the last page does not sit in the
+    //! left corner. Only for a single row - a half filled grid looks accidental when centred.
+    double groupOffsetX = 0.0;
+
+    qp.save();
+    qp.resetTransform();
+
+    for (int f = 0; f < scoreFrameCount; f++) {
+        if (m_abort) {
+            qp.restore();
+            m_writeRet = make_ret(muse::Ret::Code::Cancel);
+            m_progress.finish(m_writeRet);
+            return false;
+        }
+
+        m_progress.progress(leadingFrameCount + f, totalFrameCount);
+
+        float currentTimeSec = static_cast<float>(f) / config.fps;
+        if (currentTimeSec > totalPlayTimeSec) {
+            currentTimeSec = totalPlayTimeSec;
+        }
+
+        const tick_t tick = playback->secToTick(currentTimeSec);
+        const int currentPage = pageIndexByTick(tick);
+        const int groupStart = (currentPage / pagesPerScreen) * pagesPerScreen;
+
+        qp.fillRect(frame.rect(), Qt::black);
+
+        if (groupStart != currentGroupStart) {
+            currentGroupStart = groupStart;
+            pageCache.clear();
+
+            if (rows == 1) {
+                const int usedSlots = std::min(pagesPerScreen, static_cast<int>(pages.size()) - groupStart);
+                groupOffsetX = (columns - usedSlots) * (pageWidth + gap) / 2.0;
+            }
+        }
+
+        for (int slot = 0; slot < pagesPerScreen; ++slot) {
+            const int pageIndex = groupStart + slot;
+            if (pageIndex >= static_cast<int>(pages.size())) {
+                break;
+            }
+
+            if (!pages.at(pageIndex)->firstMeasure()) {
+                //! NOTE A page without notation (e.g. a title page) keeps an empty slot.
+                continue;
+            }
+
+            auto it = pageCache.find(pageIndex);
+            if (it == pageCache.end()) {
+                it = pageCache.emplace(pageIndex, renderPage(pageIndex)).first;
+            }
+
+            const int column = slot % columns;
+            const int row = slot / columns;
+            const QPoint slotOrigin(static_cast<int>(std::lrint(originX + groupOffsetX + column * (pageWidth + gap))),
+                                    static_cast<int>(std::lrint(originY + row * (pageHeight + gap))));
+
+            qp.drawImage(slotOrigin, it->second);
+        }
+
+        //! NOTE The playback cursor is reported in canvas coordinates (it uses `canvasPos()`),
+        //! while a page is painted in page coordinates - hence the `- page->pos()`.
+        cursor.move(tick);
+        const muse::RectF cursorRect = cursor.rect();
+        const int cursorSlot = currentPage - groupStart;
+
+        if (cursorSlot >= 0 && cursorSlot < pagesPerScreen
+            && cursorRect.width() > 0.0 && cursorRect.height() > 0.0) {
+            const int column = cursorSlot % columns;
+            const int row = cursorSlot / columns;
+            const double slotX = originX + groupOffsetX + column * (pageWidth + gap);
+            const double slotY = originY + row * (pageHeight + gap);
+            const muse::PointF pagePos = pages.at(currentPage)->pos();
+
+            const QRectF cursorDeviceRect(slotX + (cursorRect.x() - pagePos.x()) * scale,
+                                          slotY + (cursorRect.y() - pagePos.y()) * scale,
+                                          cursorRect.width() * scale,
+                                          cursorRect.height() * scale);
+
+            qp.fillRect(cursorDeviceRect, CURSOR_COLOR);
+        }
+
+        encoder->encodeImage(frame);
+    }
+
+    qp.restore();
 
     return true;
 }

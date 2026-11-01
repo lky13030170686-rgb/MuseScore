@@ -36749,6 +36749,56 @@ failed: %2</source>
         <translation>按视频分辨率重排版面</translation>
     </message>
     <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="650"/>
+        <source>Single page</source>
+        <translation>单页</translation>
+    </message>
+    <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="651"/>
+        <source>2 pages</source>
+        <translation>2 页</translation>
+    </message>
+    <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="652"/>
+        <source>3 pages</source>
+        <translation>3 页</translation>
+    </message>
+    <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="653"/>
+        <source>4 pages</source>
+        <translation>4 页</translation>
+    </message>
+    <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="654"/>
+        <source>6 pages</source>
+        <translation>6 页</translation>
+    </message>
+    <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="655"/>
+        <source>8 pages</source>
+        <translation>8 页</translation>
+    </message>
+    <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="656"/>
+        <source>9 pages</source>
+        <translation>9 页</translation>
+    </message>
+    <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/Mp4SettingsPage.qml" line="176"/>
+        <source>Pages on screen</source>
+        <translation>每屏页数</translation>
+    </message>
+    <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/Mp4SettingsPage.qml" line="187"/>
+        <source>Show title page</source>
+        <translation>在片头显示标题页</translation>
+    </message>
+    <message>
+        <location filename="../../src/project/qml/MuseScore/Project/internal/Export/Mp4SettingsPage.qml" line="201"/>
+        <source>Show end logo</source>
+        <translation>在片尾显示 LOGO</translation>
+    </message>
+    <message>
         <location filename="../../src/project/qml/MuseScore/Project/internal/Export/exportdialogmodel.cpp" line="857"/>
         <source>All layout</source>
         <extracomment>Specifies to which extent layout customizations should be exported to MusicXML.</extracomment>

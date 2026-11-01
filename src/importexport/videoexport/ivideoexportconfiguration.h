@@ -58,6 +58,21 @@ public:
 
     virtual double trailingSec() const = 0;
     virtual void setTrailingSec(std::optional<double> trailingSec) = 0;
+
+    //! NOTE LKY fork: how many score pages are shown at the same time (1 = upstream behavior).
+    //! The value is a page count; the grid (columns x rows) is derived from it, see `pageGridOf()`.
+    virtual int pagesPerScreen() const = 0;
+    virtual void setPagesPerScreen(std::optional<int> pagesPerScreen) = 0;
+    virtual const std::vector<int>& availablePagesPerScreen() const = 0;
+
+    //! NOTE LKY fork: the title card at the beginning / the "Made with MuseScore" clip at the end
+    //! are optional. Disabling one also drops the matching silence in the audio track, so picture
+    //! and sound stay in sync (both read `leadingSec()`/`trailingSec()` through `VideoWriter::makeConfig()`).
+    virtual bool showTitlePage() const = 0;
+    virtual void setShowTitlePage(std::optional<bool> show) = 0;
+
+    virtual bool showEndLogo() const = 0;
+    virtual void setShowEndLogo(std::optional<bool> show) = 0;
 };
 }
 

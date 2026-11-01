@@ -42,6 +42,7 @@
 #include "project/inotationwritersregister.h"
 
 class QImage;
+class QPainter;
 
 namespace muse::draw {
 class Painter;
@@ -83,6 +84,11 @@ private:
         double canvasDpi = 300.0;
         ViewMode viewMode = ViewMode::PageFull;
         muse::PointF moveToCenter;
+
+        //! LKY fork: several pages on screen at once, and the title/logo segments can be dropped.
+        int pagesPerScreen = 1;
+        bool showTitlePage = true;
+        bool showEndLogo = true;
     };
 
     Config makeConfig() const;
@@ -97,6 +103,17 @@ private:
 
     bool generateScoreFrames(muse::media::IVideoEncoderPtr encoder, notation::INotationPtr notation, muse::draw::Painter& painter,
                              QImage& frame, const Config& config, float totalPlayTimeSec, int leadingFrameCount, int totalFrameCount);
+
+    //! LKY fork: same job as `generateScoreFrames()`, but it lays several pages out side by side
+    //! (or in a grid). It paints the frame itself, hence the raw `QPainter` instead of `Painter`.
+    bool generateScoreFramesMultiPage(muse::media::IVideoEncoderPtr encoder, notation::INotationPtr notation,
+                                      QPainter& qp, QImage& frame, const Config& config, float totalPlayTimeSec,
+                                      int leadingFrameCount, int totalFrameCount);
+
+    //! LKY fork: how many pages are shown at once -> how they are arranged in the frame.
+    //! Picks the arrangement that makes the pages as large as possible for the given page and
+    //! frame aspect ratios (portrait pages in a 16:9 frame => a single row, "连排").
+    static void pageGridOf(int pagesPerScreen, double pageAspect, double frameAspect, int& columns, int& rows);
 
     bool generateTrailingFrames(muse::media::IVideoEncoderPtr encoder, const Config& config);
 

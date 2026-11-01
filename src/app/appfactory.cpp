@@ -505,6 +505,11 @@ static void addConsoleModules(std::shared_ptr<MuseScoreConsoleApp> app)
     app->addModule(new muse::testflow::TestflowModule());
 #endif
 
+    //! NOTE LKY fork: `media` owns the video encoder resolver (FFmpeg). Without it the console
+    //! path had no encoder at all, so `-.o out.mp4` / `--score-video` crashed with SIGSEGV inside
+    //! `VideoWriter::write()` (the resolver was never registered). Video export needs it.
+    app->addModule(new muse::media::MediaModule());
+
 #ifdef MUE_BUILD_CONVERTER_MODULE
     app->addModule(new mu::converter::ConverterModule());
 #endif

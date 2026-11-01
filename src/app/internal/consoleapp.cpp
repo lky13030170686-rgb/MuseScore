@@ -125,6 +125,10 @@ void MuseScoreConsoleApp::applyCommandLineOptions(const std::shared_ptr<muse::Cm
     videoExportConfiguration()->setFps(options->exportVideo.fps);
     videoExportConfiguration()->setLeadingSec(options->exportVideo.leadingSec);
     videoExportConfiguration()->setTrailingSec(options->exportVideo.trailingSec);
+    //! LKY fork: pages per frame + optional title/logo
+    videoExportConfiguration()->setPagesPerScreen(options->exportVideo.pagesPerScreen);
+    videoExportConfiguration()->setShowTitlePage(options->exportVideo.showTitlePage);
+    videoExportConfiguration()->setShowEndLogo(options->exportVideo.showEndLogo);
 #endif
 
 #ifdef MUE_BUILD_IMPEXP_MIDI_MODULE

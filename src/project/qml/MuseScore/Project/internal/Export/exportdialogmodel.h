@@ -80,6 +80,11 @@ class ExportDialogModel : public QAbstractListModel, public QQmlParserStatus, pu
 
     Q_PROPERTY(QString videoResolution READ videoResolution WRITE setVideoResolution NOTIFY videoResolutionChanged)
 
+    //! LKY fork: several pages per frame + optional title card / end logo
+    Q_PROPERTY(int videoPagesPerScreen READ videoPagesPerScreen WRITE setVideoPagesPerScreen NOTIFY videoPagesPerScreenChanged)
+    Q_PROPERTY(bool videoTitlePage READ videoTitlePage WRITE setVideoTitlePage NOTIFY videoTitlePageChanged)
+    Q_PROPERTY(bool videoEndLogo READ videoEndLogo WRITE setVideoEndLogo NOTIFY videoEndLogoChanged)
+
     using ViewMode = mu::iex::videoexport::ViewMode;
     Q_ENUM(ViewMode);
     Q_PROPERTY(ViewMode viewMode READ viewMode WRITE setViewMode NOTIFY viewModeChanged FINAL)
@@ -184,6 +189,17 @@ public:
     ViewMode viewMode() const;
     void setViewMode(ViewMode v);
 
+    //! LKY fork: several pages per frame + optional title card / end logo
+    Q_INVOKABLE QVariantList availablePagesPerScreen() const;
+    int videoPagesPerScreen() const;
+    void setVideoPagesPerScreen(int pagesPerScreen);
+
+    bool videoTitlePage() const;
+    void setVideoTitlePage(bool show);
+
+    bool videoEndLogo() const;
+    void setVideoEndLogo(bool show);
+
     Q_INVOKABLE QList<int> availableSampleRates() const;
     int sampleRate() const;
     void setSampleRate(int sampleRate);
@@ -260,6 +276,11 @@ signals:
 
     void videoResolutionChanged(const QString& resolution);
     void viewModeChanged(ViewMode v);
+
+    //! LKY fork: several pages per frame + optional title card / end logo
+    void videoPagesPerScreenChanged(int pagesPerScreen);
+    void videoTitlePageChanged(bool show);
+    void videoEndLogoChanged(bool show);
 
     void availableSampleRatesChanged();
     void sampleRateChanged(int sampleRate);

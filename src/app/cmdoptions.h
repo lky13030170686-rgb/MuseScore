@@ -71,6 +71,10 @@ struct MuseScoreCmdOptions : public muse::CmdOptions {
         std::optional<int> fps;
         std::optional<double> leadingSec;
         std::optional<double> trailingSec;
+        //! LKY fork: pages per frame + optional title/logo
+        std::optional<int> pagesPerScreen;
+        std::optional<bool> showTitlePage;
+        std::optional<bool> showEndLogo;
     } exportVideo;
 
     struct {

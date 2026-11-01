@@ -21,6 +21,8 @@
  */
 #include "videoexportconfiguration.h"
 
+#include <algorithm>
+
 using namespace mu::iex::videoexport;
 
 static const ViewMode DEFAULT_VIEW_MODE = ViewMode::PageFull;
@@ -32,6 +34,12 @@ static const double DEFAULT_LEADING_SEC = 3.0;
 static const double DEFAULT_TRAILING_SECONDS = 3.0;
 
 static const std::vector<std::string> AVAILABLE_RESOLUTIONS = { "2160p", "1440p", "1080p" };
+
+//! LKY fork: pages shown at the same time. 2/3/8 give a single row ("连排"), 4/6/9 a grid.
+static const int DEFAULT_PAGES_PER_SCREEN = 1;
+static const std::vector<int> AVAILABLE_PAGES_PER_SCREEN = { 1, 2, 3, 4, 6, 8, 9 };
+static const bool DEFAULT_SHOW_TITLE_PAGE = true;
+static const bool DEFAULT_SHOW_END_LOGO = true;
 
 ViewMode VideoExportConfiguration::viewMode() const
 {
@@ -106,4 +114,45 @@ double VideoExportConfiguration::trailingSec() const
 void VideoExportConfiguration::setTrailingSec(std::optional<double> trailingSec)
 {
     m_trailingSec = trailingSec;
+}
+
+int VideoExportConfiguration::pagesPerScreen() const
+{
+    int pages = m_pagesPerScreen ? m_pagesPerScreen.value() : DEFAULT_PAGES_PER_SCREEN;
+    //! NOTE Never trust a value that did not come from our own list: `pageGridOf()` has no
+    //! meaning for 0 (it would divide the frame by zero pages) and 5 has no sensible grid.
+    if (std::find(AVAILABLE_PAGES_PER_SCREEN.begin(), AVAILABLE_PAGES_PER_SCREEN.end(), pages) == AVAILABLE_PAGES_PER_SCREEN.end()) {
+        return DEFAULT_PAGES_PER_SCREEN;
+    }
+    return pages;
+}
+
+void VideoExportConfiguration::setPagesPerScreen(std::optional<int> pagesPerScreen)
+{
+    m_pagesPerScreen = pagesPerScreen;
+}
+
+const std::vector<int>& VideoExportConfiguration::availablePagesPerScreen() const
+{
+    return AVAILABLE_PAGES_PER_SCREEN;
+}
+
+bool VideoExportConfiguration::showTitlePage() const
+{
+    return m_showTitlePage ? m_showTitlePage.value() : DEFAULT_SHOW_TITLE_PAGE;
+}
+
+void VideoExportConfiguration::setShowTitlePage(std::optional<bool> show)
+{
+    m_showTitlePage = show;
+}
+
+bool VideoExportConfiguration::showEndLogo() const
+{
+    return m_showEndLogo ? m_showEndLogo.value() : DEFAULT_SHOW_END_LOGO;
+}
+
+void VideoExportConfiguration::setShowEndLogo(std::optional<bool> show)
+{
+    m_showEndLogo = show;
 }

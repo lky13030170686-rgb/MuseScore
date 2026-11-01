@@ -29,6 +29,7 @@
 #include "global/defer.h"
 #include "global/io/buffer.h"
 #include "global/io/file.h"
+#include "global/io/filestream.h"
 #include "global/io/dir.h"
 
 #include "engraving/dom/masterscore.h"
@@ -752,7 +753,27 @@ Ret ConverterController::exportScoreVideo(const muse::io::path_t& in, const muse
         { INotationWriter::OptionKey::WITH_AUDIO, Val(withAudio) },
     };
 
-    return convertFullNotation(writer, notationProject->masterNotation()->notation(), out, options);
+    //! NOTE LKY fork: `convertFullNotation()` collects whatever the writer produced in memory and
+    //! writes it to the file afterwards. That is fine for PNG/PDF/... but NOT for the video writer:
+    //! it encodes straight into `device.meta("file_path")` and never touches the device, so the
+    //! collected buffer stayed empty and the finished mp4 was truncated to 0 bytes. Stream to the
+    //! file like the GUI export does (`ExportProjectScenario::doExportLoop()`).
+    muse::io::FileStream outputFile(out);
+    outputFile.setMeta("file_path", out.toStdString());
+    if (!outputFile.open(IODevice::WriteOnly)) {
+        LOGE() << "failed to open output file, path: " << out;
+        return make_ret(Err::OutFileFailedWrite);
+    }
+
+    Ret writeRet = writer->write(notationProject->masterNotation()->notation(), outputFile, options);
+    outputFile.close();
+
+    if (!writeRet) {
+        LOGE() << "failed write, err: " << writeRet.toString() << ", path: " << out;
+        return make_ret(Err::OutFileFailedWrite);
+    }
+
+    return make_ret(Ret::Code::Ok);
 }
 
 Ret ConverterController::updateSource(const muse::io::path_t& in, const std::string& newSource, bool forceMode)

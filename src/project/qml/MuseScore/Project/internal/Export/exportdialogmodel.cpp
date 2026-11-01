@@ -23,6 +23,7 @@
 #include "exportdialogmodel.h"
 
 #include <algorithm>
+#include <map>
 
 #include <QItemSelectionModel>
 #include <QTimer>
@@ -639,6 +640,82 @@ void ExportDialogModel::setViewMode(ViewMode v)
 ExportDialogModel::ViewMode ExportDialogModel::viewMode() const
 {
     return videoExportConfiguration()->viewMode();
+}
+
+//! LKY fork: several pages per frame + optional title card / end logo
+
+QVariantList ExportDialogModel::availablePagesPerScreen() const
+{
+    const std::map<int, QString> texts {
+        { 1, muse::qtrc("project/export", "Single page") },
+        { 2, muse::qtrc("project/export", "2 pages") },
+        { 3, muse::qtrc("project/export", "3 pages") },
+        { 4, muse::qtrc("project/export", "4 pages") },
+        { 6, muse::qtrc("project/export", "6 pages") },
+        { 8, muse::qtrc("project/export", "8 pages") },
+        { 9, muse::qtrc("project/export", "9 pages") },
+    };
+
+    QVariantList result;
+
+    for (int pages : videoExportConfiguration()->availablePagesPerScreen()) {
+        auto it = texts.find(pages);
+        if (it == texts.end()) {
+            continue;
+        }
+
+        QVariantMap obj;
+        obj["value"] = it->first;
+        obj["text"] = it->second;
+        result << obj;
+    }
+
+    return result;
+}
+
+int ExportDialogModel::videoPagesPerScreen() const
+{
+    return videoExportConfiguration()->pagesPerScreen();
+}
+
+void ExportDialogModel::setVideoPagesPerScreen(int pagesPerScreen)
+{
+    if (pagesPerScreen == videoPagesPerScreen()) {
+        return;
+    }
+
+    videoExportConfiguration()->setPagesPerScreen(pagesPerScreen);
+    emit videoPagesPerScreenChanged(pagesPerScreen);
+}
+
+bool ExportDialogModel::videoTitlePage() const
+{
+    return videoExportConfiguration()->showTitlePage();
+}
+
+void ExportDialogModel::setVideoTitlePage(bool show)
+{
+    if (show == videoTitlePage()) {
+        return;
+    }
+
+    videoExportConfiguration()->setShowTitlePage(show);
+    emit videoTitlePageChanged(show);
+}
+
+bool ExportDialogModel::videoEndLogo() const
+{
+    return videoExportConfiguration()->showEndLogo();
+}
+
+void ExportDialogModel::setVideoEndLogo(bool show)
+{
+    if (show == videoEndLogo()) {
+        return;
+    }
+
+    videoExportConfiguration()->setShowEndLogo(show);
+    emit videoEndLogoChanged(show);
 }
 
 bool ExportDialogModel::isFFmpegAvailable() const

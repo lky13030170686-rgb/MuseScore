@@ -157,6 +157,10 @@ void CommandLineParser::init()
     m_parser.addOption(QCommandLineOption("ls", "Pause before playback in seconds (3.0)", "3.0"));
     m_parser.addOption(QCommandLineOption("ts", "Pause before end of video in seconds (3.0)", "3.0"));
     m_parser.addOption(QCommandLineOption("no-audio", "Export video without audio"));
+    //! LKY fork: several pages per frame, and no title card / no end logo
+    m_parser.addOption(QCommandLineOption("pages-per-screen", "Score pages shown at the same time [1, 2, 3, 4, 6, 8, 9]", "1"));
+    m_parser.addOption(QCommandLineOption("no-title", "Do not draw the score title at the beginning"));
+    m_parser.addOption(QCommandLineOption("no-logo", "Do not append the \"Made with MuseScore\" clip at the end"));
 #endif
 
     m_parser.addOption(QCommandLineOption("gp-linked", "create tabulature linked staves for guitar pro"));
@@ -442,6 +446,19 @@ void CommandLineParser::parse(int argc, char** argv)
 
         if (m_parser.isSet("ts")) {
             m_options->exportVideo.trailingSec = doubleValue("ts");
+        }
+
+        //! LKY fork: pages per frame + optional title/logo
+        if (m_parser.isSet("pages-per-screen")) {
+            m_options->exportVideo.pagesPerScreen = intValue("pages-per-screen");
+        }
+
+        if (m_parser.isSet("no-title")) {
+            m_options->exportVideo.showTitlePage = false;
+        }
+
+        if (m_parser.isSet("no-logo")) {
+            m_options->exportVideo.showEndLogo = false;
         }
 
         if (m_parser.isSet("no-audio")) {
