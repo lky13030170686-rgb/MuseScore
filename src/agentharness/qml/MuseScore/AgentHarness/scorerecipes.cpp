@@ -250,6 +250,62 @@ bool pitchInRange(int midiPitch)
     return midiPitch >= 0 && midiPitch <= 127;
 }
 
+//! "m3b2" for an arbitrary tick - the same compact form the tools take (第 174 条).
+//!
+//! Why it exists: a refusal that says "this would cover a note" without saying WHICH note leaves the caller
+//! to search the bar it was about to write into. Measure numbers are POSITIONS (counted from the first
+//! bar), matching `measureAt()` and every address in this subsystem - not `Measure::measureNumber()`, which
+//! an anacrusis or a numbering offset makes disagree. The beat asks `TimeSigFrac::beatTicks()` for the same
+//! reason `addressing.cpp` does: 6/8 has two dotted-quarter beats, and a hand-made `4*DIV/denominator`
+//! would silently say six.
+QString positionText(const mu::engraving::Score* score, const mu::engraving::Fraction& tick)
+{
+    if (!score) {
+        return QString();
+    }
+
+    int index = 1;
+    for (const mu::engraving::Measure* measure = score->firstMeasure(); measure;
+         measure = measure->nextMeasure(), ++index) {
+        if (tick < measure->tick() || tick >= measure->endTick()) {
+            continue;
+        }
+        const mu::engraving::TimeSigFrac timesig(measure->timesig());
+        const int beatTicks = timesig.beatTicks();
+        const int beat = beatTicks > 0 ? int((tick - measure->tick()).ticks()) / beatTicks + 1 : 1;
+        return QStringLiteral("m%1b%2").arg(index).arg(beat);
+    }
+
+    return QString();
+}
+
+//! The ChordRests of one voice inside `[from, to)`, in time order - the elements a longer note would land
+//! on top of. Chords are what the caller must be told about; rests are what may be consumed silently (a
+//! rest is the absence of music, so replacing it is not destroying anything the user wrote).
+QVector<mu::engraving::ChordRest*> chordRestsBetween(mu::engraving::Score* score, mu::engraving::Segment* fromSegment,
+                                                     mu::engraving::track_idx_t track,
+                                                     const mu::engraving::Fraction& from,
+                                                     const mu::engraving::Fraction& to)
+{
+    QVector<mu::engraving::ChordRest*> out;
+    if (!score || !fromSegment) {
+        return out;
+    }
+
+    for (mu::engraving::Segment* seg = fromSegment;
+         seg && seg->tick() < to;
+         seg = seg->next1(mu::engraving::SegmentType::ChordRest)) {
+        if (seg->tick() < from) {
+            continue;
+        }
+        if (mu::engraving::ChordRest* cr = mu::engraving::toChordRest(seg->element(track))) {
+            out.append(cr);
+        }
+    }
+
+    return out;
+}
+
 //! The spelling to give a note of `pitch`, chosen by the staff's key at the note's position.
 //!
 //! ⛔ WHY THE KEY MATTERS, and why this is not just "pitch % 12": the same MIDI number can be written
@@ -413,7 +469,7 @@ bool durationFits(mu::engraving::ChordRest* chord, const mu::engraving::TDuratio
 }
 
 RecipeResult muse::agentharness::setChordDuration(mu::engraving::Score* score, const ScoreAddress& address,
-                                                 int voice, const QString& duration)
+                                                 int voice, const QString& duration, bool coverFollowing)
 {
     if (!score) {
         return RecipeResult::failure(QStringLiteral("no score"));
@@ -492,7 +548,80 @@ RecipeResult muse::agentharness::setChordDuration(mu::engraving::Score* score, c
     //! ⚠️ It sets DURATION_TYPE_WITH_DOTS and DURATION as two properties. That is upstream's own
     //! sequence; doing only the first leaves `ticks()` stale, which shows up as a chord that draws
     //! short and overlaps the next beat.
-    score->undoChangeChordRestLen(target, parsed.value);
+    //!
+    //! ⛔⛔ BUT SETTING THE LENGTH IS ONLY HALF THE EDIT (第 174 条). Measured on the real program: changing
+    //! m1b1 from a quarter to a half left the three quarter notes of beats 2-4 exactly where they were, so
+    //! two notes now occupied the same ticks - the bar no longer added up, the system collapsed to a
+    //! fraction of its width, and nothing in the result said so. The missing half is "make the rest of the
+    //! voice agree with the new length", and it has to be done here because `undoChangeChordRestLen` is a
+    //! property write, not an edit.
+    //!
+    //! WHY NOT `Score::changeCRlen` (the interactive path that does all of this). It calls `deselectAll()`
+    //! and then re-selects the element - so an agent edit would REPLACE the user's selection (a range
+    //! selection is not restored at all). 第 173 条 just made that selection visible to the agent; silently
+    //! dropping it would be exactly the kind of side effect this subsystem refuses. Its two branches are
+    //! therefore reproduced here with the primitives it uses (`makeGap` to clear the space, `setRest` to
+    //! fill the freed one), neither of which touches the selection.
+    const mu::engraving::Fraction oldLength = target->ticks();
+    const mu::engraving::Fraction wanted = parsed.value.type() == mu::engraving::DurationType::V_MEASURE
+                                           ? target->findMeasure()->ticks()
+                                           : parsed.value.fraction();
+
+    if (wanted == oldLength) {
+        //! Same length, different spelling (or the measure's own length written out). Nothing to move.
+        return RecipeResult::success(QStringLiteral("%1 is already %2")
+                                     .arg(formatAddress(address), parsed.name));
+    }
+
+    const mu::engraving::track_idx_t track = target->track();
+    QString covered;   //!< "m1b2, m1b3" - only filled when the caller allowed it
+
+    if (wanted > oldLength) {
+        //! The elements the longer note would land on. Rests are fine to consume (a rest is the absence of
+        //! music); NOTES are not, unless the caller explicitly asked to replace them.
+        const QVector<mu::engraving::ChordRest*> inTheWay = chordRestsBetween(
+            score, target->segment()->next1(mu::engraving::SegmentType::ChordRest), track,
+            target->tick() + oldLength, target->tick() + wanted);
+
+        QStringList notesInTheWay;
+        for (const mu::engraving::ChordRest* cr : inTheWay) {
+            if (!cr->isRest()) {
+                notesInTheWay.append(positionText(score, cr->tick()));
+            }
+        }
+
+        if (!notesInTheWay.isEmpty() && !coverFollowing) {
+            return RecipeResult::failure(
+                QStringLiteral("a %1 at %2 would reach over the note(s) at %3. Nothing was changed. "
+                               "Delete or shorten those notes first, or pass `coverFollowing: true` to "
+                               "replace them (they are removed, and one Ctrl+Z takes it all back).")
+                .arg(parsed.name, formatAddress(address), notesInTheWay.join(QStringLiteral(", "))));
+        }
+        covered = notesInTheWay.join(QStringLiteral(", "));
+
+        //! Clear the space the new length needs. `keepChord` = true so the target itself survives - this is
+        //! the same call `changeCRlen` makes, minus its selection handling. Rest-free ranges (a bar with
+        //! nothing after this note) need nothing here: the space is already empty, and the length change
+        //! below is all that is required.
+        score->makeGap(target->segment(), track, wanted, target->tuplet(), /*keepChord*/ true);
+        score->undoChangeChordRestLen(target, parsed.value);
+    } else {
+        score->undoChangeChordRestLen(target, parsed.value);
+
+        //! Fill the space the shorter note gave up, in the voice that gave it up. Without this the bar has
+        //! a HOLE at exactly the ticks the note used to occupy - the same "does not add up" shape as above,
+        //! one branch over. `setRest` splits an awkward remainder into the durations that can be written.
+        const mu::engraving::Fraction freed = oldLength - wanted;
+        if (!freed.isZero()) {
+            score->setRest(target->endTick(), track, freed, /*useDots*/ false, target->tuplet());
+        }
+    }
+
+    if (!covered.isEmpty()) {
+        return RecipeResult::success(
+            QStringLiteral("%1: %2 -> %3 (this covered and removed the note(s) at %4)")
+            .arg(formatAddress(address), was, parsed.name, covered));
+    }
 
     return RecipeResult::success(QStringLiteral("%1: %2 -> %3")
                                  .arg(formatAddress(address), was, parsed.name));

@@ -489,7 +489,8 @@ ToolResult muse::agentharness::toolNoteSetDuration(const QJsonObject& args, cons
 
     const RecipeResult result = ctx.field->runNoteRecipe(
         QStringLiteral("Set duration"), [&](mu::engraving::Score* score) {
-        return setChordDuration(score, address, voice, duration);
+        return setChordDuration(score, address, voice, duration,
+                                args.value(QStringLiteral("coverFollowing")).toBool(false));
     });
 
     if (!result.ok) {
@@ -2126,11 +2127,17 @@ const std::vector<ToolSpec>& muse::agentharness::toolTable()
             QStringLiteral("Set how long the beat at an address lasts, by name: `whole`, `half`, "
                            "`quarter`, `eighth`, `16th` … optionally dotted (`dotted-quarter`). All the "
                            "notes on that beat change together, because a chord's notes sound for the "
-                           "same length. Undoable with Ctrl+Z."),
+                           "same length. The bar is kept whole either way: a SHORTER note leaves a rest "
+                           "behind it, and a longer one clears the rests in front of it. ⛔ Making it "
+                           "longer can reach over the NOTES of the following beats - that is refused "
+                           "unless you pass `coverFollowing: true`, which removes them (the result says "
+                           "which ones). Undoable with Ctrl+Z."),
             schemaObject([&] {
                 QJsonObject props = addressProperties();
                 props.insert(QStringLiteral("duration"), stringProperty(QStringLiteral(
                                                                    "The duration name, optionally dotted: e.g. `quarter`, `dotted-eighth`.")));
+                props.insert(QStringLiteral("coverFollowing"), boolProperty(QStringLiteral(
+                                                                      "Optional, default false. Making the beat longer than the space up to the next note fails; true removes those notes instead (say so in your reply).")));
                 props.insert(QStringLiteral("expectRevision"), intProperty(QStringLiteral(
                                                                        "Optional. The revision you last read; refused if the score changed since.")));
                 return props;

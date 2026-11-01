@@ -26,8 +26,11 @@
 #include <QDir>
 #include <QFile>
 #include <QRegularExpression>
+#include <QVector>
 
 #include "engraving/dom/chord.h"
+//! `toChordRest` (the tiling helpers below need it) lives here, not in chord.h.
+#include "engraving/dom/chordrest.h"
 #include "engraving/dom/masterscore.h"
 #include "engraving/automation/automationdata.h"
 #include "engraving/automation/automationtypes.h"
@@ -107,6 +110,23 @@ int pitchAt(Score* score, int measure, int beat, int index = -1)
 {
     const NoteLookup found = noteAt(score, address(measure, beat), 0, index);
     return found.ok() ? found.note->pitch() : -1;
+}
+
+//! Leave one beat SHORT on purpose, WITHOUT closing the space it gives up.
+//!
+//! ⛔ WHY NOT `setChordDuration`: since 第 174 条 that recipe fills the freed space with a rest, so it can
+//! no longer produce the shape `measure_fill` exists for - "a beat that is simply too brief". A fixture
+//! built on it would be measuring the fix instead of the filler, and the failure would read like a
+//! regression in `measure_fill` (it did: this helper replaced exactly that). This calls the primitive the
+//! recipe used to call, inside the caller's transaction.
+bool leaveABeatShort(Score* score, int measure, int beat, DurationType type, int staff = 1)
+{
+    const NoteLookup found = chordAt(score, address(measure, beat, staff), 0);
+    if (!found.found() || !found.chordRest()) {
+        return false;
+    }
+    score->undoChangeChordRestLen(found.chordRest(), TDuration(type));
+    return true;
 }
 } // namespace
 
@@ -243,7 +263,11 @@ TEST(AgentHarness_ScoreRecipes, SetDurationAcceptsPlainAndDottedNames)
 
     for (const auto& c : cases) {
         const RecipeResult result = runRecipe(score.get(), [&] {
-            return setChordDuration(score.get(), address(1, 1), 0, QString::fromLatin1(c.name));
+            //! `coverFollowing: true` because this test is about the NAMES, and every one of these
+            //! durations is longer than the beat it starts on (第 174 条 made lengthening over the next
+            //! note an explicit opt-in). The bar's consistency has its own tests.
+            return setChordDuration(score.get(), address(1, 1), 0, QString::fromLatin1(c.name),
+                                    /*coverFollowing*/ true);
         });
         ASSERT_TRUE(result.ok) << c.name << ": " << result.problem.toStdString();
 
@@ -306,6 +330,197 @@ TEST(AgentHarness_ScoreRecipes, SetDurationOnTheSameDurationSucceedsAndSaysSo)
     });
     EXPECT_TRUE(result.ok) << result.problem.toStdString();
     EXPECT_FALSE(result.detail.isEmpty());
+}
+
+//! ── the bar must still ADD UP (第 174 条) ─────────────────────────────────────────────────────
+//!
+//! THE BUG THESE TESTS PIN, measured on the real program before they existed: `note_set_duration` on m1b1
+//! changed that chord's length and NOTHING ELSE. Growing a quarter to a half left the quarter notes of
+//! beats 2-4 where they were, so two notes occupied the same beat, the bar held more music than it had
+//! ticks, and the system collapsed to a fraction of its width on screen. Shrinking one left a HOLE where
+//! the note used to be. The recipe returned success both times, and the old tests passed because they
+//! asked the chord what its duration was and never asked the bar whether it still added up.
+//!
+//! ⚠️ This is "按效果验证" applied to a return value that was literally true: the chord's duration really
+//! did change. What was false is the claim the caller reads into it - that the beat is now that note.
+//! So the assertions below are about the VOICE: does it tile the bar with no hole and no overlap.
+//!
+//! ⚠️ The local variable is called `entries`, NOT `slots`: `slots` is a Qt keyword macro that expands to
+//! nothing, so `QVector<VoiceSlot> slots;` silently becomes a declaration with no declarator and the
+//! error lands on the next line (`syntax error: '.'`) - a 10-minute detour, recorded so it is a 1-minute one.
+
+namespace {
+//! One voice of one bar, as it actually holds time: one entry per ChordRest segment, in order.
+struct VoiceSlot
+{
+    int tick = 0;
+    int ticks = 0;
+    bool isRest = false;
+};
+
+QVector<VoiceSlot> voiceSlots(Score* score, int measureNumber, track_idx_t track)
+{
+    QVector<VoiceSlot> entries;
+    Measure* measure = measureAt(score, measureNumber);
+    if (!measure) {
+        return entries;
+    }
+    for (Segment* seg = measure->first(SegmentType::ChordRest); seg && seg->measure() == measure;
+         seg = seg->next1(SegmentType::ChordRest)) {
+        ChordRest* cr = toChordRest(seg->element(track));
+        if (!cr) {
+            continue;
+        }
+        entries.append(VoiceSlot{ int(seg->tick().ticks()), int(cr->ticks().ticks()), cr->isRest() });
+    }
+    return entries;
+}
+
+//! Empty when the voice tiles the bar exactly (starts on the bar line, no hole, no overlap, ends on the
+//! bar line); otherwise a sentence about the first thing that is wrong.
+QString tilingProblem(Score* score, int measureNumber, track_idx_t track)
+{
+    Measure* measure = measureAt(score, measureNumber);
+    if (!measure) {
+        return QStringLiteral("there is no measure %1").arg(measureNumber);
+    }
+
+    const QVector<VoiceSlot> entries = voiceSlots(score, measureNumber, track);
+    if (entries.isEmpty()) {
+        return QStringLiteral("the voice is empty");
+    }
+
+    Fraction expect = measure->tick();
+    for (const VoiceSlot& entry : entries) {
+        if (entry.tick != expect.ticks()) {
+            return QStringLiteral("a %1 at tick %2, but the previous element ends at %3 (hole or overlap)")
+                   .arg(entry.isRest ? QStringLiteral("rest") : QStringLiteral("note"))
+                   .arg(entry.tick).arg(expect.ticks());
+        }
+        expect += Fraction::fromTicks(entry.ticks);
+    }
+
+    if (expect != measure->endTick()) {
+        return QStringLiteral("the voice ends at %1 but the bar ends at %2")
+               .arg(expect.ticks()).arg(measure->endTick().ticks());
+    }
+
+    return QString();
+}
+} // namespace
+
+TEST(AgentHarness_ScoreRecipes, SetDurationShorterLeavesARestAndTheBarStillAddsUp)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("eighth"));
+    });
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+
+    const QString problem = tilingProblem(score.get(), 1, 0);
+    EXPECT_TRUE(problem.isEmpty()) << problem.toStdString();
+
+    const QVector<VoiceSlot> entries = voiceSlots(score.get(), 1, 0);
+    ASSERT_GE(entries.size(), 3);
+
+    EXPECT_EQ(entries.at(0).ticks, 240) << "beat 1 is an eighth now";
+    EXPECT_FALSE(entries.at(0).isRest);
+    EXPECT_TRUE(entries.at(1).isRest) << "the space it gave up must be a REST, not a hole";
+    EXPECT_EQ(entries.at(1).ticks, 240);
+    EXPECT_EQ(entries.at(2).tick, 480) << "beat 2 must not have moved";
+    EXPECT_EQ(pitchAt(score.get(), 1, 2), 62) << "and its note is still there";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetDurationLongerRefusesToCoverTheNextNoteAndChangesNothing)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A half from beat 1 of a bar whose beat 2 has a note: the longer note would occupy ticks another
+    //! note already occupies. Refused, because replacing music the caller did not mention is the one edit
+    //! worth refusing - and the refusal has to name WHICH note, or the caller searches a bar it cannot see.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("half"));
+    });
+
+    ASSERT_FALSE(result.ok) << "a half from beat 1 reaches over the note on beat 2";
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("m1b2"))) << result.problem.toStdString();
+    EXPECT_TRUE(result.problem.contains(QStringLiteral("coverFollowing")))
+        << "the refusal must name the way out: " << result.problem.toStdString();
+
+    //! "Nothing was changed" is a claim about the SCORE, so it is checked on the score.
+    EXPECT_TRUE(tilingProblem(score.get(), 1, 0).isEmpty());
+    EXPECT_EQ(voiceSlots(score.get(), 1, 0).at(0).ticks, 480) << "beat 1 is still a quarter";
+    EXPECT_EQ(pitchAt(score.get(), 1, 2), 62) << "beat 2 is untouched";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetDurationLongerWithCoverFollowingKeepsTheBarWholeAndSaysWhatItCovered)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("half"),
+                                /*coverFollowing*/ true);
+    });
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+    EXPECT_TRUE(result.detail.contains(QStringLiteral("m1b2")))
+        << "a destructive edit must name what it removed: " << result.detail.toStdString();
+
+    const QString problem = tilingProblem(score.get(), 1, 0);
+    EXPECT_TRUE(problem.isEmpty()) << problem.toStdString();
+
+    const QVector<VoiceSlot> entries = voiceSlots(score.get(), 1, 0);
+    ASSERT_GE(entries.size(), 3);
+    EXPECT_EQ(entries.at(0).ticks, 960) << "beat 1 is a half";
+    EXPECT_EQ(pitchAt(score.get(), 1, 1), 60) << "the note itself survives";
+    EXPECT_EQ(pitchAt(score.get(), 1, 2), -1) << "the note it covered is gone";
+    EXPECT_EQ(pitchAt(score.get(), 1, 3), 64) << "beat 3 is outside the half and must survive";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetDurationGrowBackOverTheRestItLeftEarlier)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! The round trip is the ordinary way the rest-consuming branch is reached: shrink a note (which
+    //! leaves a rest), then grow it again. Growing must CONSUME that rest, not leave a hole behind it.
+    ASSERT_TRUE(runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("eighth"));
+    }).ok);
+
+    const RecipeResult grown = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("quarter"));
+    });
+    ASSERT_TRUE(grown.ok) << grown.problem.toStdString();
+
+    const QString problem = tilingProblem(score.get(), 1, 0);
+    EXPECT_TRUE(problem.isEmpty()) << problem.toStdString();
+    EXPECT_EQ(voiceSlots(score.get(), 1, 0).at(0).ticks, 480);
+    EXPECT_EQ(pitchAt(score.get(), 1, 2), 62) << "the neighbour was never in the way";
+}
+
+TEST(AgentHarness_ScoreRecipes, SetDurationOnAFullMeasureRestLeavesTheBarWhole)
+{
+    const auto score = loadScore(NOTE_SCORE);
+    ASSERT_TRUE(score);
+
+    //! A whole-measure rest is ONE element spanning the bar. Shortening it has to leave a half rest behind
+    //! it - the same branch of the code, reached through the rest path.
+    const RecipeResult result = runRecipe(score.get(), [&] {
+        return setChordDuration(score.get(), address(2, 1), 0, QStringLiteral("half"));
+    });
+    ASSERT_TRUE(result.ok) << result.problem.toStdString();
+
+    const QString problem = tilingProblem(score.get(), 2, 0);
+    EXPECT_TRUE(problem.isEmpty()) << problem.toStdString();
+
+    const QVector<VoiceSlot> entries = voiceSlots(score.get(), 2, 0);
+    ASSERT_GE(entries.size(), 2);
+    EXPECT_EQ(entries.at(0).ticks, 960);
+    EXPECT_TRUE(entries.at(0).isRest);
 }
 
 //! ── addNoteToChord / removeNote ───────────────────────────────────────────────────────────────
@@ -669,7 +884,10 @@ TEST(AgentHarness_ScoreRecipes, DurationThatExactlyFillsTheRestOfTheBarIsAccepte
     //! something legal - which is just as much a bug as accepting something illegal, and much easier to
     //! miss because the refusal looks like a safety feature working.
     const RecipeResult result = runRecipe(score.get(), [&] {
-        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("dotted-half"));
+        //! `coverFollowing: true`: a dotted half from beat 1 reaches over beats 2-4, which after 第 174 条
+        //! is an explicit opt-in. This test is about the GATE's boundary, not about what gets covered.
+        return setChordDuration(score.get(), address(1, 1), 0, QStringLiteral("dotted-half"),
+                                /*coverFollowing*/ true);
     });
     EXPECT_TRUE(result.ok) << "a dotted half exactly fills beats 2-4: " << result.problem.toStdString();
 
@@ -735,7 +953,11 @@ TEST(AgentHarness_ScoreRecipes, TheGateSweepsEveryBeatOfTheBar)
         ASSERT_TRUE(fresh);
 
         const RecipeResult fits = runRecipe(fresh.get(), [&] {
-            return setChordDuration(fresh.get(), address(1, row.beat), 0, QString::fromLatin1(row.fits));
+            //! `coverFollowing: true`: what "fits" means here is "does it fit in the space up to the bar
+            //! line", which is the gate's question. Whether it reaches over a neighbour is a separate
+            //! decision (第 174 条) with its own tests.
+            return setChordDuration(fresh.get(), address(1, row.beat), 0, QString::fromLatin1(row.fits),
+                                    /*coverFollowing*/ true);
         });
         EXPECT_TRUE(fits.ok) << "beat " << row.beat << ": " << row.fits
                              << " should fit but was refused: " << fits.problem.toStdString();
@@ -2011,7 +2233,9 @@ TEST(AgentHarness_ScoreRecipes, FillMeasureFindsAHoleThatIsNotAtTheEnd)
         ASSERT_TRUE(s);
 
         ASSERT_TRUE(runRecipe(s.get(), [&] {
-            return setChordDuration(s.get(), address(1, shape.beat), 0, QString::fromLatin1(shape.len));
+            //! The fixture leaves the beat short ON PURPOSE (第 174 条 note in `leaveABeatShort`).
+            leaveABeatShort(s.get(), 1, shape.beat, DurationType::V_EIGHTH);
+            return RecipeResult::success(QString());
         }).ok);
         ASSERT_FALSE(s->sanityCheck()) << "the SETUP must leave bar 1 incomplete";
 
@@ -2061,7 +2285,10 @@ TEST(AgentHarness_ScoreRecipes, FillMeasureCompletesVoiceZeroOfEveryStaff)
     ASSERT_TRUE(score->sanityCheck()) << "the SETUP must start from a sound score";
 
     ASSERT_TRUE(runRecipe(score.get(), [&] {
-        return setChordDuration(score.get(), address(1, 1, /* staff */ 2), 0, QStringLiteral("eighth"));
+        //! The fixture leaves the second staff's whole rest short ON PURPOSE (第 174 条 note in
+        //! `leaveABeatShort`): `setChordDuration` would now close the space with a rest itself.
+        leaveABeatShort(score.get(), 1, 1, DurationType::V_EIGHTH, /* staff */ 2);
+        return RecipeResult::success(QString());
     }).ok);
 
     const std::string before = score->sanityCheck().text();

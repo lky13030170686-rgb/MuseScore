@@ -98,8 +98,18 @@ RecipeResult transposeNote(mu::engraving::Score* score, const ScoreAddress& addr
 //!                 than taking a raw fraction, because a model that has to compute a tick length will
 //!                 eventually compute the wrong one and the error will look like a wrong duration
 //!                 rather than a wrong conversion.
+//! @param coverFollowing 第 174 条. Making a beat longer can reach over the notes of the following beats
+//!                 (a half note from beat 1 of a bar whose beat 2 has a note). The default is to REFUSE and
+//!                 name them - replacing music the caller did not mention is the one edit worth refusing,
+//!                 and the same rule `measure_copy`'s `scaleToFit` follows: the caller who wants it asks.
+//!                 With `true` the covered notes are removed and the result says which ones.
+//!
+//! ⛔ The whole bar is kept CONSISTENT in both directions: a shorter note leaves a rest behind, a longer one
+//! clears the space it needs. Doing only `undoChangeChordRestLen` leaves the voice with an overlap (grow) or
+//! a hole (shrink), and neither shows up in the return value - it shows up on screen as a bar that no longer
+//! adds up, which is what the user reported (第 174 条).
 RecipeResult setChordDuration(mu::engraving::Score* score, const ScoreAddress& address, int voice,
-                              const QString& duration);
+                              const QString& duration, bool coverFollowing = false);
 
 //! Remove one note from the chord at an address. Refused when it is the chord's LAST note: a chord with
 //! no notes is not a rest, it is a broken chord, and the caller almost certainly meant "make this beat
