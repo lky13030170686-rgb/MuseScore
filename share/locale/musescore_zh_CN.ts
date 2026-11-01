@@ -10667,11 +10667,11 @@ Score revision (write fence): %6</source>
     </message>
     <message>
         <source>(new session)</source>
-        <translation>，获取于 %1</translation>
+        <translation>（新会话）</translation>
     </message>
     <message>
         <source>(no message yet)</source>
-        <translation>网关没有列出的模型 id 依然可用 — 在这里填上，它就会像其他模型一样出现在选择器里。</translation>
+        <translation>（还没有消息）</translation>
     </message>
 </context>
 
