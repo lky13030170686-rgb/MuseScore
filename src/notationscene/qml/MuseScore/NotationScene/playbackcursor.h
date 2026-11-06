@@ -57,23 +57,14 @@ private:
 
     muse::RectF resolveCursorRectByTick(int tick) const;
 
-    struct PlaybackCursorCache {
-        const engraving::System* system = nullptr;
-        const engraving::Measure* measure = nullptr;
-        const engraving::Segment* segment = nullptr;
-
-        engraving::Fraction segmentStartTick;
-        engraving::Fraction segmentEndTick;
-
-        double segmentStartX = 0.0;
-        double segmentEndX = 0.0;
-        double systemBottomY = 0.0;
-
-        void clear()
-        {
-            *this = PlaybackCursorCache();
-        }
-    } mutable m_cache;
+    //! ⛔ There is deliberately **no cache of `System*` / `Measure*` / `Segment*` here**.
+    //! A re-layout (opening the mixer changes the notation view's width; zoom-to-fit and
+    //! page/continuous mode changes do the same kind of thing) destroys and rebuilds those
+    //! objects, and the score only announces *edits* through `changesChannel()`. A raw
+    //! pointer kept between calls therefore dangles and the 23 ms playback-cursor timer
+    //! walks it into `System::staffCanvasYpage()` → `page()->canvasPos()` → a virtual call
+    //! through freed memory → `execute of address 0x0` while playing (2026-11-06).
+    //! Re-resolving per call is cheap at 43 Hz; see resolveCursorRectByTick().
 
     bool m_visible = false;
     muse::RectF m_rect;

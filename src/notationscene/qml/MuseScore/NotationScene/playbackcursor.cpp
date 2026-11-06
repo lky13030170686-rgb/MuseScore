@@ -42,7 +42,9 @@ static double systemBottomY(const Score* score, const System* system)
 
     for (size_t i = 0; i < score->nstaves(); ++i) {
         const SysStaff* ss = system->staff(i);
-        if (!ss->show() || !score->staff(i)->show()) {
+        //! `staff(i)` returns nullptr for an index the system does not carry; dereferencing it
+        //! here used to be one of the ways this path died (see resolveCursorRectByTick).
+        if (!ss || !score->staff(i) || !ss->show() || !score->staff(i)->show()) {
             continue;
         }
 
@@ -58,6 +60,8 @@ static RectF calculateRect(double x, const Score* score, const System* system, d
 
     return RectF {
         x - spatium,
+        //! `staffCanvasYpage(0)` walks `m_staves[0]` and then `page()->canvasPos()`; it is only
+        //! safe on a system that belongs to the *current* layout (checked by the caller).
         system->staffCanvasYpage(0) - 3.0 * spatium,
         0.4 * spatium,
         systemBottomY + 6.0 * spatium
@@ -79,23 +83,12 @@ void PlaybackCursor::setNotation(INotationPtr notation)
         return;
     }
 
-    if (m_notation) {
-        m_notation->elements()->msScore()->changesChannel().disconnect(this);
-        m_notation->viewModeChanged().disconnect(this);
-    }
-
-    if (notation) {
-        notation->elements()->msScore()->changesChannel().onReceive(this, [this](const ScoreChanges&) {
-            m_cache.clear();
-        });
-
-        notation->viewModeChanged().onNotify(this, [this]() {
-            m_cache.clear();
-        });
-    }
-
+    //! No cache invalidation to do any more (see resolveCursorRectByTick): the cursor resolves
+    //! Measure/System/Segment from the score on every move, so re-layouts cannot leave it
+    //! holding freed objects. The old `changesChannel` / `viewModeChanged` subscriptions existed
+    //! only to clear that cache, and they were never enough — a dock resize (mixer) re-layouts
+    //! the score without emitting either of them.
     m_notation = notation;
-    m_cache.clear();
 }
 
 void PlaybackCursor::move(muse::midi::tick_t tick)
@@ -120,31 +113,30 @@ muse::RectF PlaybackCursor::resolveCursorRectByTick(int _tick) const
 
     const Fraction tick = Fraction::fromTicks(_tick);
 
-    if (m_cache.segment && tick >= m_cache.segmentStartTick && tick < m_cache.segmentEndTick) {
-        const double x = interpolateXByTicks(_tick, m_cache.segmentStartTick.ticks(), m_cache.segmentEndTick.ticks(),
-                                             m_cache.segmentStartX, m_cache.segmentEndX);
-        return calculateRect(x, score, m_cache.system, m_cache.systemBottomY);
+    //! ⛔⛔ **No cross-call caching here, on purpose** (2026-11-06, 进度快照 第 176 条).
+    //!
+    //! This used to keep `const System*/Measure*/Segment*` between calls. A re-layout —
+    //! opening/closing a dock panel (the mixer changes the central widget's width), a
+    //! zoom-to-fit, a page/continuous mode change — **destroys and rebuilds** those objects,
+    //! and the score does *not* announce it through `changesChannel()` (that channel only
+    //! fires on edits). The cached pointers then pointed into freed memory and the 23 ms
+    //! playback-cursor timer walked them into `System::staffCanvasYpage()` →
+    //! `page()->canvasPos()` → a **virtual call through a dead object** → `execute of
+    //! address 0x0` (5+ crashes on 2026-11-06, all while playing).
+    //!
+    //! Re-resolving on every call costs a measure-map lookup plus one scan of the measure's
+    //! chord-rest segments — at the cursor's 43 Hz that is nothing, and it cannot dangle.
+    const Measure* measure = score->tick2measureMM(tick);
+    if (!measure) {
+        return RectF();
     }
 
-    const Measure* measure = nullptr;
-    const System* system = nullptr;
-
-    if (m_cache.measure && tick >= m_cache.measure->tick() && tick < m_cache.measure->endTick()) {
-        measure = m_cache.measure;
-        system = m_cache.system;
-    } else {
-        measure = score->tick2measureMM(tick);
-        if (!measure) {
-            m_cache.clear();
-            return RectF();
-        }
-
-        system = measure->system();
-        if (!system || !system->page() || system->staves().empty()) {
-            m_cache.clear();
-            return RectF();
-        }
+    const System* system = measure->system();
+    if (!system || !system->page() || system->staves().empty()) {
+        return RectF();
     }
+
+    const double systemBottom = systemBottomY(score, system);
 
     for (const Segment* s = measure->first(SegmentType::ChordRest); s;) {
         const Fraction segmentStartTick = s->tick();
@@ -175,24 +167,10 @@ muse::RectF PlaybackCursor::resolveCursorRectByTick(int _tick) const
             continue;
         }
 
-        if (m_cache.system != system) {
-            m_cache.system = system;
-            m_cache.systemBottomY = systemBottomY(score, system);
-        }
-
-        m_cache.measure = measure;
-        m_cache.segment = s;
-        m_cache.segmentStartTick = segmentStartTick;
-        m_cache.segmentEndTick = segmentEndTick;
-        m_cache.segmentStartX = segmentStartX;
-        m_cache.segmentEndX = segmentEndX;
-
         const double x = interpolateXByTicks(_tick, segmentStartTick.ticks(), segmentEndTick.ticks(),
                                              segmentStartX, segmentEndX);
-        return calculateRect(x, score, system, m_cache.systemBottomY);
+        return calculateRect(x, score, system, systemBottom);
     }
-
-    m_cache.clear();
 
     return RectF();
 }
